@@ -49,6 +49,7 @@ import {
   XCircle,
   Zap,
   AlertTriangle,
+  LockKeyhole,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -137,7 +138,34 @@ type StrategyForm = {
   };
   // V7.0：龍捲風雙渦輪配置
   v7_0?: Record<string, any>;
+  // V6.1：高頻掃射完整配置
+  v6_1?: Record<string, any>;
 };
+
+type SnapshotImportSource = {
+  id: number;
+  snapshotName: string;
+  strategyKey: string;
+  strategyName: string;
+  config: Record<string, unknown>;
+};
+
+function finiteSnapshotNumber(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function formatSnapshotValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "—";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
 
 const emptyForm: StrategyForm = {
   name: "",
@@ -293,6 +321,7 @@ function StrategiesContent() {
 
   // 從快照導入
   const [showSnapshotImport, setShowSnapshotImport] = useState(false);
+  const [snapshotImportSource, setSnapshotImportSource] = useState<SnapshotImportSource | null>(null);
   const snapshotsQuery = trpc.backtest.getSnapshots.useQuery({ limit: 50 }, { enabled: showSnapshotImport });
   // T3：建立成功引導彈窗
   const [successInfo, setSuccessInfo] = useState<{
@@ -306,6 +335,7 @@ function StrategiesContent() {
     onSuccess: (r) => {
       utils.strategies.list.invalidate();
       setDialogOpen(false);
+      setSnapshotImportSource(null);
       setSuccessInfo({
         name: r.name,
         symbol: r.symbol,
@@ -315,11 +345,28 @@ function StrategiesContent() {
     },
     onError: (e) => toast.error(e.message),
   });
+  const importSnapshotMutation = trpc.backtest.importSnapshotAsNew.useMutation({
+    onSuccess: (r, variables) => {
+      const selectedKey = (apiKeys ?? []).find((key) => key.id === variables.apiKeyId);
+      utils.strategies.list.invalidate();
+      setDialogOpen(false);
+      setSnapshotImportSource(null);
+      setSuccessInfo({
+        name: variables.name,
+        symbol: variables.symbol,
+        exchange: selectedKey?.exchange ?? "",
+        webhookUrl: null,
+      });
+      toast.success(r.message);
+    },
+    onError: (e) => toast.error(e.message),
+  });
   const updateMutation = trpc.strategies.update.useMutation({
     onSuccess: () => {
       toast.success("策略已更新");
       utils.strategies.list.invalidate();
       setDialogOpen(false);
+      setSnapshotImportSource(null);
     },
     onError: (e) => toast.error(e.message),
   });
@@ -391,11 +438,13 @@ function StrategiesContent() {
   });
 
   const openCreate = () => {
+    setSnapshotImportSource(null);
     setForm({ ...emptyForm, apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : "" });
     setDialogOpen(true);
   };
 
   const openEdit = (s: NonNullable<typeof strategies>[number]) => {
+    setSnapshotImportSource(null);
     const positionValue = parseFloat(s.positionSize ?? '0') || 0.01;
     const positionMode: 'quantity' | 'usdt' = (s as any).positionMode || 'quantity';
     
@@ -529,6 +578,25 @@ function StrategiesContent() {
     if (form.martin_mode === "layered" && form.martinLayersJson.trim()) {
       const layersErr = validateLayersUI(parseLayersValue(form.martinLayersJson));
       if (layersErr) return toast.error(`階梯式馬丁分層設定錯誤：${layersErr}`);
+    }
+
+    if (snapshotImportSource) {
+      if (form.id) return toast.error("快照導入只能建立新策略，不能覆蓋現有策略");
+      if (form.strategyKey !== snapshotImportSource.strategyKey) {
+        return toast.error("策略引擎與快照來源不一致，已停止建立");
+      }
+      importSnapshotMutation.mutate({
+        snapshotId: snapshotImportSource.id,
+        name: form.name.trim(),
+        apiKeyId: parseInt(form.apiKeyId),
+        symbol: form.symbol.trim().toUpperCase(),
+        positionSize: positionValue,
+        positionMode: form.positionMode,
+        leverage: parseInt(form.leverage) || 1,
+        direction: form.direction,
+        orderType: form.orderType,
+      });
+      return;
     }
 
     const payload = {
@@ -743,7 +811,7 @@ function StrategiesContent() {
     else createMutation.mutate(payload);
   };
 
-  const saving = createMutation.isPending || updateMutation.isPending;
+  const saving = createMutation.isPending || updateMutation.isPending || importSnapshotMutation.isPending;
 
   // 優化 1：由所選 API 金鑰推導交易所（供交易對下拉選單拉取對應清單）
   const selectedApiKeyObj = (apiKeys ?? []).find((k) => String(k.id) === form.apiKeyId);
@@ -1435,14 +1503,38 @@ function StrategiesContent() {
       </Tabs>
 
       {/* 建立/編輯 Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setSnapshotImportSource(null);
+        }}
+      >
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{form.id ? "編輯策略" : "新增策略"}</DialogTitle>
+            <DialogTitle>
+              {form.id ? "編輯策略" : snapshotImportSource ? "從快照建立策略" : "新增策略"}
+            </DialogTitle>
             <DialogDescription>
-              設定交易參數與風險控管，建立後將自動產生 Webhook URL。
+              {snapshotImportSource
+                ? "原策略引擎及全部回測參數已由快照鎖定；你只需選擇部署帳戶並確認倉位設定。"
+                : "設定交易參數與風險控管，建立後將自動產生 Webhook URL。"}
             </DialogDescription>
           </DialogHeader>
+          {snapshotImportSource && (
+            <div className="rounded-lg border border-cyan-500/35 bg-cyan-500/8 p-3 text-sm">
+              <div className="flex items-start gap-2.5">
+                <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-cyan-400" />
+                <div className="min-w-0 space-y-1">
+                  <p className="font-medium text-cyan-100">快照部署契約已啟用</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    來源「{snapshotImportSource.snapshotName}」；系統會由伺服器直接保存完整原始配置，
+                    不會套用內建預設或允許改綁其他引擎。
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5 col-span-2">
@@ -1521,6 +1613,7 @@ function StrategiesContent() {
                   />
                   <Select
                     value={form.positionMode}
+                    disabled={Boolean(snapshotImportSource)}
                     onValueChange={(v) => setForm({ ...form, positionMode: v as 'quantity' | 'usdt' })}
                   >
                     <SelectTrigger className="w-28">
@@ -1549,6 +1642,11 @@ function StrategiesContent() {
                     {selectedSpec?.minOrderQty
                       ? `💡 最小下單量 ${selectedSpec.minOrderQty} ${positionBaseCurrency}，步長 ${selectedSpec.qtyStep ?? '—'}`
                       : `💡 輸入 ${positionBaseCurrency} 數量（如 0.001）`}
+                  </p>
+                )}
+                {snapshotImportSource && (
+                  <p className="text-xs text-cyan-300/90">
+                    倉位單位由快照還原並鎖定，避免把回測 USDT 金額誤作幣種數量。
                   </p>
                 )}
               </div>
@@ -1599,8 +1697,32 @@ function StrategiesContent() {
               </div>
             </div>
 
-            {/* V7.0：龍捲風雙渦輪專用配置面板 */}
-            {form.strategyKey === "KAMA_3K_TORNADO_V70" ? (
+            {/* 快照配置只供檢視；真正建立時由伺服器按 snapshotId 讀取完整原始配置 */}
+            {snapshotImportSource ? (
+              <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">快照參數（唯讀）</p>
+                    <p className="text-xs text-muted-foreground">
+                      共 {Object.keys(snapshotImportSource.config).length} 個原始參數，包含合法的 0 與 false 值。
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="shrink-0 border-cyan-500/35 text-cyan-300">
+                    完整導入
+                  </Badge>
+                </div>
+                <div className="max-h-56 overflow-y-auto rounded-md border border-border/60 bg-background/45">
+                  {Object.entries(snapshotImportSource.config).map(([key, value]) => (
+                    <div key={key} className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3 border-b border-border/40 px-3 py-2 last:border-b-0">
+                      <span className="break-all font-mono text-[11px] text-muted-foreground">{key}</span>
+                      <span className="break-all text-right font-mono text-[11px] text-foreground">
+                        {formatSnapshotValue(value)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : form.strategyKey === "KAMA_3K_TORNADO_V70" ? (
               <V70ConfigPanel
                 config={deserializeV70Config(form.v7_0)}
                 onChange={(newCfg) => {
@@ -1725,31 +1847,48 @@ function StrategiesContent() {
             )}
 
             {/* 策略引擎綁定 */}
-            <div className="space-y-1.5">
-              <Label>策略引擎（選用後由策略代碼決定開平倉與倉位）</Label>
-              <Select
-                value={form.strategyKey}
-                onValueChange={(v) => setForm({ ...form, strategyKey: v })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">不使用（訊號直接執行）</SelectItem>
-                  {(definitions ?? []).map((d) => (
-                    <SelectItem key={d.key} value={d.key}>
-                      {d.name}{d.isBuiltIn ? "（內建）" : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                可至「策略工作室」貼上或上傳自訂策略代碼。
-              </p>
-            </div>
+            {snapshotImportSource ? (
+              <div className="space-y-1.5">
+                <Label>策略引擎（由快照鎖定）</Label>
+                <div className="flex items-center gap-2 rounded-md border border-cyan-500/35 bg-cyan-500/5 px-3 py-2.5">
+                  <LockKeyhole className="h-4 w-4 shrink-0 text-cyan-400" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{snapshotImportSource.strategyName}</p>
+                    <p className="truncate font-mono text-[11px] text-muted-foreground">{snapshotImportSource.strategyKey}</p>
+                  </div>
+                  <Badge className="ml-auto shrink-0 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/15">不可更換</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  此身份由伺服器再次驗證；若原引擎未註冊，系統會停止建立，絕不回退至其他內建策略。
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label>策略引擎（選用後由策略代碼決定開平倉與倉位）</Label>
+                <Select
+                  value={form.strategyKey}
+                  onValueChange={(v) => setForm({ ...form, strategyKey: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">不使用（訊號直接執行）</SelectItem>
+                    {(definitions ?? []).map((d) => (
+                      <SelectItem key={d.key} value={d.key}>
+                        {d.name}{d.isBuiltIn ? "（內建）" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  可至「策略工作室」貼上或上傳自訂策略代碼。
+                </p>
+              </div>
+            )}
 
             {/* V3.5 專用：分組參數說明 + 馬丁倉位預覽表 */}
-            {form.strategyKey === "20415_KAMA_MARTIN_V35" && (
+            {!snapshotImportSource && form.strategyKey === "20415_KAMA_MARTIN_V35" && (
                   <V35ConfigPanel
                     initialCapital={parseFloat(form.Initial_Capital) || 100}
                     firstOrderPct={parseFloat(form.First_Order_Pct) || 0.5}
@@ -1761,7 +1900,7 @@ function StrategiesContent() {
             )}
 
             {/* V5.0 專用：分組參數說明 + 馬丁倉位預覽表 */}
-            {form.strategyKey === "KAMA_3K_ULTIMATE_V50" && (
+            {!snapshotImportSource && form.strategyKey === "KAMA_3K_ULTIMATE_V50" && (
                   <V50ConfigPanel
                     initialCapital={parseFloat(form.Initial_Capital) || 10000}
                     firstOrderPct={parseFloat(form.First_Order_Pct) || 0.3}
@@ -1773,7 +1912,7 @@ function StrategiesContent() {
             )}
 
             {/* V6.1 專用：高頻掃射參數說明 + 馬丁倉位預覽表 */}
-            {form.strategyKey === "KAMA_3K_HF_V61" && (
+            {!snapshotImportSource && form.strategyKey === "KAMA_3K_HF_V61" && (
                   <V61ConfigPanel
                     initialCapital={parseFloat(form.Initial_Capital) || 500}
                     baseLotSize={parseFloat(String(form.positionValue)) || 15}
@@ -1793,7 +1932,13 @@ function StrategiesContent() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDialogOpen(false);
+                setSnapshotImportSource(null);
+              }}
+            >
               取消
             </Button>
             <Button onClick={handleSubmit} disabled={saving}>
@@ -1880,7 +2025,7 @@ function StrategiesContent() {
           <DialogHeader>
             <DialogTitle>從快照導入參數到新策略</DialogTitle>
             <DialogDescription>
-              選擇一個已儲存的參數快照，系統將自動填充所有參數到新增策略表單。
+              選擇快照後，系統會鎖定原策略引擎並由伺服器完整導入原始參數；你無須再次選擇策略。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
@@ -1898,38 +2043,80 @@ function StrategiesContent() {
                   key={snap.id}
                   className="rounded-lg border border-border/60 p-3 hover:border-cyan-500/50 hover:bg-cyan-500/5 cursor-pointer transition-colors"
                   onClick={() => {
-                    // 將快照參數填充到表單
-                    const cfg = snap.config as Record<string, any>;
-                    const bs = snap.backtestSettings as { exchange?: string; symbol?: string; timeframe?: string; startDate?: string; endDate?: string; initialCapital?: number; tradeAmount?: number } | null;
+                    const strategyKey = typeof snap.strategyKey === "string" ? snap.strategyKey.trim() : "";
+                    if (!strategyKey) {
+                      toast.error("此快照缺少策略引擎身份，為避免套用錯誤策略，無法建立");
+                      return;
+                    }
+
+                    const cfg = (snap.config && typeof snap.config === "object"
+                      ? snap.config
+                      : {}) as Record<string, unknown>;
+                    const bs = (snap.backtestSettings && typeof snap.backtestSettings === "object"
+                      ? snap.backtestSettings
+                      : {}) as {
+                      exchange?: string;
+                      symbol?: string;
+                      timeframe?: string;
+                      initialCapital?: number;
+                      tradeAmount?: number;
+                      baseLotSizeMode?: "quantity" | "usdt";
+                    };
                     const martinLayersJson = typeof cfg.Martin_Layers === 'string' ? cfg.Martin_Layers : cfg.Martin_Layers ? JSON.stringify(cfg.Martin_Layers) : '';
-                    // 從 backtestSettings 讀取交易對和資金設定（優先級高於 config 中的值）
-                    const importSymbol = bs?.symbol || cfg.symbol || cfg.Symbol || 'BTCUSDT';
-                    const importCapital = bs?.initialCapital || cfg.Initial_Capital || 100;
-                    const importTradeAmount = bs?.tradeAmount || cfg.Base_Lot_Size || cfg.First_Order_Pct || 0.01;
+                    const importSymbol = String(bs.symbol ?? cfg.symbol ?? cfg.Symbol ?? "BTCUSDT");
+                    const importCapital = finiteSnapshotNumber(bs.initialCapital ?? cfg.Initial_Capital ?? cfg.initial_capital, 100);
+                    const positionMode: "quantity" | "usdt" = bs.baseLotSizeMode === "quantity" ? "quantity" : "usdt";
+                    const configuredLot = positionMode === "quantity"
+                      ? cfg.Base_Lot_Size ?? cfg.base_lot_size
+                      : cfg.base_lot_size_usdt ?? cfg.Base_Lot_Size_USDT;
+                    const percentageLot = importCapital * finiteSnapshotNumber(cfg.First_Order_Pct, 0.5) / 100;
+                    const importTradeAmount = finiteSnapshotNumber(
+                      bs.tradeAmount ?? configuredLot ?? (positionMode === "usdt" ? percentageLot : undefined),
+                      positionMode === "usdt" ? Math.max(1, percentageLot) : 0.01,
+                    );
+                    const importedDirection = cfg.Direction === "long" || cfg.Direction === "short" || cfg.Direction === "both"
+                      ? cfg.Direction
+                      : "both";
+                    const importedOrderType = cfg.Order_Type === "limit" || cfg.orderType === "limit" ? "limit" : "market";
+
+                    setSnapshotImportSource({
+                      id: snap.id,
+                      snapshotName: snap.snapshotName || `快照 #${snap.id}`,
+                      strategyKey,
+                      strategyName: snap.strategyName || strategyKey,
+                      config: cfg,
+                    });
                     setForm({
                       ...emptyForm,
-                      name: `${snap.strategyName || snap.strategyKey} - 導入`,
+                      name: `${snap.strategyName || strategyKey} - 導入`,
+                      apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : "",
                       symbol: importSymbol.replace(/-/g, '').toUpperCase(),
+                      positionSize: String(importTradeAmount),
                       positionValue: importTradeAmount,
-                      leverage: String(cfg.Leverage || 1),
-                      direction: cfg.Direction || 'both',
-                      martinMultiplier: String(cfg.Martin_Multiplier || 1.5),
-                      maxMartinLevel: String(cfg.Max_Layers || 11),
-                      martinSpacingPct: String(cfg.Martin_Step_Pct || 2),
+                      positionMode,
+                      leverage: String(finiteSnapshotNumber(cfg.Leverage ?? cfg.leverage, 1)),
+                      direction: importedDirection,
+                      orderType: importedOrderType,
+                      strategyKey,
+                      martinMultiplier: String(cfg.Martin_Multiplier ?? cfg.martin_multiplier ?? 1.5),
+                      maxMartinLevel: String(cfg.Max_Layers ?? cfg.max_layers ?? 11),
+                      martinSpacingPct: String(cfg.Martin_Step_Pct ?? cfg.martin_step_pct ?? 2),
                       martinLayersJson,
-                      maxLossPct: String(cfg.Max_Loss_Pct || 6),
-                      callbackPct: String(cfg.Callback_Pct || 0.1),
-                      kLinePeriod: String(cfg.K_Line_Period || 15),
+                      maxLossPct: String(cfg.Max_Loss_Pct ?? cfg.max_drawdown_pct ?? 6),
+                      callbackPct: String(cfg.Callback_Pct ?? cfg.trailing_callback_pct ?? 0.1),
+                      kLinePeriod: String(cfg.K_Line_Period ?? cfg.timeframe ?? 15),
                       reentryOnTrend: cfg.Reentry_On_Trend !== false,
-                      maxLossUsdt: String(cfg.Max_Loss_USDT || 15),
+                      maxLossUsdt: String(cfg.Max_Loss_USDT ?? cfg.EscapeLossUSD ?? 15),
                       Initial_Capital: String(importCapital),
-                      First_Order_Pct: String(cfg.First_Order_Pct || 0.5),
-                      Max_Loss_Pct: String(cfg.Max_Loss_Pct || 6),
+                      First_Order_Pct: String(cfg.First_Order_Pct ?? 0.5),
+                      Max_Loss_Pct: String(cfg.Max_Loss_Pct ?? cfg.max_drawdown_pct ?? 6),
                       martin_mode: martinLayersJson.trim() ? 'layered' : 'fixed',
+                      v6_1: strategyKey === "KAMA_3K_HF_V61" ? cfg : undefined,
+                      v7_0: strategyKey === "KAMA_3K_TORNADO_V70" ? cfg : undefined,
                     });
                     setShowSnapshotImport(false);
                     setDialogOpen(true);
-                    toast.success(`已導入「${snap.snapshotName}」參數（含回測設定），請選擇 API 金鑰後建立策略`);
+                    toast.success(`已載入「${snap.snapshotName}」；原引擎與完整參數已鎖定，請選擇 API 金鑰後建立`);
                   }}
                 >
                   <div className="flex items-center justify-between">

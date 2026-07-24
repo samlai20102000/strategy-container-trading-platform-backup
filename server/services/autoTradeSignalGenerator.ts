@@ -20,6 +20,7 @@ import { loadStrategyState, reconcileWithExchange } from "./strategyStateManager
 import { TradingPairManager } from "./tradingPairManager";
 import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
+import { getBoundStrategyConfig } from "./strategySnapshotConfig";
 
 
 
@@ -147,8 +148,23 @@ export async function generateTradingSignal(
       return null;
     }
 
-    // Determine K-line period from strategy engine's defaultConfig or strategy object's specific fields
-    const kLinePeriod = (strategy as any)?.K_Line_Period || (engine.defaultConfig as any)?.K_Line_Period || 5;
+    const initialState =
+      strategy.martinState && typeof strategy.martinState === "object"
+        ? (strategy.martinState as Record<string, unknown>)
+        : {};
+    const initialSnapshotConfig = getBoundStrategyConfig(
+      initialState,
+      strategy.strategyKey || "",
+    );
+    const configuredPeriod = Number(
+      initialSnapshotConfig?.K_Line_Period ??
+      strategy.kLinePeriod ??
+      (engine.defaultConfig as Record<string, unknown> | undefined)?.K_Line_Period ??
+      5,
+    );
+    const kLinePeriod = Number.isFinite(configuredPeriod) && configuredPeriod > 0
+      ? configuredPeriod
+      : 5;
 
     // Create exchange adapter
     const adapter = createAdapter(apiKeyRecord);
@@ -194,17 +210,24 @@ export async function generateTradingSignal(
     const { getStrategyById } = await import("../db");
     const freshStrategy = await getStrategyById(strategy.id);
     const strategyState = loadStrategyState(freshStrategy || strategy);
+    const effectiveStrategy = freshStrategy || strategy;
+    const effectiveMartinState =
+      effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
+        ? (effectiveStrategy.martinState as Record<string, unknown>)
+        : {};
+    const boundSnapshotConfig = getBoundStrategyConfig(
+      effectiveMartinState,
+      strategy.strategyKey || "",
+    ) ?? {};
 
     console.log(`[AutoTradeSignalGenerator] Analysing strategy ${strategy.id} (${strategy.name}) | engine=${strategy.strategyKey} | kLine=${kLinePeriod}m | lastPrice=${marketData.lastPrice}`);
 
     // Handle V7.0 strategies (KAMA_3K_TORNADO_V70) — must be checked before V6.1
     if (strategy.strategyKey === 'KAMA_3K_TORNADO_V70' && engine instanceof BaseStrategyV35) {
-      const strat70 = freshStrategy || strategy;
-      const martinStateRaw = (strat70.martinState && typeof strat70.martinState === 'object') ? strat70.martinState as Record<string, unknown> : {};
-      const v70Cfg = (martinStateRaw.__v70Config && typeof martinStateRaw.__v70Config === 'object') ? martinStateRaw.__v70Config as Record<string, unknown> : {};
+      const martinStateRaw = effectiveMartinState;
       const mergedConfig = {
         ...(engine.defaultConfig || {}),
-        ...(typeof v70Cfg === 'object' ? v70Cfg as Record<string, number | string | boolean> : {}),
+        ...(boundSnapshotConfig as Record<string, number | string | boolean>),
       };
 
       const v70Engine = new StrategyKama3kV70();
@@ -246,12 +269,10 @@ export async function generateTradingSignal(
     // Handle V6.1 strategies (KAMA_3K_HF_V61) — must be checked before V5.0 and generic V3.5
     // 修復：正確調用 generateSignalV61（包含 entry_zone_mode + direction_mode 區域觸發邏輯）
     else if (strategy.strategyKey === 'KAMA_3K_HF_V61' && engine instanceof BaseStrategyV35) {
-      const strat = freshStrategy || strategy;
-      const martinStateRaw = (strat.martinState && typeof strat.martinState === 'object') ? strat.martinState as Record<string, unknown> : {};
-      const v61Cfg = (martinStateRaw.__v61Config && typeof martinStateRaw.__v61Config === 'object') ? martinStateRaw.__v61Config as Record<string, unknown> : {};
+      const martinStateRaw = effectiveMartinState;
       const mergedConfig = {
         ...(engine.defaultConfig || {}),
-        ...(typeof v61Cfg === 'object' ? v61Cfg as Record<string, number | string | boolean> : {}),
+        ...(boundSnapshotConfig as Record<string, number | string | boolean>),
       };
 
       // 創建 V6.1 引擎實例（帶入用戶配置）
@@ -308,16 +329,12 @@ export async function generateTradingSignal(
     // Handle V5.0 strategies (KAMA_3K_ULTIMATE_V50) — must be checked before generic V3.5
     else if (strategy.strategyKey === 'KAMA_3K_ULTIMATE_V50' && engine instanceof BaseStrategyV35) {
       // V5.0: 正確讀取 __v50Config（存在 martinState 中）
-      const strat50 = freshStrategy || strategy;
-      const martinStateRaw = (strat50.martinState && typeof strat50.martinState === 'object') ? strat50.martinState as Record<string, unknown> : {};
-      const v50Cfg = (martinStateRaw.__v50Config && typeof martinStateRaw.__v50Config === 'object') ? martinStateRaw.__v50Config as Record<string, unknown> : {};
-
       const v50Instance: StrategyInstanceConfig = {
         ...strategy,
         positionSize: parseFloat(strategy.positionSize || '0'),
         config: {
           ...(engine.defaultConfig || {}),
-          ...(v50Cfg as Record<string, number | string | boolean>),
+          ...(boundSnapshotConfig as Record<string, number | string | boolean>),
           martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
           maxMartinLevel: strategy.maxMartinLevel,
           martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || '0'),
@@ -332,7 +349,7 @@ export async function generateTradingSignal(
         state: strategyState,
       } as StrategyInstanceConfig;
 
-      const config: Record<string, any> = { ...(engine.defaultConfig || {}), ...(v50Cfg as Record<string, any>), enable_time_filter: false, kama_slope_min: 0.02 };
+      const config: Record<string, any> = { ...(engine.defaultConfig || {}), ...(boundSnapshotConfig as Record<string, any>), enable_time_filter: false, kama_slope_min: 0.02 };
 
       // ===== V5.0 自主 KAMA 雙線方向判斷（仿 V6.1 模式）=====
       // 從 K 線數據計算 KAMA 快線和慢線，決定入場方向
@@ -451,8 +468,9 @@ export async function generateTradingSignal(
           ...strategy,
           positionSize: parseFloat(strategy.positionSize || '0'),
           config: {
-            // Start with the strategy engine's default config
+            // 快照原始配置覆蓋引擎預設；身份不一致時不會回傳配置。
             ...(engine.defaultConfig || {}),
+            ...(boundSnapshotConfig as Record<string, number | string | boolean>),
             // Override with strategy-specific fields from the 'strategies' table
             martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
             maxMartinLevel: strategy.maxMartinLevel,
@@ -489,8 +507,9 @@ export async function generateTradingSignal(
           ...strategy,
           positionSize: parseFloat(strategy.positionSize || '0'),
           config: {
-            // Start with the strategy engine's default config
+            // 未來註冊的新策略亦自動取得完整快照配置。
             ...(engine.defaultConfig || {}),
+            ...(boundSnapshotConfig as Record<string, number | string | boolean>),
             // Override with strategy-specific fields from the 'strategies' table
             martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
             maxMartinLevel: strategy.maxMartinLevel,

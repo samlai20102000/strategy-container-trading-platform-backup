@@ -21,6 +21,7 @@ import { backtestRouter } from "./routers/backtest.router";
 import { autoTradeRouter } from "./routers/autoTrade.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
+import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -680,11 +681,7 @@ const strategiesRouter = router({
         const existingState = (existing.martinState && typeof existing.martinState === 'object')
           ? existing.martinState as Record<string, unknown>
           : {};
-        const configKeys = ['__v35Config', '__v50Config', '__v61Config', '__v2_0Config', '__v70Config'];
-        const preserved: Record<string, unknown> = {};
-        for (const key of configKeys) {
-          if (existingState[key] !== undefined) preserved[key] = existingState[key];
-        }
+        const preserved = pickStrategyConfigState(existingState);
         data.martinState = {
           ...preserved,
           avgPrice: 0, capital: 0, cooldownUntil: 0, currentLayer: 0,

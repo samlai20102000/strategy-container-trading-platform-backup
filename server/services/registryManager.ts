@@ -12,6 +12,7 @@ import {
   initStrategyStudio,
   type StrategyMeta,
 } from "./strategyStudio";
+import { attachSnapshotConfig } from "./strategySnapshotConfig";
 
 export interface RegistryDefinition {
   key: string;
@@ -250,24 +251,33 @@ export class RegistryManager {
     }
 
     // 3. 驗證定義匹配
-    const snapshotKey = (snapshot as any).strategyKey;
+    const snapshotKey = snapshot.strategyKey;
     const instanceKey = instance.strategyKey;
-
-    if (snapshotKey && instanceKey && snapshotKey !== instanceKey) {
+    if (!snapshotKey) {
+      throw new Error("快照缺少策略引擎身份，無法安全套用");
+    }
+    const definition = await this.getStrategyDefinition(snapshotKey);
+    if (!definition?.loaded || !definition.isActive) {
+      throw new Error(`快照綁定的策略引擎「${snapshotKey}」目前未載入或已停用`);
+    }
+    if (!instanceKey || snapshotKey !== instanceKey) {
       throw new Error(
-        `快照的策略類型 (${snapshotKey}) 與目標實例 (${instanceKey}) 不匹配，無法套用`,
+        `快照的策略類型 (${snapshotKey}) 與目標實例 (${instanceKey || "未綁定"}) 不匹配，無法套用`,
       );
     }
 
-    // 4. 套用配置到實例的 martinState.__v35Config
-    const config = (snapshot as any).config as Record<string, unknown>;
+    // 4. 以通用契約保存原始配置及快照來源；既有版本相容欄位會自動同步。
+    const config = (snapshot.config as Record<string, unknown>) || {};
     const prevState =
       instance.martinState && typeof instance.martinState === "object"
         ? (instance.martinState as Record<string, unknown>)
         : { lossCount: 0, currentLot: Number(instance.positionSize), lastEntryPrice: 0 };
 
     await db.updateStrategy(targetInstanceId, userId, {
-      martinState: { ...prevState, __v35Config: config },
+      martinState: attachSnapshotConfig(prevState, snapshotKey, config, {
+        snapshotId: snapshot.id,
+        snapshotName: snapshot.snapshotName,
+      }),
     });
 
     return { success: true, message: "參數已成功套用到策略實例" };

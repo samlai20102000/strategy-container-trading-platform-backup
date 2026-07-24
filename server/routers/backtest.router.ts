@@ -22,6 +22,36 @@ import { validateRiskSettings, buildEnvironmentSnapshot, ENGINE_VERSION } from "
 import { getDb } from "../db";
 import { parameterSnapshots, strategies } from "../../drizzle/schema";
 import { eq, desc, and } from "drizzle-orm";
+import {
+  assertSnapshotPositionMode,
+  attachSnapshotConfig,
+} from "../services/strategySnapshotConfig";
+
+function assertRegisteredStrategy(strategyKey: string): void {
+  const isRegistered = listRegisteredStrategies().some((strategy) => strategy.key === strategyKey);
+  if (!isRegistered) {
+    throw new Error(
+      `快照綁定的策略引擎「${strategyKey}」目前未註冊，為避免使用錯誤引擎，已停止建立。請先在策略工作室註冊此引擎。`,
+    );
+  }
+}
+
+function finiteNumber(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveKLineMinutes(config: Record<string, unknown>, timeframe: unknown): number {
+  const configured = finiteNumber(config.K_Line_Period, 0);
+  if (configured > 0) return Math.max(1, Math.round(configured));
+  if (typeof timeframe !== "string") return 15;
+
+  const match = timeframe.trim().match(/^(\d+)(m|h|d)$/i);
+  if (!match) return 15;
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  return amount * (unit === "d" ? 1440 : unit === "h" ? 60 : 1);
+}
 
 const backtestRequestSchema = z.object({
   strategyKey: z.string().min(1),
@@ -411,37 +441,25 @@ export const backtestRouter = router({
         .limit(1);
       if (!strategy) throw new Error("目標策略不存在");
 
-      const config = snapshot.config as Record<string, any> || {};
-      const snapshotKey = snapshot.strategyKey || '';
+      const config = (snapshot.config as Record<string, unknown>) || {};
+      const snapshotKey = snapshot.strategyKey;
+      if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法安全套用");
+      assertRegisteredStrategy(snapshotKey);
 
-      // 根據 strategyKey 決定寫入哪個 config 子鍵
-      const configKeyMap: Record<string, string> = {
-        'KAMA_3K_ULTIMATE_V50': '__v50Config',
-        'strategy_20415': '__v2_0Config',
-        'KAMA_3K_HF_V61': '__v61Config',
-        'KAMA_3K_TORNADO_V70': '__v70Config',
-        '20415_KAMA_MARTIN_V35': '__v35Config',
-      };
-      const targetConfigKey = configKeyMap[snapshotKey] || '__v35Config';
-
-      // 更新 martinState 中對應的 config 子鍵
-      const currentState = (strategy.martinState as any) || {};
-      const updatedState = {
-        ...currentState,
-        [targetConfigKey]: config,
-      };
-
-      // 同步更新策略表的馬丁基礎欄位（Martin_Multiplier, Max_Layers, Martin_Step_Pct, Martin_Layers）
-      const martinLayers = config.Martin_Layers;
-      const martinLayersStr = typeof martinLayers === 'string' ? martinLayers : martinLayers ? JSON.stringify(martinLayers) : '';
-
-      // 將 Martin_Layers 寫入對應的 config 子鍵（確保前端能讀到）
-      if (martinLayersStr) {
-        updatedState[targetConfigKey] = {
-          ...updatedState[targetConfigKey],
-          Martin_Layers: martinLayersStr,
-        };
+      if (!strategy.strategyKey || strategy.strategyKey !== snapshotKey) {
+        throw new Error(
+          `快照引擎（${snapshotKey}）與目標策略引擎（${strategy.strategyKey || "未綁定"}）不一致，已拒絕套用。`,
+        );
       }
+
+      const currentState =
+        strategy.martinState && typeof strategy.martinState === "object"
+          ? (strategy.martinState as Record<string, unknown>)
+          : {};
+      const updatedState = attachSnapshotConfig(currentState, snapshotKey, config, {
+        snapshotId: snapshot.id,
+        snapshotName: snapshot.snapshotName,
+      });
 
       await db.update(strategies)
         .set({
@@ -466,7 +484,7 @@ export const backtestRouter = router({
       positionMode: z.enum(['quantity', 'usdt']).default('usdt'),
       leverage: z.number().int().min(1).max(125).default(1),
       direction: z.enum(['long', 'short', 'both']).default('both'),
-      strategyKey: z.string().max(100).optional().nullable(),
+      orderType: z.enum(['market', 'limit']).default('market'),
     }))
     .mutation(async ({ input, ctx }) => {
       const userId = ctx.user?.id;
@@ -488,10 +506,19 @@ export const backtestRouter = router({
       const keyRecord = await getApiKeyById(input.apiKeyId, userId);
       if (!keyRecord) throw new Error("選擇的 API 金鑰不存在");
 
-      // 從快照 config 提取馬丁參數
-      const config = snapshot.config as Record<string, any> || {};
-      const martinLayers = config.Martin_Layers;
-      const martinLayersStr = typeof martinLayers === 'string' ? martinLayers : martinLayers ? JSON.stringify(martinLayers) : '';
+      const snapshotKey = snapshot.strategyKey;
+      if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法建立自動交易策略");
+      assertRegisteredStrategy(snapshotKey);
+
+      const config = (snapshot.config as Record<string, unknown>) || {};
+      const backtestSettings =
+        snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
+          ? (snapshot.backtestSettings as Record<string, unknown>)
+          : {};
+      const positionMode = assertSnapshotPositionMode(
+        input.positionMode,
+        backtestSettings,
+      );
 
       // 生成 webhookSecret
       const { generateWebhookSecret } = await import('../lib/crypto');
@@ -502,68 +529,52 @@ export const backtestRouter = router({
       const insertResult: any = await createStrategy({
         userId,
         name: input.name,
-        description: `從快照「${snapshot.snapshotName || 'unnamed'}」導入`,
+        description: `從快照「${snapshot.snapshotName || '未命名'}」導入；引擎已鎖定為 ${snapshotKey}`,
         apiKeyId: input.apiKeyId,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
         positionSize: String(input.positionSize),
         leverage: input.leverage,
         direction: input.direction,
-        orderType: 'market',
+        orderType: input.orderType,
         enabled: true,
         webhookSecret,
-        maxPositionPct: '0',
-        stopLossPct: '0',
-        takeProfitPct: '0',
-        maxDailyLoss: '0',
+        maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
+        stopLossPct: String(finiteNumber(config.stop_loss_pct, 0)),
+        takeProfitPct: String(finiteNumber(config.Target_TP_Pct, 0)),
+        maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
         martinMultiplier: String(config.Martin_Multiplier ?? 1),
-        maxMartinLevel: config.Max_Layers ?? 1,
+        maxMartinLevel: Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
         martinSpacingPct: String(config.Martin_Step_Pct ?? 0),
-        martinState: (() => {
-          const effectiveKey = input.strategyKey || snapshot.strategyKey || null;
-          const isV61 = effectiveKey === 'KAMA_3K_HF_V61';
-          const base: Record<string, any> = {
+        martinState: attachSnapshotConfig(
+          {
             lossCount: 0,
             currentLot: input.positionSize,
             lastEntryPrice: 0,
-          };
-          if (isV61) {
-            // V6.1 策略：將快照 config 存入 __v61Config
-            base.__v61Config = {
-              ...config,
-              Martin_Layers: martinLayersStr,
-            };
-            // 同時保留 __v35Config 以相容共用欄位
-            base.__v35Config = {
-              Martin_Layers: martinLayersStr,
-              Reentry_On_Trend: config.Reentry_On_Trend !== false,
-              Max_Loss_USDT: config.Max_Loss_USDT ?? 0,
-              Max_Loss_Pct: config.Max_Loss_Pct ?? 6,
-              Callback_Pct: config.Callback_Pct ?? 0.1,
-              K_Line_Period: config.K_Line_Period ?? 15,
-              Initial_Capital: config.Initial_Capital ?? 10000,
-              First_Order_Pct: config.First_Order_Pct ?? 0.5,
-            };
-          } else {
-            base.__v35Config = {
-              Martin_Layers: martinLayersStr,
-              Reentry_On_Trend: config.Reentry_On_Trend !== false,
-              Max_Loss_USDT: config.Max_Loss_USDT ?? 0,
-              Max_Loss_Pct: config.Max_Loss_Pct ?? 6,
-              Callback_Pct: config.Callback_Pct ?? 0.1,
-              K_Line_Period: config.K_Line_Period ?? 15,
-              Initial_Capital: config.Initial_Capital ?? 10000,
-              First_Order_Pct: config.First_Order_Pct ?? 0.5,
-            };
-          }
-          return base;
-        })(),
-        strategyKey: input.strategyKey || snapshot.strategyKey || null,
-        positionMode: input.positionMode,
+          },
+          snapshotKey,
+          config,
+          {
+            snapshotId: snapshot.id,
+            snapshotName: snapshot.snapshotName,
+          },
+        ),
+        strategyKey: snapshotKey,
+        positionMode,
+        positionSizeObject: { value: input.positionSize, mode: positionMode },
+        tradeMode: 'webhook',
+        kLinePeriod: resolveKLineMinutes(config, backtestSettings.timeframe),
+        reentryEnabled: config.Reentry_On_Trend !== false,
       });
 
       const newId = insertResult?.[0]?.insertId;
-      return { success: true, strategyId: newId, message: `已從快照建立新策略「${input.name}」` };
+      return {
+        success: true,
+        strategyId: newId,
+        strategyKey: snapshotKey,
+        positionMode,
+        message: `已從快照建立新策略「${input.name}」，並鎖定原引擎 ${snapshotKey}`,
+      };
     }),
 
   /** V5.3: 直接套用配置到策略實例（含版本校驗，不需先存快照） */
@@ -594,38 +605,22 @@ export const backtestRouter = router({
       const instanceKey = (instance as any).strategyKey;
       const snapshotKey = input.strategyKey;
 
-      if (instanceKey && snapshotKey && instanceKey !== snapshotKey) {
+      assertRegisteredStrategy(snapshotKey);
+      if (!instanceKey || instanceKey !== snapshotKey) {
         throw new Error(
           `⚠️ 快照的策略類型（${snapshotKey}）與目標實例（${instanceKey}）不匹配，無法套用。請選擇相同策略類型的實例。`
         );
       }
-
-      // 3. 根據 strategyKey 決定寫入哪個 config 子鍵
-      const configKeyMap: Record<string, string> = {
-        'KAMA_3K_ULTIMATE_V50': '__v50Config',
-        'strategy_20415': '__v2_0Config',
-        'KAMA_3K_HF_V61': '__v61Config',
-        'KAMA_3K_TORNADO_V70': '__v70Config',
-        '20415_KAMA_MARTIN_V35': '__v35Config',
-      };
-      const targetConfigKey = configKeyMap[snapshotKey] || '__v35Config';
 
       const prevState =
         (instance as any).martinState && typeof (instance as any).martinState === "object"
           ? ((instance as any).martinState as Record<string, unknown>)
           : { lossCount: 0, currentLot: Number(instance.positionSize), lastEntryPrice: 0 };
 
-      const config = input.snapshotConfig as Record<string, any>;
-
-      // 確保 Martin_Layers 以字串形式存入
-      const martinLayers = config.Martin_Layers;
-      const martinLayersStr = typeof martinLayers === 'string' ? martinLayers : martinLayers ? JSON.stringify(martinLayers) : '';
-      const configToStore = martinLayersStr ? { ...config, Martin_Layers: martinLayersStr } : config;
-
-      const updatedState = {
-        ...prevState,
-        [targetConfigKey]: configToStore,
-      };
+      const config = input.snapshotConfig as Record<string, unknown>;
+      const updatedState = attachSnapshotConfig(prevState, snapshotKey, config, {
+        snapshotName: "直接套用配置",
+      });
 
       await db.update(strategies)
         .set({

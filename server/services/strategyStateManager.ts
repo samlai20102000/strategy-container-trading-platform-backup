@@ -9,6 +9,7 @@ import { updateStrategyMartinState, getStrategyById } from "../db";
 import type { StrategyState } from "../strategies/base";
 import { createInitialStrategyState } from "../strategies/base";
 import type { ExchangeAdapter } from "../exchanges/types";
+import { pickStrategyConfigState } from "./strategySnapshotConfig";
 
 /**
  * 從策略記錄載入 V3.5 完整狀態
@@ -26,7 +27,7 @@ export function loadStrategyState(strategy: Strategy): StrategyState {
 
 /**
  * 保存 V3.5 狀態到 DB（寫入 strategies.martinState JSON 欄位）
- * 保留已存在的策略配置子鍵（__v35Config/__v50Config/__v61Config/__v2_0Config）
+ * 保留已存在的所有策略配置與快照來源子鍵（所有 __* 欄位）
  */
 export async function saveStrategyState(strategyId: number, state: StrategyState): Promise<void> {
   // 先讀取現有 martinState 以保留配置子鍵
@@ -35,14 +36,8 @@ export async function saveStrategyState(strategyId: number, state: StrategyState
     ? strategy.martinState as Record<string, unknown>
     : {};
   
-  // 保留配置子鍵
-  const configKeys = ['__v35Config', '__v50Config', '__v61Config', '__v2_0Config', '__v70Config'];
-  const preserved: Record<string, unknown> = {};
-  for (const key of configKeys) {
-    if (existing[key] !== undefined) {
-      preserved[key] = existing[key];
-    }
-  }
+  // 通用保留規則：未來策略新增 __customConfig 等欄位時毋須再改此處。
+  const preserved = pickStrategyConfigState(existing);
 
   const merged = { ...preserved, ...(state as unknown as Record<string, unknown>) };
   await updateStrategyMartinState(strategyId, merged as unknown as {
