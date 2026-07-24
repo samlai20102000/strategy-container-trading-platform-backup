@@ -22,6 +22,11 @@ import { autoTradeRouter } from "./routers/autoTrade.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
 import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
+import {
+  assertValidV25Config,
+  deriveV25MaxMartinLayer,
+  V25_STRATEGY_KEY,
+} from "../shared/strategies/kama3kBreakoutV25";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -260,6 +265,33 @@ const strategyInputSchema = z.object({
   maxMartinLevel: z.number().int().min(1).default(1),
   martinSpacingPct: z.number().min(0).default(0),
   strategyKey: z.string().max(100).optional().nullable(),
+  // V2.5：KAMA 三K突破｜階梯式馬丁（無固定層數上限）
+  v25Config: z
+    .object({
+      KAMA_Fast_Length: z.number().int().min(5).max(200),
+      p2_fastest: z.number().int().min(2).max(20),
+      p3_slowest: z.number().int().min(1).max(10),
+      KAMA_Slow_Length: z.number().int().min(5).max(200),
+      q2_fastest: z.number().int().min(2).max(20),
+      q3_slowest: z.number().int().min(1).max(10),
+      Base_Lot_Size: z.number().min(1),
+      Hard_Stop_Loss_Pct: z.number().min(0).max(10),
+      Take_Profit_Pct: z.number().min(0).max(10),
+      Trailing_TP_Enabled: z.boolean(),
+      Trailing_Activation_Pct: z.number().min(0.1).max(5),
+      Trailing_Callback_Pct: z.number().min(0.05).max(3),
+      Martin_Enabled: z.boolean(),
+      Martin_Ranges: z.array(z.object({
+        start: z.number().int().min(1),
+        end: z.number().int().min(1),
+        multiplier: z.number().min(0.1).max(5),
+        gap: z.number().min(0.1).max(20),
+      })).min(1),
+      Reentry_On_Trend: z.boolean(),
+      K_Line_Period: z.number().int().min(1).max(1440),
+    })
+    .partial()
+    .optional(),
   // Pasted_content_21 核心優化 + V3.7 硬止損（Pasted_content_23），存入 martinState.__v35Config
   // V3.7：❌ Kama_Reversal_Min_Layer 已移除，改用 Max_Loss_Pct 純硬止損
   v35Config: z
@@ -505,6 +537,19 @@ const strategiesRouter = router({
         const layersErr = validateMartinLayersJson(input.v35Config.Martin_Layers);
         if (layersErr) throw new TRPCError({ code: "BAD_REQUEST", message: `階梯式馬丁分層設定錯誤：${layersErr}` });
       }
+      let v25Config: ReturnType<typeof assertValidV25Config> | undefined;
+      if (input.strategyKey === V25_STRATEGY_KEY) {
+        try {
+          v25Config = assertValidV25Config(input.v25Config);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `V2.5 參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+      const firstV25Range = v25Config?.Martin_Ranges[0];
+      const resolvedPositionSize = v25Config?.Base_Lot_Size ?? input.positionSize;
       // V5.5：v2.0 參數驗證（新 EMA 馬丁策略無需 Martin_Layers 驗證）
       const webhookSecret = generateWebhookSecret();
       const insertResult: any = await db.createStrategy({
@@ -514,19 +559,21 @@ const strategiesRouter = router({
         apiKeyId: input.apiKeyId,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
-        positionSize: String(input.positionSize),
+        positionSize: String(resolvedPositionSize),
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
         enabled: true,
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
-        stopLossPct: String(input.stopLossPct),
-        takeProfitPct: String(input.takeProfitPct),
+        stopLossPct: String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
+        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: String(input.martinMultiplier),
-        maxMartinLevel: input.maxMartinLevel,
-        martinSpacingPct: String(input.martinSpacingPct),
+        martinMultiplier: String(firstV25Range?.multiplier ?? input.martinMultiplier),
+        maxMartinLevel: v25Config
+          ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
+          : input.maxMartinLevel,
+        martinSpacingPct: String(firstV25Range?.gap ?? input.martinSpacingPct),
         martinState: {
           lossCount: 0,
           currentLot: input.positionSize,
@@ -536,9 +583,15 @@ const strategiesRouter = router({
           ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
           ...(input.v2_0Config ? { __v2_0Config: input.v2_0Config } : {}),
           ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
+          ...(v25Config ? { __v25Config: v25Config } : {}),
         },
         strategyKey: input.strategyKey || null,
-        positionMode: input.positionMode,
+        positionMode: v25Config ? "usdt" : input.positionMode,
+        ...(v25Config ? {
+          positionSizeObject: { value: resolvedPositionSize, mode: "usdt" as const },
+          kLinePeriod: v25Config.K_Line_Period,
+          reentryEnabled: v25Config.Reentry_On_Trend,
+        } : {}),
       });
       // T3：回傳新建策略的 Webhook URL，供前端顯示成功引導彈窗
       const newId: number | undefined = insertResult?.[0]?.insertId;
@@ -576,6 +629,33 @@ const strategiesRouter = router({
       if (input.martinSpacingPct !== undefined) data.martinSpacingPct = String(input.martinSpacingPct);
       if (input.strategyKey !== undefined) data.strategyKey = input.strategyKey || null;
       if (input.positionMode !== undefined) data.positionMode = input.positionMode;
+      // V2.5：編輯時重用新增／回測／快照的同一嚴格契約，並保留既有持倉運行狀態。
+      if (input.v25Config !== undefined) {
+        let v25Config: ReturnType<typeof assertValidV25Config>;
+        try {
+          v25Config = assertValidV25Config(input.v25Config);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `V2.5 參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        const prevState =
+          existing.martinState && typeof existing.martinState === "object"
+            ? (existing.martinState as Record<string, unknown>)
+            : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
+        const firstRange = v25Config.Martin_Ranges[0];
+        data.martinState = { ...prevState, __v25Config: v25Config };
+        data.positionSize = String(v25Config.Base_Lot_Size);
+        data.positionMode = "usdt";
+        data.stopLossPct = String(v25Config.Hard_Stop_Loss_Pct);
+        data.takeProfitPct = String(v25Config.Take_Profit_Pct);
+        data.martinMultiplier = String(firstRange?.multiplier ?? 1);
+        data.maxMartinLevel = Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges));
+        data.martinSpacingPct = String(firstRange?.gap ?? 0);
+        data.kLinePeriod = v25Config.K_Line_Period;
+        data.reentryEnabled = v25Config.Reentry_On_Trend;
+      }
       // Pasted_content_21：更新 __v35Config（保留現有運行狀態如 lossCount/currentLot）
       if (input.v35Config !== undefined) {
         const layersErr = validateMartinLayersJson(input.v35Config.Martin_Layers ?? "");

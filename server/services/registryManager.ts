@@ -13,6 +13,11 @@ import {
   type StrategyMeta,
 } from "./strategyStudio";
 import { attachSnapshotConfig } from "./strategySnapshotConfig";
+import {
+  assertValidV25Config,
+  deriveV25MaxMartinLayer,
+  V25_STRATEGY_KEY,
+} from "../../shared/strategies/kama3kBreakoutV25";
 
 export interface RegistryDefinition {
   key: string;
@@ -267,7 +272,20 @@ export class RegistryManager {
     }
 
     // 4. 以通用契約保存原始配置及快照來源；既有版本相容欄位會自動同步。
-    const config = (snapshot.config as Record<string, unknown>) || {};
+    const rawConfig = (snapshot.config as Record<string, unknown>) || {};
+    let config: Record<string, unknown> = { ...rawConfig };
+    let v25Config: ReturnType<typeof assertValidV25Config> | undefined;
+    if (snapshotKey === V25_STRATEGY_KEY) {
+      try {
+        v25Config = assertValidV25Config(rawConfig);
+        config = { ...v25Config };
+      } catch (error) {
+        throw new Error(
+          `V2.5 快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    const firstV25Range = v25Config?.Martin_Ranges[0];
     const prevState =
       instance.martinState && typeof instance.martinState === "object"
         ? (instance.martinState as Record<string, unknown>)
@@ -278,6 +296,18 @@ export class RegistryManager {
         snapshotId: snapshot.id,
         snapshotName: snapshot.snapshotName,
       }),
+      ...(v25Config ? {
+        positionSize: String(v25Config.Base_Lot_Size),
+        positionMode: "usdt" as const,
+        positionSizeObject: { value: v25Config.Base_Lot_Size, mode: "usdt" as const },
+        stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
+        takeProfitPct: String(v25Config.Take_Profit_Pct),
+        martinMultiplier: String(firstV25Range?.multiplier ?? 1),
+        maxMartinLevel: Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)),
+        martinSpacingPct: String(firstV25Range?.gap ?? 0),
+        kLinePeriod: v25Config.K_Line_Period,
+        reentryEnabled: v25Config.Reentry_On_Trend,
+      } : {}),
     });
 
     return { success: true, message: "參數已成功套用到策略實例" };

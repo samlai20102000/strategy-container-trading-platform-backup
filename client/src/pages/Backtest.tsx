@@ -48,6 +48,12 @@ import { SymbolCombobox } from "@/components/SymbolCombobox";
 import DynamicForm from "@/components/DynamicForm";
 import type { SchemaConfig } from "@/components/DynamicForm";
 import { useBacktestWs } from "@/hooks/useBacktestWs";
+import { V25ConfigPanel } from "@/components/V25ConfigPanel";
+import {
+  V25_STRATEGY_KEY,
+  normalizeV25Config,
+  validateV25Config,
+} from "@shared/strategies/kama3kBreakoutV25";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -142,6 +148,8 @@ export default function Backtest() {
     if (strategyKey === 'strategy_20415') return false;
     // V6.1 高頻掃射策略使用深度定制面板（需要 V4.0 風格馬丁分層 UI）
     if (strategyKey === 'KAMA_3K_HF_V61') return false;
+    // V2.5 使用共享參數契約驅動的專用面板
+    if (strategyKey === V25_STRATEGY_KEY) return false;
     // 其他策略如果有 schemaConfig 則使用 DynamicForm
     return !!selectedSchemaConfig;
   }, [strategyKey, selectedSchemaConfig]);
@@ -149,21 +157,24 @@ export default function Backtest() {
   // 策略切換時載入默認配置
   useEffect(() => {
     if (selectedStrategy?.defaultConfig) {
-      setConfigJson({ ...selectedStrategy.defaultConfig });
+      const nextConfig: Record<string, unknown> = strategyKey === V25_STRATEGY_KEY
+        ? { ...normalizeV25Config(selectedStrategy.defaultConfig) }
+        : { ...selectedStrategy.defaultConfig };
+      setConfigJson(nextConfig);
       // 🔥 同步 initialCapital 與 configJson.Initial_Capital，避免參數衝突
       const ic = selectedStrategy.defaultConfig.Initial_Capital;
       if (typeof ic === 'number' && ic > 0) {
         setInitialCapital(String(ic));
       }
       // 🔥 同步 tradeAmount 與 configJson.base_lot_size / Base_Lot_Size
-      const bls = selectedStrategy.defaultConfig.base_lot_size ?? selectedStrategy.defaultConfig.Base_Lot_Size;
+      const bls = nextConfig.base_lot_size ?? nextConfig.Base_Lot_Size;
       if (typeof bls === 'number' && bls > 0) {
         setTradeAmount(String(bls));
       } else if (typeof bls === 'object' && bls !== null && (bls as any).value) {
         setTradeAmount(String((bls as any).value));
       }
     }
-  }, [selectedStrategy]);
+  }, [selectedStrategy, strategyKey]);
 
   // 輪詢進度更新（作為 fallback）
   useEffect(() => {
@@ -212,6 +223,10 @@ export default function Backtest() {
     const startMs = new Date(startDate + "T00:00:00Z").getTime();
     const endMs = new Date(endDate + "T23:59:59Z").getTime();
     if (endMs <= startMs) return toast.error("結束日期必須晚於開始日期");
+    const v25Validation = strategyKey === V25_STRATEGY_KEY ? validateV25Config(configJson) : null;
+    if (v25Validation && !v25Validation.valid) {
+      return toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
     // O1：Martin_Layers 提交前驗證（與後端 validateMartinLayers 一致）
     if ("Martin_Layers" in configJson) {
       const layersErr = validateLayersUI(parseLayersValue(configJson.Martin_Layers));
@@ -229,10 +244,14 @@ export default function Backtest() {
         startDate: startMs,
         endDate: endMs,
         initialCapital: capital,
-        config: configJson,
+        config: strategyKey === V25_STRATEGY_KEY
+          ? { ...(v25Validation?.config ?? normalizeV25Config(configJson)) }
+          : configJson,
         exchange,
         strategyName: selectedStrategy?.name,
-        tradeAmount: Number(tradeAmount) || undefined,
+        tradeAmount: strategyKey === V25_STRATEGY_KEY
+          ? v25Validation?.config.Base_Lot_Size
+          : Number(tradeAmount) || undefined,
       });
       setJobId(id);
       utils.backtest.getQueueStatus.invalidate();
@@ -491,8 +510,14 @@ export default function Backtest() {
 
   const handleImportSnapshot = () => {
     if (!previewConfig) return;
-    // 將快照配置合併到當前 configJson
-    setConfigJson((prev) => ({ ...prev, ...previewConfig }));
+    // V2.5 以完整共享契約替換，避免合併時遺失合法 0／false；舊策略維持相容合併。
+    if (strategyKey === V25_STRATEGY_KEY) {
+      const nextConfig = normalizeV25Config(previewConfig);
+      setConfigJson({ ...nextConfig });
+      setTradeAmount(String(nextConfig.Base_Lot_Size));
+    } else {
+      setConfigJson((prev) => ({ ...prev, ...previewConfig }));
+    }
     // 同步 initialCapital
     const ic = (previewConfig as Record<string, unknown>).Initial_Capital;
     if (typeof ic === "number" && ic > 0) setInitialCapital(String(ic));
@@ -547,7 +572,15 @@ export default function Backtest() {
   };
 
   const confirmSaveSnapshot = () => {
-    const cfg = { ...configJson, Initial_Capital: Number(initialCapital) || 10000 };
+    const v25Validation = strategyKey === V25_STRATEGY_KEY ? validateV25Config(configJson) : null;
+    if (v25Validation && !v25Validation.valid) {
+      toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+      return;
+    }
+    const cfg = {
+      ...(strategyKey === V25_STRATEGY_KEY ? v25Validation?.config ?? configJson : configJson),
+      Initial_Capital: Number(initialCapital) || 10000,
+    };
     // ✅ 從回測結果中提取完整績效指標（如果已有結果）
     const reportMetrics = result?.metrics as ReportMetrics | undefined;
     const metricsPayload = reportMetrics ? {
@@ -582,9 +615,13 @@ export default function Backtest() {
         startDate,
         endDate,
         initialCapital: Number(initialCapital) || 10000,
-        tradeAmount: Number(tradeAmount) || undefined,
+        tradeAmount: strategyKey === V25_STRATEGY_KEY
+          ? v25Validation?.config.Base_Lot_Size
+          : Number(tradeAmount) || undefined,
         configJson: cfg,
-        baseLotSize: Number(tradeAmount) || undefined,
+        baseLotSize: strategyKey === V25_STRATEGY_KEY
+          ? v25Validation?.config.Base_Lot_Size
+          : Number(tradeAmount) || undefined,
         baseLotSizeMode: "usdt",
       },
     });
@@ -697,6 +734,7 @@ export default function Backtest() {
                   lang="en"
                   inputMode="decimal"
                   value={tradeAmount}
+                  disabled={strategyKey === V25_STRATEGY_KEY}
                   onChange={(e) => {
                     setTradeAmount(e.target.value);
                     const num = Number(e.target.value);
@@ -710,7 +748,11 @@ export default function Backtest() {
                   }}
                   placeholder="每次首單下單金額"
                 />
-                <p className="text-[10px] text-muted-foreground">首單固定金額，加倉按馬丁倍率遞增</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {strategyKey === V25_STRATEGY_KEY
+                    ? "由下方 V2.5 Base_Lot_Size 單一參數契約控制"
+                    : "首單固定金額，加倉按馬丁倍率遞增"}
+                </p>
               </div>
             </div>
 
@@ -729,8 +771,19 @@ export default function Backtest() {
               </div>
             )}
 
+            {strategyKey === V25_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
+              <V25ConfigPanel
+                value={configJson}
+                onChange={(nextConfig) => {
+                  setConfigJson({ ...nextConfig });
+                  setTradeAmount(String(nextConfig.Base_Lot_Size));
+                }}
+                context="backtest"
+              />
+            )}
+
             {/* 動態策略參數（UI-3：三大模組化區塊分類）- 內建策略深度定制面板 */}
-            {!useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
+            {strategyKey !== V25_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
               /** 單一參數渲染（含 UI-1/UI-2/UI-4 特殊規則） */
               const renderParam = (key: string, value: unknown) => {
                 // 任務 B2：Base_Lot_Size 雙模式（數量 / USDT）

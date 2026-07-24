@@ -8,6 +8,7 @@ export const SNAPSHOT_META_STATE_KEY = "__snapshotMeta";
  * __snapshotConfig，因此新增策略時毋須再修改此清單。
  */
 const LEGACY_CONFIG_KEY_BY_STRATEGY: Readonly<Record<string, string>> = {
+  KAMA_3K_BREAKOUT_V25: "__v25Config",
   "20415_KAMA_MARTIN_V35": "__v35Config",
   KAMA_3K_ULTIMATE_V50: "__v50Config",
   KAMA_3K_HF_V61: "__v61Config",

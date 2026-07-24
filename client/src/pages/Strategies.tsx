@@ -27,7 +27,16 @@ import MartinLayersEditor, { parseLayersValue, validateLayersUI } from "@/compon
 import { DynamicForm, type SchemaConfig, type FieldSchema } from "@/components/DynamicForm";
 import { STRATEGIES_DYNAMIC_SCHEMA, STRATEGIES_V20_SCHEMA, getSchemaForStrategy } from "./_strategies_dynamic_schema";
 import { V70ConfigPanel, serializeV70Config, deserializeV70Config, type V70Config } from "@/components/V70ConfigPanel";
+import { V25ConfigPanel } from "@/components/V25ConfigPanel";
 import { trpc } from "@/lib/trpc";
+import {
+  V25_STRATEGY_KEY,
+  createV25DefaultConfig,
+  deriveV25MaxMartinLayer,
+  normalizeV25Config,
+  validateV25Config,
+  type V25StrategyConfig,
+} from "@shared/strategies/kama3kBreakoutV25";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -140,6 +149,8 @@ type StrategyForm = {
   v7_0?: Record<string, any>;
   // V6.1：高頻掃射完整配置
   v6_1?: Record<string, any>;
+  // V2.5：KAMA 三K突破｜階梯式馬丁完整配置
+  v2_5?: V25StrategyConfig;
 };
 
 type SnapshotImportSource = {
@@ -196,6 +207,7 @@ const emptyForm: StrategyForm = {
   First_Order_Pct: "0.5",
   Max_Loss_Pct: "6",
   martin_mode: "fixed",
+  v2_5: createV25DefaultConfig(),
   v2_0: {
     ema_killer: 3,
     ema_wave: 6,
@@ -289,27 +301,33 @@ function StrategiesContent() {
       };
       const cfg = imported.config || {};
       const martinLayersJson = typeof cfg.Martin_Layers === 'string' ? cfg.Martin_Layers : cfg.Martin_Layers ? JSON.stringify(cfg.Martin_Layers) : '';
+      const isV25Import = imported.definitionKey === V25_STRATEGY_KEY;
+      const v25Config = normalizeV25Config(cfg);
       setForm({
         ...emptyForm,
         name: imported.suggestedName || `${imported.definitionKey || '未知策略'}_導入`,
         symbol: (cfg.symbol || cfg.Symbol || 'BTCUSDT').toUpperCase(),
         strategyKey: imported.definitionKey || 'none',
-        positionValue: cfg.Base_Lot_Size || cfg.First_Order_Pct || 0.01,
+        positionValue: isV25Import ? v25Config.Base_Lot_Size : (cfg.Base_Lot_Size ?? cfg.First_Order_Pct ?? 0.01),
+        positionMode: isV25Import ? "usdt" : emptyForm.positionMode,
         leverage: String(cfg.Leverage || 1),
         direction: cfg.Direction || 'both',
-        martinMultiplier: String(cfg.Martin_Multiplier || 1.5),
-        maxMartinLevel: String(cfg.Max_Layers || 11),
-        martinSpacingPct: String(cfg.Martin_Step_Pct || 2),
+        stopLossPct: isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
+        takeProfitPct: isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
+        martinMultiplier: String(isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
+        maxMartinLevel: String(isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
+        martinSpacingPct: String(isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
         martinLayersJson,
         maxLossPct: String(cfg.Max_Loss_Pct || 6),
         callbackPct: String(cfg.Callback_Pct || 0.1),
-        kLinePeriod: String(cfg.K_Line_Period || 15),
-        reentryOnTrend: cfg.Reentry_On_Trend !== false,
+        kLinePeriod: String(isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
+        reentryOnTrend: isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
         maxLossUsdt: String(cfg.Max_Loss_USDT || cfg.EscapeLossUSD || 15),
         Initial_Capital: String(cfg.Initial_Capital || 100),
         First_Order_Pct: String(cfg.First_Order_Pct || 0.5),
         Max_Loss_Pct: String(cfg.Max_Loss_Pct || 6),
         martin_mode: martinLayersJson.trim() ? 'layered' : 'fixed',
+        v2_5: isV25Import ? v25Config : createV25DefaultConfig(),
         apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : '',
       });
       setDialogOpen(true);
@@ -446,7 +464,10 @@ function StrategiesContent() {
   const openEdit = (s: NonNullable<typeof strategies>[number]) => {
     setSnapshotImportSource(null);
     const positionValue = parseFloat(s.positionSize ?? '0') || 0.01;
-    const positionMode: 'quantity' | 'usdt' = (s as any).positionMode || 'quantity';
+    const strategyKey = (s as any).strategyKey || "none";
+    const state = ((s as any).martinState as Record<string, any> | null) ?? {};
+    const isV25 = strategyKey === V25_STRATEGY_KEY;
+    const positionMode: 'quantity' | 'usdt' = isV25 ? "usdt" : ((s as any).positionMode || 'quantity');
     
     setForm({
       id: s.id,
@@ -467,7 +488,8 @@ function StrategiesContent() {
       martinMultiplier: (s as any).martinMultiplier ?? "1",
       maxMartinLevel: String((s as any).maxMartinLevel ?? 1),
       martinSpacingPct: (s as any).martinSpacingPct ?? "0",
-      strategyKey: (s as any).strategyKey || "none",
+      strategyKey,
+      v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
       // 從 martinState.__v35Config 載入 V3.7 優化參數（若存在）
       ...((): Pick<StrategyForm, "martinLayersJson" | "maxLossPct" | "callbackPct" | "kLinePeriod" | "reentryOnTrend" | "maxLossUsdt" | "Initial_Capital" | "First_Order_Pct" | "Max_Loss_Pct" | "martin_mode"> => {
         const v35 = ((s as any).martinState as Record<string, any> | null)?.__v35Config;
@@ -540,22 +562,30 @@ function StrategiesContent() {
     if (!form.name.trim()) return toast.error("請輸入策略名稱");
     if (!form.apiKeyId) return toast.error("請選擇 API 金鑰");
     if (!form.symbol.trim()) return toast.error("請輸入交易對");
-    const positionValue = parseFloat(String(form.positionValue));
+    const isV25 = form.strategyKey === V25_STRATEGY_KEY;
+    const v25Validation = isV25 ? validateV25Config(form.v2_5) : null;
+    if (v25Validation && !v25Validation.valid) {
+      return toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
+    const positionValue = isV25
+      ? (v25Validation?.config.Base_Lot_Size ?? 0)
+      : parseFloat(String(form.positionValue));
+    const effectivePositionMode: "quantity" | "usdt" = isV25 ? "usdt" : form.positionMode;
     if (!Number.isFinite(positionValue) || positionValue <= 0)
       return toast.error("倉位大小需為正數");
     // 第二輪優化 3：依交易對規格驗證（數量模式檢查最小量；USDT 模式檢查預估數量）
-    if (form.positionMode === "quantity" && selectedSpec?.minOrderQty && positionValue < selectedSpec.minOrderQty) {
+    if (effectivePositionMode === "quantity" && selectedSpec?.minOrderQty && positionValue < selectedSpec.minOrderQty) {
       return toast.error(
         `倉位小於交易所最小下單量 ${selectedSpec.minOrderQty} ${positionBaseCurrency}`,
       );
     }
-    if (form.positionMode === "usdt" && estimatedBelowMin) {
+    if (effectivePositionMode === "usdt" && estimatedBelowMin) {
       return toast.error(
         `依當前市價換算的數量低於最小下單量 ${selectedSpec?.minOrderQty} ${positionBaseCurrency}，請提高 USDT 金額`,
       );
     }
     // 第二輪優化 3：數量模式需符合步長（qtyStep 整數倍），不符合時自動向下校正並提示確認
-    if (form.positionMode === "quantity" && selectedSpec?.qtyStep && selectedSpec.qtyStep > 0) {
+    if (effectivePositionMode === "quantity" && selectedSpec?.qtyStep && selectedSpec.qtyStep > 0) {
       const step = selectedSpec.qtyStep;
       const steps = Math.round(positionValue / step);
       const remainder = Math.abs(positionValue - steps * step);
@@ -591,7 +621,7 @@ function StrategiesContent() {
         apiKeyId: parseInt(form.apiKeyId),
         symbol: form.symbol.trim().toUpperCase(),
         positionSize: positionValue,
-        positionMode: form.positionMode,
+        positionMode: effectivePositionMode,
         leverage: parseInt(form.leverage) || 1,
         direction: form.direction,
         orderType: form.orderType,
@@ -616,9 +646,10 @@ function StrategiesContent() {
       maxMartinLevel: parseInt(form.maxMartinLevel) || 1,
       martinSpacingPct: parseFloat(form.martinSpacingPct) || 0,
       strategyKey: form.strategyKey === "none" ? null : form.strategyKey,
-      positionMode: form.positionMode,
+      positionMode: effectivePositionMode,
+      v25Config: isV25 ? v25Validation?.config : undefined,
       // V3.7 優化參數（後端存入 martinState.__v35Config）
-      v35Config: (form.strategyKey !== "strategy_20415" && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
+      v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
         Martin_Layers: form.martin_mode === "layered" ? (form.martinLayersJson.trim() || "") : "",
         Reentry_On_Trend: form.reentryOnTrend,
         Max_Loss_USDT: parseFloat(form.maxLossUsdt) || 0,
@@ -1510,7 +1541,7 @@ function StrategiesContent() {
           if (!open) setSnapshotImportSource(null);
         }}
       >
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className={form.strategyKey === V25_STRATEGY_KEY ? "sm:max-w-6xl max-h-[92vh] overflow-y-auto" : "sm:max-w-lg max-h-[90vh] overflow-y-auto"}>
           <DialogHeader>
             <DialogTitle>
               {form.id ? "編輯策略" : snapshotImportSource ? "從快照建立策略" : "新增策略"}
@@ -1604,16 +1635,17 @@ function StrategiesContent() {
                 <div className="flex gap-2">
                   <Input
                     type="number"
-                    step={form.positionMode === 'usdt' ? '1' : String(selectedSpec?.qtyStep ?? 0.001)}
-                    min={form.positionMode === 'usdt' ? '1' : String(selectedSpec?.minOrderQty ?? 0.001)}
+                    step={(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') ? '1' : String(selectedSpec?.qtyStep ?? 0.001)}
+                    min={(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') ? '1' : String(selectedSpec?.minOrderQty ?? 0.001)}
                     className="flex-1"
                     value={form.positionValue}
+                    disabled={Boolean(snapshotImportSource) || form.strategyKey === V25_STRATEGY_KEY}
                     onChange={(e) => setForm({ ...form, positionValue: parseFloat(e.target.value) || 0 })}
-                    placeholder={form.positionMode === 'usdt' ? '輸入 USDT 金額' : `輸入 ${positionBaseCurrency} 數量`}
+                    placeholder={(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') ? '輸入 USDT 金額' : `輸入 ${positionBaseCurrency} 數量`}
                   />
                   <Select
-                    value={form.positionMode}
-                    disabled={Boolean(snapshotImportSource)}
+                    value={form.strategyKey === V25_STRATEGY_KEY ? "usdt" : form.positionMode}
+                    disabled={Boolean(snapshotImportSource) || form.strategyKey === V25_STRATEGY_KEY}
                     onValueChange={(v) => setForm({ ...form, positionMode: v as 'quantity' | 'usdt' })}
                   >
                     <SelectTrigger className="w-28">
@@ -1626,7 +1658,7 @@ function StrategiesContent() {
                   </Select>
                 </div>
                 {/* 第二輪優化 2：USDT 模式即時換算預覽 */}
-                {form.positionMode === 'usdt' && (
+                {(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') && (
                   <p className={`text-xs mt-1 ${estimatedBelowMin ? 'text-loss' : 'text-muted-foreground'}`}>
                     {tickerQuery.isLoading
                       ? '⏳ 正在獲取市價...'
@@ -1699,7 +1731,16 @@ function StrategiesContent() {
 
             {/* 快照配置只供檢視；真正建立時由伺服器按 snapshotId 讀取完整原始配置 */}
             {snapshotImportSource ? (
-              <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-3">
+              <div className="space-y-4">
+                {snapshotImportSource.strategyKey === V25_STRATEGY_KEY && (
+                  <V25ConfigPanel
+                    value={snapshotImportSource.config}
+                    onChange={() => undefined}
+                    disabled
+                    context="snapshot"
+                  />
+                )}
+                <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium">快照參數（唯讀）</p>
@@ -1721,7 +1762,29 @@ function StrategiesContent() {
                     </div>
                   ))}
                 </div>
+                </div>
               </div>
+            ) : form.strategyKey === V25_STRATEGY_KEY ? (
+              <V25ConfigPanel
+                value={form.v2_5}
+                onChange={(nextConfig) => {
+                  const firstRange = nextConfig.Martin_Ranges[0];
+                  setForm((prev) => ({
+                    ...prev,
+                    v2_5: nextConfig,
+                    positionValue: nextConfig.Base_Lot_Size,
+                    positionMode: "usdt",
+                    stopLossPct: String(nextConfig.Hard_Stop_Loss_Pct),
+                    takeProfitPct: String(nextConfig.Take_Profit_Pct),
+                    martinMultiplier: String(firstRange?.multiplier ?? 1),
+                    maxMartinLevel: String(Math.max(1, deriveV25MaxMartinLayer(nextConfig.Martin_Ranges))),
+                    martinSpacingPct: String(firstRange?.gap ?? 0),
+                    kLinePeriod: String(nextConfig.K_Line_Period),
+                    reentryOnTrend: nextConfig.Reentry_On_Trend,
+                  }));
+                }}
+                context="strategy"
+              />
             ) : form.strategyKey === "KAMA_3K_TORNADO_V70" ? (
               <V70ConfigPanel
                 config={deserializeV70Config(form.v7_0)}
@@ -1867,7 +1930,27 @@ function StrategiesContent() {
                 <Label>策略引擎（選用後由策略代碼決定開平倉與倉位）</Label>
                 <Select
                   value={form.strategyKey}
-                  onValueChange={(v) => setForm({ ...form, strategyKey: v })}
+                  onValueChange={(v) => {
+                    setForm((prev) => {
+                      if (v !== V25_STRATEGY_KEY) return { ...prev, strategyKey: v };
+                      const nextConfig = prev.v2_5 ?? createV25DefaultConfig();
+                      const firstRange = nextConfig.Martin_Ranges[0];
+                      return {
+                        ...prev,
+                        strategyKey: v,
+                        v2_5: nextConfig,
+                        positionValue: nextConfig.Base_Lot_Size,
+                        positionMode: "usdt",
+                        stopLossPct: String(nextConfig.Hard_Stop_Loss_Pct),
+                        takeProfitPct: String(nextConfig.Take_Profit_Pct),
+                        martinMultiplier: String(firstRange?.multiplier ?? 1),
+                        maxMartinLevel: String(Math.max(1, deriveV25MaxMartinLayer(nextConfig.Martin_Ranges))),
+                        martinSpacingPct: String(firstRange?.gap ?? 0),
+                        kLinePeriod: String(nextConfig.K_Line_Period),
+                        reentryOnTrend: nextConfig.Reentry_On_Trend,
+                      };
+                    });
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue />

@@ -30,6 +30,15 @@ import { parseMartinLayers, getStepPct, getLayerSize, getFirstOrderValue, getLay
 import { validateAndProcessMartinConfig } from "../parameterValidator";
 import { decideCloseSplit } from "../kamaReversalGuard";
 import type { BaseStrategy, MartinState, StrategyInstanceConfig } from "../../strategies/base";
+import { StrategyKama3kBreakoutV25 } from "../../strategies/v25/strategy_kama_3k_breakout_v25";
+import {
+  applyV25CloseToState,
+  applyV25FillToState,
+  createV25RuntimeState,
+  type V25CoreDecision,
+  type V25RuntimeState,
+} from "../../strategies/v25/core";
+import { V25_STRATEGY_KEY } from "../../../shared/strategies/kama3kBreakoutV25";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -142,6 +151,7 @@ export class BacktestEngine {
     const isV50 = request.strategyKey === "KAMA_3K_ULTIMATE_V50";
     const isV61 = request.strategyKey === "KAMA_3K_HF_V61";
     const isV70 = request.strategyKey === "KAMA_3K_TORNADO_V70";
+    const isV25 = request.strategyKey === V25_STRATEGY_KEY;
 
     // 合併策略默認配置（與實盤 resolveConfig 邏輯一致，依選中策略的 defaultConfig）
     const config: Record<string, unknown> = {
@@ -179,6 +189,24 @@ export class BacktestEngine {
     if (candles.length < 120) {
       throw new Error(
         `歷史數據不足（僅 ${candles.length} 根 K 線），至少需要 120 根。請縮短時間框架或調整日期區間。`,
+      );
+    }
+
+    // V2.5：逐 K 調用與實盤相同的獨立純核心，禁止落入通用 SMA 回測空殼。
+    if (isV25) {
+      if (!(strategy instanceof StrategyKama3kBreakoutV25)) {
+        throw new Error("V2.5 回測引擎類型不一致");
+      }
+      return this.runV25Backtest(
+        request,
+        strategy,
+        config,
+        candles,
+        startMs,
+        endMs,
+        commission,
+        slippage,
+        onProgress,
       );
     }
 
@@ -755,6 +783,297 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment: envSnapshotV35,
+    };
+  }
+
+  /**
+   * KAMA 三K突破 V2.5 專用回測。
+   * 使用 100 根滾動 K 線視窗，與實盤自主信號產生器一致；所有決策均由 V2.5 核心輸出。
+   */
+  private runV25Backtest(
+    request: BacktestRequest,
+    strategy: StrategyKama3kBreakoutV25,
+    rawConfig: Record<string, unknown>,
+    candles: OHLCVRow[],
+    startMs: number,
+    endMs: number,
+    commission: number,
+    slippage: number,
+    onProgress?: (pct: number, message: string) => void,
+  ): BacktestResult {
+    const config = strategy.parseConfig(rawConfig);
+    const trades: TradeRecord[] = [];
+    const equityCurve: EquityPoint[] = [];
+    let equity = request.initialCapital;
+    let tradeId = 0;
+    let state: V25RuntimeState = createV25RuntimeState({
+      capital: request.initialCapital,
+    });
+    let positionMeta: {
+      side: "long" | "short";
+      entryTime: number;
+      layers: PositionLayer[];
+    } | null = null;
+
+    const minimumBars = Math.max(
+      3,
+      config.KAMA_Fast_Length + 1,
+      config.KAMA_Slow_Length + 1,
+    );
+    const startIndex = Math.max(99, minimumBars - 1);
+    onProgress?.(
+      35,
+      `數據就緒（${candles.length} 根），啟動 V2.5 同源核心逐 K 回測...`,
+    );
+
+    const getWindow = (index: number) =>
+      candles.slice(Math.max(0, index - 99), index + 1).map((candle) => ({
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        timestamp: candle.timestamp,
+      }));
+
+    const applyEntryOrAdd = (
+      decision: V25CoreDecision,
+      timestamp: number,
+    ): void => {
+      if (!["buy", "sell", "add_long", "add_short"].includes(decision.action)) {
+        return;
+      }
+      const isLong = decision.action === "buy" || decision.action === "add_long";
+      const isInitial = decision.action === "buy" || decision.action === "sell";
+      const fillPrice = isLong
+        ? decision.price * (1 + slippage)
+        : decision.price * (1 - slippage);
+      const lotUsdt = decision.lotUsdt ?? config.Base_Lot_Size;
+      const quantity = lotUsdt / fillPrice;
+      if (!(fillPrice > 0) || !(quantity > 0)) return;
+
+      state = applyV25FillToState(
+        decision.nextState,
+        decision.action as "buy" | "sell" | "add_long" | "add_short",
+        fillPrice,
+        quantity,
+        timestamp,
+      );
+      if (isInitial || !positionMeta) {
+        positionMeta = {
+          side: isLong ? "long" : "short",
+          entryTime: timestamp,
+          layers: [{ price: fillPrice, size: quantity, time: timestamp }],
+        };
+      } else {
+        positionMeta.layers.push({ price: fillPrice, size: quantity, time: timestamp });
+      }
+    };
+
+    const applyClose = (
+      decision: V25CoreDecision,
+      timestamp: number,
+      forcedReason?: string,
+    ): void => {
+      const meta = positionMeta;
+      if (!meta || state.totalSize <= 0 || state.avgPrice <= 0) return;
+      const effectiveExitPrice =
+        meta.side === "long"
+          ? decision.price * (1 - slippage)
+          : decision.price * (1 + slippage);
+      const grossPnl =
+        meta.side === "long"
+          ? (effectiveExitPrice - state.avgPrice) * state.totalSize
+          : (state.avgPrice - effectiveExitPrice) * state.totalSize;
+      const entryNotional = meta.layers.reduce(
+        (sum, layer) => sum + layer.price * layer.size,
+        0,
+      );
+      const fees =
+        (entryNotional + effectiveExitPrice * state.totalSize) * commission;
+      const pnl = grossPnl - fees;
+      const pnlPct =
+        state.avgPrice > 0
+          ? (grossPnl / (state.avgPrice * state.totalSize)) * 100
+          : 0;
+      equity += pnl;
+      trades.push({
+        id: ++tradeId,
+        entryTime: meta.entryTime,
+        exitTime: timestamp,
+        side: meta.side,
+        entryPrice: Math.round(state.avgPrice * 100) / 100,
+        exitPrice: Math.round(effectiveExitPrice * 100) / 100,
+        size: state.totalSize,
+        pnl: Math.round(pnl * 100) / 100,
+        pnlPct: Math.round(pnlPct * 100) / 100,
+        exitReason: forcedReason ?? decision.reason,
+        martinLayer: Math.max(0, meta.layers.length - 1),
+      });
+      const closeReason = decision.closeReason ?? "OTHER";
+      state = applyV25CloseToState(
+        decision.nextState,
+        closeReason,
+        forcedReason ? false : config.Reentry_On_Trend,
+        timestamp,
+      );
+      positionMeta = null;
+    };
+
+    const firstPoint = candles[Math.min(startIndex, candles.length - 1)];
+    equityCurve.push({
+      timestamp: firstPoint.timestamp,
+      equity,
+      price: firstPoint.close,
+    });
+
+    for (let index = startIndex; index < candles.length; index += 1) {
+      const candle = candles[index];
+      const window = getWindow(index);
+      const decision = strategy.generateTradingSignal(
+        { candles: window, lastPrice: candle.close },
+        state,
+        config,
+        "both",
+        candle.close,
+      );
+
+      if (decision.action === "hold") {
+        state = decision.nextState;
+      } else if (decision.action === "close") {
+        applyClose(decision, candle.timestamp);
+
+        // 止盈後原地重入：模擬實盤下一次 15 秒掃描仍位於同一 K 棒的情況。
+        if (state.v25Runtime?.pendingReentry) {
+          const reentry = strategy.generateTradingSignal(
+            { candles: window, lastPrice: candle.close },
+            state,
+            config,
+            "both",
+            candle.close,
+          );
+          if (reentry.action === "buy" || reentry.action === "sell") {
+            applyEntryOrAdd(reentry, candle.timestamp);
+          } else {
+            state = reentry.nextState;
+          }
+        }
+      } else {
+        applyEntryOrAdd(decision, candle.timestamp);
+      }
+
+      const activePosition = positionMeta as {
+        side: "long" | "short";
+        entryTime: number;
+        layers: PositionLayer[];
+      } | null;
+      const unrealizedPnl =
+        activePosition && state.totalSize > 0
+          ? activePosition.side === "long"
+            ? (candle.close - state.avgPrice) * state.totalSize
+            : (state.avgPrice - candle.close) * state.totalSize
+          : 0;
+      equityCurve.push({
+        timestamp: candle.timestamp,
+        equity: Math.round((equity + unrealizedPnl) * 100) / 100,
+        price: candle.close,
+      });
+
+      if (index % 2000 === 0) {
+        const progress =
+          35 + Math.floor(((index - startIndex) / (candles.length - startIndex)) * 60);
+        onProgress?.(
+          progress,
+          `V2.5 同源核心回測 ${index}/${candles.length}（${progress}%）...`,
+        );
+      }
+    }
+
+    if (positionMeta) {
+      const last = candles[candles.length - 1];
+      applyClose(
+        {
+          action: "close",
+          reason: "回測結束強制平倉",
+          price: last.close,
+          closeReason: "OTHER",
+          nextState: state,
+          metrics: {
+            kamaFast: null,
+            kamaSlow: null,
+            isLongEntry: false,
+            isShortEntry: false,
+            profitPct: null,
+            peakProfitPct: null,
+            nextMartinLayer: null,
+          },
+        },
+        last.timestamp,
+        "回測結束強制平倉",
+      );
+      equityCurve.push({
+        timestamp: last.timestamp,
+        equity: Math.round(equity * 100) / 100,
+        price: last.close,
+      });
+    }
+
+    onProgress?.(95, "計算 V2.5 績效指標...");
+    const metrics = calculatePerformance(
+      trades,
+      equityCurve,
+      request.initialCapital,
+    );
+    const runId = makeRunId(request.strategyKey, request.symbol);
+    const summary = `V2.5 回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根 K 線，${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
+
+    try {
+      const db = getBacktestDatabase();
+      db.saveBacktestResult(
+        {
+          run_id: runId,
+          strategy_key: request.strategyKey,
+          symbol: request.symbol,
+          timeframe: request.timeframe,
+          start_date: startMs,
+          end_date: endMs,
+          initial_capital: request.initialCapital,
+          config: JSON.stringify(config),
+          status: "completed",
+          created_at: Date.now(),
+        },
+        trades,
+      );
+      db.savePerformanceMetrics(runId, metrics, downsample(equityCurve, 2000));
+    } catch (error) {
+      console.warn("[Backtest V2.5] 結果持久化失敗（不影響回傳）:", error);
+    }
+
+    const environment = buildEnvironmentSnapshot(
+      request.symbol,
+      request.timeframe,
+      startMs,
+      endMs,
+      candles.length,
+      request.initialCapital,
+      commission,
+      slippage,
+      1,
+      candles[0]?.close,
+      candles[candles.length - 1]?.close,
+    );
+    onProgress?.(100, summary);
+    return {
+      runId,
+      strategyKey: request.strategyKey,
+      strategyName: strategy.name,
+      trades,
+      metrics,
+      equityCurve: downsample(equityCurve, 2000),
+      config: { ...config },
+      summary,
+      candleCount: candles.length,
+      environment,
     };
   }
 

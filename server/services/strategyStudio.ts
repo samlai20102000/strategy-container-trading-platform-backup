@@ -12,6 +12,7 @@ import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { BaseStrategy } from "../strategies/base";
 import { Strategy20415 } from "../strategies/builtin/strategy20415";
+import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
 import { StrategyKama3kV35 } from "../strategies/v35/strategy_kama_3k_v35";
 import { StrategyKama3kV50 } from "../strategies/v50/strategy_kama_3k_v50";
 import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
@@ -24,7 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CUSTOM_DIR = path.resolve(__dirname, "../strategies/custom");
 
 /** 內建策略 key 清單，受保護 */
-export const BUILT_IN_KEYS = ["strategy_20415", "20415_KAMA_MARTIN_V35", "KAMA_3K_ULTIMATE_V50", "KAMA_3K_HF_V61", "KAMA_3K_TORNADO_V70"] as const;
+export const BUILT_IN_KEYS = [
+  "strategy_20415",
+  "KAMA_3K_BREAKOUT_V25",
+  "20415_KAMA_MARTIN_V35",
+  "KAMA_3K_ULTIMATE_V50",
+  "KAMA_3K_HF_V61",
+  "KAMA_3K_TORNADO_V70",
+] as const;
 
 /* ==================== 註冊中心 ==================== */
 
@@ -264,11 +272,12 @@ export async function initStrategyStudio(): Promise<void> {
 
   // 1. 註冊內建策略
   register(new Strategy20415());
+  register(new StrategyKama3kBreakoutV25());
   register(new StrategyKama3kV35());
   register(new StrategyKama3kV50());
   register(new StrategyKama3kV61());
   register(new StrategyKama3kV70());
-  console.log("[StrategyStudio] 內建策略已註冊: strategy_20415, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70");
+  console.log("[StrategyStudio] 內建策略已註冊: strategy_20415, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70");
 
   // 2. 從 DB 重載所有啟用中的自訂策略
   try {

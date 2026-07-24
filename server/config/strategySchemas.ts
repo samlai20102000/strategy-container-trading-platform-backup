@@ -27,6 +27,52 @@ export interface SchemaConfig {
   fields: Record<string, FieldSchema>;
 }
 
+// ===== V2.5 KAMA 三K突破｜階梯式馬丁 Schema =====
+export const KAMA_3K_BREAKOUT_V25_SCHEMA: SchemaConfig = {
+  groups: [
+    { name: "01｜KAMA 指標核心", fields: ["KAMA_Fast_Length", "p2_fastest", "p3_slowest", "KAMA_Slow_Length", "q2_fastest", "q3_slowest"] },
+    { name: "02｜首單與資金單位", fields: ["Base_Lot_Size"] },
+    { name: "03｜三重出場防線", fields: ["Hard_Stop_Loss_Pct", "Take_Profit_Pct", "Trailing_TP_Enabled", "Trailing_Activation_Pct", "Trailing_Callback_Pct"] },
+    { name: "04｜動態階梯馬丁", fields: ["Martin_Enabled", "Martin_Ranges"] },
+    { name: "05｜趨勢重入", fields: ["Reentry_On_Trend"] },
+    { name: "06｜訊號週期", fields: ["K_Line_Period"] },
+  ],
+  fields: {
+    KAMA_Fast_Length: { key: "KAMA_Fast_Length", type: "number", label: "快線 ER 週期", default: 50, min: 5, max: 200, step: 1 },
+    p2_fastest: { key: "p2_fastest", type: "number", label: "快線最快常數", default: 10, min: 2, max: 20, step: 1 },
+    p3_slowest: { key: "p3_slowest", type: "number", label: "快線最慢常數", default: 2, min: 1, max: 10, step: 1 },
+    KAMA_Slow_Length: { key: "KAMA_Slow_Length", type: "number", label: "慢線 ER 週期", default: 50, min: 5, max: 200, step: 1 },
+    q2_fastest: { key: "q2_fastest", type: "number", label: "慢線最快常數", default: 10, min: 2, max: 20, step: 1 },
+    q3_slowest: { key: "q3_slowest", type: "number", label: "慢線最慢常數", default: 6, min: 1, max: 10, step: 1, description: "必須大於快線最慢常數" },
+    Base_Lot_Size: { key: "Base_Lot_Size", type: "number", label: "首單金額", default: 100, min: 1, step: 1, description: "固定使用 USDT，不按槓桿放大參數百分比" },
+    Hard_Stop_Loss_Pct: { key: "Hard_Stop_Loss_Pct", type: "number", label: "硬止損", default: 3, min: 0, max: 10, step: 0.1, description: "名義價格百分比；0 表示停用" },
+    Take_Profit_Pct: { key: "Take_Profit_Pct", type: "number", label: "固定止盈", default: 1, min: 0, max: 10, step: 0.1, description: "名義價格百分比；0 表示停用" },
+    Trailing_TP_Enabled: { key: "Trailing_TP_Enabled", type: "boolean", label: "啟用追蹤止盈", default: true },
+    Trailing_Activation_Pct: { key: "Trailing_Activation_Pct", type: "number", label: "追蹤啟動門檻", default: 0.8, min: 0.1, max: 5, step: 0.05, description: "%" },
+    Trailing_Callback_Pct: { key: "Trailing_Callback_Pct", type: "number", label: "追蹤回撤幅度", default: 0.4, min: 0.05, max: 3, step: 0.05, description: "不可大於啟動門檻" },
+    Martin_Enabled: { key: "Martin_Enabled", type: "boolean", label: "啟用階梯馬丁", default: true },
+    Martin_Ranges: {
+      key: "Martin_Ranges",
+      type: "array",
+      label: "馬丁範圍",
+      default: [
+        { start: 1, end: 3, multiplier: 1.2, gap: 0.8 },
+        { start: 4, end: 6, multiplier: 1.1, gap: 1.2 },
+        { start: 7, end: 10, multiplier: 1, gap: 2 },
+      ],
+      description: "可增刪任意列；第一列從 1 開始，所有範圍必須連續且不可重疊",
+      children: [
+        { key: "start", type: "number", label: "起始層", min: 1, step: 1 },
+        { key: "end", type: "number", label: "結束層", min: 1, step: 1 },
+        { key: "multiplier", type: "number", label: "倍率", min: 0.1, max: 5, step: 0.1 },
+        { key: "gap", type: "number", label: "間距 %", min: 0.1, max: 20, step: 0.1 },
+      ],
+    },
+    Reentry_On_Trend: { key: "Reentry_On_Trend", type: "boolean", label: "止盈後原地重入", default: true, description: "僅止盈平倉後保留一次同方向重入資格" },
+    K_Line_Period: { key: "K_Line_Period", type: "number", label: "K 線週期", default: 15, min: 1, max: 1440, step: 1, description: "分鐘" },
+  },
+};
+
 // ===== V4.0 KAMA+3K 動態馬丁策略 Schema =====
 export const KAMA_3K_SCHEMA: SchemaConfig = {
   groups: [
@@ -729,6 +775,9 @@ export const KAMA_3K_V61_SCHEMA: SchemaConfig = {
 
 /** 根據策略 key 獲取對應的 Schema */
 export function getSchemaForStrategy(key: string): SchemaConfig {
+  if (key === "KAMA_3K_BREAKOUT_V25") {
+    return KAMA_3K_BREAKOUT_V25_SCHEMA;
+  }
   if (key === "KAMA_3K_HF_V61") {
     return KAMA_3K_V61_SCHEMA;
   }

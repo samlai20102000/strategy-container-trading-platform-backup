@@ -16,10 +16,11 @@ import type { ParsedSignal } from "./executor";
 import { getStrategy, initStrategyStudio } from "./strategyStudio";
 import { BaseStrategyV35, KLineData, MarketData, StrategySignal, StrategyAction, StrategyInstanceConfig } from "../strategies/base";
 import { Strategy } from "../../drizzle/schema";
-import { loadStrategyState, reconcileWithExchange } from "./strategyStateManager";
+import { loadStrategyState, reconcileWithExchange, saveStrategyState } from "./strategyStateManager";
 import { TradingPairManager } from "./tradingPairManager";
 import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
+import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
 import { getBoundStrategyConfig } from "./strategySnapshotConfig";
 
 
@@ -222,8 +223,64 @@ export async function generateTradingSignal(
 
     console.log(`[AutoTradeSignalGenerator] Analysing strategy ${strategy.id} (${strategy.name}) | engine=${strategy.strategyKey} | kLine=${kLinePeriod}m | lastPrice=${marketData.lastPrice}`);
 
+    // Handle V2.5 KAMA 三K突破策略：直接調用文件同源純核心，不硬編碼方向或馬丁層數。
+    if (strategy.strategyKey === 'KAMA_3K_BREAKOUT_V25' && engine instanceof StrategyKama3kBreakoutV25) {
+      const mergedConfig = {
+        ...(engine.defaultConfig || {}),
+        ...(boundSnapshotConfig as Record<string, unknown>),
+      };
+      const candles = marketData.candles.map((c) => ({
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume || 0,
+        timestamp: c.timestamp,
+      }));
+      const v25Result = engine.generateTradingSignal(
+        { candles, lastPrice: marketData.lastPrice },
+        strategyState,
+        mergedConfig,
+        strategy.direction as "long" | "short" | "both",
+        marketData.lastPrice,
+      );
+
+      console.log(`[AutoTradeSignalGenerator] V2.5 decision: action=${v25Result.action} reason=${v25Result.reason}`);
+
+      if (v25Result.action === 'hold') {
+        const currentRuntime = (strategyState as any).v25Runtime ?? {};
+        const nextRuntime = (v25Result.nextState as any).v25Runtime ?? {};
+        if (JSON.stringify(currentRuntime) !== JSON.stringify(nextRuntime)) {
+          await saveStrategyState(effectiveStrategy.id, v25Result.nextState);
+        }
+        holdDetail = { type: 'strategy_hold', detail: `V2.5 策略判斷觀望: ${v25Result.reason}` };
+      } else {
+        signal = {
+          action:
+            v25Result.action === 'close'
+              ? 'close'
+              : v25Result.action === 'buy'
+                ? 'buy'
+                : v25Result.action === 'sell'
+                  ? 'sell'
+                  : v25Result.action === 'add_long'
+                    ? 'buy'
+                    : 'sell',
+          symbol: strategy.symbol,
+          price: v25Result.price || marketData.lastPrice,
+          barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          reason: v25Result.reason,
+          confidence: 1,
+          lotUsdt: v25Result.lotUsdt,
+          v25Decision: true,
+          v25LayerNum: v25Result.layerNum,
+          v25CloseReason: v25Result.closeReason,
+        };
+        console.log(`[AutoTradeSignalGenerator] ✅ V2.5 SIGNAL GENERATED: ${signal!.action} ${signal!.symbol} @ ${signal!.price}`);
+      }
+    }
     // Handle V7.0 strategies (KAMA_3K_TORNADO_V70) — must be checked before V6.1
-    if (strategy.strategyKey === 'KAMA_3K_TORNADO_V70' && engine instanceof BaseStrategyV35) {
+    else if (strategy.strategyKey === 'KAMA_3K_TORNADO_V70' && engine instanceof BaseStrategyV35) {
       const martinStateRaw = effectiveMartinState;
       const mergedConfig = {
         ...(engine.defaultConfig || {}),

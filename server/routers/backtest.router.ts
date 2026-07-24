@@ -26,12 +26,31 @@ import {
   assertSnapshotPositionMode,
   attachSnapshotConfig,
 } from "../services/strategySnapshotConfig";
+import {
+  assertValidV25Config,
+  deriveV25MaxMartinLayer,
+  V25_STRATEGY_KEY,
+} from "../../shared/strategies/kama3kBreakoutV25";
 
 function assertRegisteredStrategy(strategyKey: string): void {
   const isRegistered = listRegisteredStrategies().some((strategy) => strategy.key === strategyKey);
   if (!isRegistered) {
     throw new Error(
       `快照綁定的策略引擎「${strategyKey}」目前未註冊，為避免使用錯誤引擎，已停止建立。請先在策略工作室註冊此引擎。`,
+    );
+  }
+}
+
+function normalizeSnapshotConfigForStrategy(
+  strategyKey: string,
+  rawConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  if (strategyKey !== V25_STRATEGY_KEY) return { ...rawConfig };
+  try {
+    return { ...assertValidV25Config(rawConfig) };
+  } catch (error) {
+    throw new Error(
+      `V2.5 快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
@@ -83,25 +102,29 @@ function validateRequest(input: z.infer<typeof backtestRequestSchema>): Backtest
   const spanDays = (endMs - startMs) / 86400000;
   if (spanDays > 1830) throw new Error("回測區間最長支持 5 年，請縮短日期範圍");
   if (input.config && typeof input.config === "object") {
-    // EMA 均線回歸馬丁格爾：確保 max_layers 參數存在
-    if (input.config.max_layers && !input.config.Max_Layers) {
-      input.config = { ...input.config, Max_Layers: input.config.max_layers };
-    }
-    // V6.1 小寫 key → 大寫 key 橋接（確保回測引擎統一使用大寫馬丁參數）
-    if (input.config.martin_step_pct && !input.config.Martin_Step_Pct) {
-      input.config = { ...input.config, Martin_Step_Pct: input.config.martin_step_pct };
-    }
-    if (input.config.martin_multiplier && !input.config.Martin_Multiplier) {
-      input.config = { ...input.config, Martin_Multiplier: input.config.martin_multiplier };
-    }
-    // V6.1 max_deviation_pct → Max_Deviation_Pct 橋接
-    if (input.config.max_deviation_pct != null && !input.config.Max_Deviation_Pct) {
-      input.config = { ...input.config, Max_Deviation_Pct: input.config.max_deviation_pct };
-    }
-    // 舊的 Martin_Layers → Max_Layers 同步（向後相容）
-    const processed = validateAndProcessMartinConfig(input.config);
-    if (processed.usedMode === "layered") {
-      input.config = { ...input.config, Max_Layers: processed.maxLayers };
+    if (input.strategyKey === V25_STRATEGY_KEY) {
+      input.config = { ...assertValidV25Config(input.config) };
+    } else {
+      // EMA 均線回歸馬丁格爾：確保 max_layers 參數存在
+      if (input.config.max_layers && !input.config.Max_Layers) {
+        input.config = { ...input.config, Max_Layers: input.config.max_layers };
+      }
+      // V6.1 小寫 key → 大寫 key 橋接（確保回測引擎統一使用大寫馬丁參數）
+      if (input.config.martin_step_pct && !input.config.Martin_Step_Pct) {
+        input.config = { ...input.config, Martin_Step_Pct: input.config.martin_step_pct };
+      }
+      if (input.config.martin_multiplier && !input.config.Martin_Multiplier) {
+        input.config = { ...input.config, Martin_Multiplier: input.config.martin_multiplier };
+      }
+      // V6.1 max_deviation_pct → Max_Deviation_Pct 橋接
+      if (input.config.max_deviation_pct != null && !input.config.Max_Deviation_Pct) {
+        input.config = { ...input.config, Max_Deviation_Pct: input.config.max_deviation_pct };
+      }
+      // 舊的 Martin_Layers → Max_Layers 同步（向後相容）
+      const processed = validateAndProcessMartinConfig(input.config);
+      if (processed.usedMode === "layered") {
+        input.config = { ...input.config, Max_Layers: processed.maxLayers };
+      }
     }
   }
   return input;
@@ -321,13 +344,30 @@ export const backtestRouter = router({
 
       const snapshotName = input.snapshotName ||
         `${input.strategyKey}_${new Date().toLocaleDateString("zh-TW")}_${new Date().toLocaleTimeString("zh-TW", { hour12: false })}`;
+      const storedConfig = normalizeSnapshotConfigForStrategy(
+        input.strategyKey,
+        input.config,
+      );
+      const storedBacktestSettings = input.backtestSettings
+        ? {
+            ...input.backtestSettings,
+            ...(input.strategyKey === V25_STRATEGY_KEY
+              ? {
+                  tradeAmount: Number(storedConfig.Base_Lot_Size),
+                  baseLotSize: Number(storedConfig.Base_Lot_Size),
+                  baseLotSizeMode: "usdt",
+                  configJson: storedConfig,
+                }
+              : {}),
+          }
+        : null;
 
       await db.insert(parameterSnapshots).values({
         userId,
         strategyKey: input.strategyKey,
         strategyName: input.strategyName || input.strategyKey,
         snapshotName,
-        config: input.config,
+        config: storedConfig,
         metrics: input.metrics,
         totalReturn: String(input.metrics.totalReturn),
         winRate: String(input.metrics.winRate),
@@ -335,7 +375,7 @@ export const backtestRouter = router({
         profitFactor: input.metrics.profitFactor !== undefined ? String(input.metrics.profitFactor) : null,
         maxDrawdown: input.metrics.maxDrawdown !== undefined ? String(input.metrics.maxDrawdown) : null,
         // 回測設定
-        backtestSettings: input.backtestSettings ?? null,
+        backtestSettings: storedBacktestSettings,
         // V5.7 環境元數據
         dataHash: input.environment?.dataHash ?? null,
         engineVersion: input.environment?.engineVersion ?? null,
@@ -441,10 +481,13 @@ export const backtestRouter = router({
         .limit(1);
       if (!strategy) throw new Error("目標策略不存在");
 
-      const config = (snapshot.config as Record<string, unknown>) || {};
       const snapshotKey = snapshot.strategyKey;
       if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法安全套用");
       assertRegisteredStrategy(snapshotKey);
+      const config = normalizeSnapshotConfigForStrategy(
+        snapshotKey,
+        (snapshot.config as Record<string, unknown>) || {},
+      );
 
       if (!strategy.strategyKey || strategy.strategyKey !== snapshotKey) {
         throw new Error(
@@ -460,13 +503,28 @@ export const backtestRouter = router({
         snapshotId: snapshot.id,
         snapshotName: snapshot.snapshotName,
       });
+      const v25Config = snapshotKey === V25_STRATEGY_KEY
+        ? assertValidV25Config(config)
+        : undefined;
+      const firstV25Range = v25Config?.Martin_Ranges[0];
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(config.Martin_Multiplier ?? strategy.martinMultiplier),
-          maxMartinLevel: config.Max_Layers ?? (strategy as any).maxMartinLevel,
-          martinSpacingPct: String(config.Martin_Step_Pct ?? strategy.martinSpacingPct),
+          martinMultiplier: String(firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
+          maxMartinLevel: v25Config
+            ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
+            : config.Max_Layers ?? (strategy as any).maxMartinLevel,
+          martinSpacingPct: String(firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct),
+          ...(v25Config ? {
+            positionSize: String(v25Config.Base_Lot_Size),
+            positionMode: "usdt" as const,
+            positionSizeObject: { value: v25Config.Base_Lot_Size, mode: "usdt" as const },
+            stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
+            takeProfitPct: String(v25Config.Take_Profit_Pct),
+            kLinePeriod: v25Config.K_Line_Period,
+            reentryEnabled: v25Config.Reentry_On_Trend,
+          } : {}),
         })
         .where(eq(strategies.id, input.targetStrategyId));
 
@@ -510,7 +568,14 @@ export const backtestRouter = router({
       if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法建立自動交易策略");
       assertRegisteredStrategy(snapshotKey);
 
-      const config = (snapshot.config as Record<string, unknown>) || {};
+      const config = normalizeSnapshotConfigForStrategy(
+        snapshotKey,
+        (snapshot.config as Record<string, unknown>) || {},
+      );
+      const v25Config = snapshotKey === V25_STRATEGY_KEY
+        ? assertValidV25Config(config)
+        : undefined;
+      const firstV25Range = v25Config?.Martin_Ranges[0];
       const backtestSettings =
         snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
           ? (snapshot.backtestSettings as Record<string, unknown>)
@@ -519,6 +584,9 @@ export const backtestRouter = router({
         input.positionMode,
         backtestSettings,
       );
+      if (v25Config && positionMode !== "usdt") {
+        throw new Error("V2.5 的 Base_Lot_Size 固定為 USDT 金額，倉位單位必須為 usdt");
+      }
 
       // 生成 webhookSecret
       const { generateWebhookSecret } = await import('../lib/crypto');
@@ -533,23 +601,25 @@ export const backtestRouter = router({
         apiKeyId: input.apiKeyId,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
-        positionSize: String(input.positionSize),
+        positionSize: String(v25Config?.Base_Lot_Size ?? input.positionSize),
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
         enabled: true,
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
-        stopLossPct: String(finiteNumber(config.stop_loss_pct, 0)),
-        takeProfitPct: String(finiteNumber(config.Target_TP_Pct, 0)),
+        stopLossPct: String(v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0)),
+        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
         maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
-        martinMultiplier: String(config.Martin_Multiplier ?? 1),
-        maxMartinLevel: Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
-        martinSpacingPct: String(config.Martin_Step_Pct ?? 0),
+        martinMultiplier: String(firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
+        maxMartinLevel: v25Config
+          ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
+          : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
+        martinSpacingPct: String(firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0),
         martinState: attachSnapshotConfig(
           {
             lossCount: 0,
-            currentLot: input.positionSize,
+            currentLot: v25Config?.Base_Lot_Size ?? input.positionSize,
             lastEntryPrice: 0,
           },
           snapshotKey,
@@ -561,7 +631,7 @@ export const backtestRouter = router({
         ),
         strategyKey: snapshotKey,
         positionMode,
-        positionSizeObject: { value: input.positionSize, mode: positionMode },
+        positionSizeObject: { value: v25Config?.Base_Lot_Size ?? input.positionSize, mode: positionMode },
         tradeMode: 'webhook',
         kLinePeriod: resolveKLineMinutes(config, backtestSettings.timeframe),
         reentryEnabled: config.Reentry_On_Trend !== false,
@@ -617,17 +687,35 @@ export const backtestRouter = router({
           ? ((instance as any).martinState as Record<string, unknown>)
           : { lossCount: 0, currentLot: Number(instance.positionSize), lastEntryPrice: 0 };
 
-      const config = input.snapshotConfig as Record<string, unknown>;
+      const config = normalizeSnapshotConfigForStrategy(
+        snapshotKey,
+        input.snapshotConfig as Record<string, unknown>,
+      );
       const updatedState = attachSnapshotConfig(prevState, snapshotKey, config, {
         snapshotName: "直接套用配置",
       });
+      const v25Config = snapshotKey === V25_STRATEGY_KEY
+        ? assertValidV25Config(config)
+        : undefined;
+      const firstV25Range = v25Config?.Martin_Ranges[0];
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(config.Martin_Multiplier ?? instance.martinMultiplier),
-          maxMartinLevel: config.Max_Layers ?? (instance as any).maxMartinLevel,
-          martinSpacingPct: String(config.Martin_Step_Pct ?? instance.martinSpacingPct),
+          martinMultiplier: String(firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
+          maxMartinLevel: v25Config
+            ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
+            : config.Max_Layers ?? (instance as any).maxMartinLevel,
+          martinSpacingPct: String(firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct),
+          ...(v25Config ? {
+            positionSize: String(v25Config.Base_Lot_Size),
+            positionMode: "usdt" as const,
+            positionSizeObject: { value: v25Config.Base_Lot_Size, mode: "usdt" as const },
+            stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
+            takeProfitPct: String(v25Config.Take_Profit_Pct),
+            kLinePeriod: v25Config.K_Line_Period,
+            reentryEnabled: v25Config.Reentry_On_Trend,
+          } : {}),
         })
         .where(eq(strategies.id, input.targetInstanceId));
 
