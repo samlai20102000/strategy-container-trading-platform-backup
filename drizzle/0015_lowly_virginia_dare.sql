@@ -1,0 +1,21 @@
+CREATE TABLE `scan_state` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`scanId` varchar(100) NOT NULL,
+	`userId` int NOT NULL,
+	`currentPhase` varchar(30) NOT NULL DEFAULT 'preloading',
+	`currentGeneration` int NOT NULL DEFAULT 0,
+	`maxGenerations` int NOT NULL,
+	`population` json,
+	`allEvaluated` json,
+	`fitnessHistory` json,
+	`config` json NOT NULL,
+	`paramSpace` json,
+	`walkForwardResult` json,
+	`heartbeatTaskUid` varchar(128),
+	`scanMode` varchar(20) NOT NULL DEFAULT 'deep',
+	`error` text,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `scan_state_id` PRIMARY KEY(`id`),
+	CONSTRAINT `scan_state_scanId_unique` UNIQUE(`scanId`)
+);

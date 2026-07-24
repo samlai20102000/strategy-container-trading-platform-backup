@@ -1,0 +1,1 @@
+ALTER TABLE `strategies` ADD `positionMode` enum('quantity','usdt') DEFAULT 'quantity' NOT NULL;

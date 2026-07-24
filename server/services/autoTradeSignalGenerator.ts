@@ -1,0 +1,547 @@
+/**
+ * Auto Trade Signal Generator
+ * Generates trading signals in real-time based on K-line data and strategy logic
+ * 
+ * Features:
+ * 1. Fetch latest K-line data from OKX API
+ * 2. Prepare market data for strategy engine
+ * 3. Dynamically load strategy engine based on strategyKey
+ * 4. Call strategy engine's generateActions to get trading signals
+ * 5. Return ParsedSignal for executor.ts
+ */
+
+import { createAdapter } from "../exchanges/factory";
+import type { ExchangeAdapter } from "../exchanges/types";
+import type { ParsedSignal } from "./executor";
+import { getStrategy, initStrategyStudio } from "./strategyStudio";
+import { BaseStrategyV35, KLineData, MarketData, StrategySignal, StrategyAction, StrategyInstanceConfig } from "../strategies/base";
+import { Strategy } from "../../drizzle/schema";
+import { loadStrategyState, reconcileWithExchange } from "./strategyStateManager";
+import { TradingPairManager } from "./tradingPairManager";
+import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
+import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
+
+
+
+/**
+ * Convert strategy symbol to OKX instId format
+ * 使用交易對管理器確保與 OKX 100% 一致
+ */
+function toOkxInstId(symbol: string): string {
+  // 使用交易對管理器的標準化函數
+  return TradingPairManager.normalize(symbol, "SWAP");
+}
+
+/**
+ * Fetch K-line data from OKX API
+ */
+async function fetchKLineData(
+  adapter: ExchangeAdapter,
+  symbol: string,
+  period: number,
+  limit: number = 100
+): Promise<KLineData[]> {
+  try {
+    // OKX API format: period in minutes (e.g., "5m", "15m", "1H", "4H", "1D")
+    let periodStr: string;
+    if (period < 60) {
+      periodStr = `${period}m`;
+    } else if (period < 1440) {
+      periodStr = `${period / 60}H`;
+    } else {
+      periodStr = `${period / 1440}D`;
+    }
+    
+    // Convert symbol to OKX instId format (BTCUSDT -> BTC-USDT-SWAP)
+    const instId = toOkxInstId(symbol);
+    
+    // 驗證交易對是否在 OKX 上存在
+    const isValid = await TradingPairManager.validate(instId, "SWAP");
+    if (!isValid) {
+      throw new Error(`交易對 "${instId}" 在 OKX 上不存在或不可交易`);
+    }
+    
+    const url = `https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${periodStr}&limit=${limit}`;
+    
+    console.log(`[AutoTradeSignalGenerator] Fetching K-line: ${instId} ${periodStr} (limit=${limit})`);
+    
+    // Fetch candles from exchange
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`OKX API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.code !== "0") {
+      throw new Error(`OKX API error code ${data.code}: ${data.msg}`);
+    }
+    
+    if (!data.data || !Array.isArray(data.data) || data.data.length === 0) {
+      throw new Error(`No candle data returned for ${instId}`);
+    }
+    
+    console.log(`[AutoTradeSignalGenerator] Got ${data.data.length} candles for ${instId}`);
+    
+    // Convert OKX format to KLineData
+    return data.data
+      .reverse() // OKX returns newest first, we need oldest first
+      .map((candle: string[]) => ({
+        timestamp: parseInt(candle[0], 10),
+        open: parseFloat(candle[1]),
+        high: parseFloat(candle[2]),
+        low: parseFloat(candle[3]),
+        close: parseFloat(candle[4]),
+        volume: parseFloat(candle[5]),
+      }));
+  } catch (error) {
+    console.error(`[AutoTradeSignalGenerator] Failed to fetch K-line data for ${symbol}:`, error);
+    return [];
+  }
+}
+
+/** HOLD 原因分類 */
+export type HoldReason = 
+  | { type: 'no_engine'; detail: string }
+  | { type: 'no_data'; detail: string }
+  | { type: 'kama_insufficient'; detail: string }
+  | { type: 'kama_no_direction'; detail: string }
+  | { type: 'validation_failed'; detail: string }
+  | { type: 'strategy_hold'; detail: string }
+  | { type: 'error'; detail: string };
+
+export type SignalGenerationResult = 
+  | { signal: ParsedSignal; holdReason: null }
+  | { signal: null; holdReason: HoldReason };
+
+/**
+ * Generate trading signals based on strategy configuration
+ * Returns both signal and holdReason for better logging
+ */
+export async function generateTradingSignal(
+  strategy: Strategy,
+  apiKeyRecord: any
+): Promise<ParsedSignal | null>;
+export async function generateTradingSignal(
+  strategy: Strategy,
+  apiKeyRecord: any,
+  options?: { withReason: true }
+): Promise<SignalGenerationResult>;
+export async function generateTradingSignal(
+  strategy: Strategy,
+  apiKeyRecord: any,
+  options?: { withReason?: boolean }
+): Promise<ParsedSignal | null | SignalGenerationResult> {
+  const withReason = options?.withReason === true;
+  try {
+    await initStrategyStudio(); // Ensure strategies are loaded
+
+    const engine = getStrategy(strategy.strategyKey || "");
+    if (!engine) {
+      console.warn(`[AutoTradeSignalGenerator] Strategy engine for key '${strategy.strategyKey}' not found.`);
+      if (withReason) return { signal: null, holdReason: { type: 'no_engine', detail: `策略引擎 '${strategy.strategyKey}' 未找到` } };
+      return null;
+    }
+
+    // Determine K-line period from strategy engine's defaultConfig or strategy object's specific fields
+    const kLinePeriod = (strategy as any)?.K_Line_Period || (engine.defaultConfig as any)?.K_Line_Period || 5;
+
+    // Create exchange adapter
+    const adapter = createAdapter(apiKeyRecord);
+    
+    // Fetch K-line data
+    const klines = await fetchKLineData(adapter, strategy.symbol, kLinePeriod, 100);
+    
+    if (klines.length === 0) {
+      console.warn(`[AutoTradeSignalGenerator] No K-line data fetched for ${strategy.symbol}`);
+      if (withReason) return { signal: null, holdReason: { type: 'no_data', detail: `無法獲取 ${strategy.symbol} K線數據` } };
+      return null;
+    }
+
+    // Prepare market data for the strategy engine
+    const marketData: MarketData = {
+      candles: klines,
+      lastPrice: klines[klines.length - 1].close,
+      // Add other market data as needed by strategies
+    };
+
+    const initialSignal: StrategySignal = {
+      action: "NONE", // Signal generator initiates the check, not an external signal
+      symbol: strategy.symbol,
+      price: marketData.lastPrice,
+      barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+    };
+
+    let signal: ParsedSignal | null = null;
+    let holdDetail: HoldReason | null = null;
+    
+    // === 持倉同步：在信號生成前與交易所對賬 ===
+    // 確保本地 state 與交易所實際持倉一致，防止策略恢復後重複開倉
+    try {
+      const reconcileResult = await reconcileWithExchange(strategy.id, adapter);
+      if (!reconcileResult.matched && reconcileResult.corrections.length > 0) {
+        console.log(`[AutoTradeSignalGenerator] 持倉同步修正：${reconcileResult.corrections.join('; ')}`);
+      }
+    } catch (e: any) {
+      console.warn(`[AutoTradeSignalGenerator] 持倉同步失敗（不影響信號生成）：${e.message}`);
+    }
+    
+    // 重新載入策略（可能已被 reconcile 修正）
+    const { getStrategyById } = await import("../db");
+    const freshStrategy = await getStrategyById(strategy.id);
+    const strategyState = loadStrategyState(freshStrategy || strategy);
+
+    console.log(`[AutoTradeSignalGenerator] Analysing strategy ${strategy.id} (${strategy.name}) | engine=${strategy.strategyKey} | kLine=${kLinePeriod}m | lastPrice=${marketData.lastPrice}`);
+
+    // Handle V7.0 strategies (KAMA_3K_TORNADO_V70) — must be checked before V6.1
+    if (strategy.strategyKey === 'KAMA_3K_TORNADO_V70' && engine instanceof BaseStrategyV35) {
+      const strat70 = freshStrategy || strategy;
+      const martinStateRaw = (strat70.martinState && typeof strat70.martinState === 'object') ? strat70.martinState as Record<string, unknown> : {};
+      const v70Cfg = (martinStateRaw.__v70Config && typeof martinStateRaw.__v70Config === 'object') ? martinStateRaw.__v70Config as Record<string, unknown> : {};
+      const mergedConfig = {
+        ...(engine.defaultConfig || {}),
+        ...(typeof v70Cfg === 'object' ? v70Cfg as Record<string, number | string | boolean> : {}),
+      };
+
+      const v70Engine = new StrategyKama3kV70();
+      const candles = marketData.candles.map((c: any) => ({
+        open: c.open, high: c.high, low: c.low, close: c.close,
+        volume: c.volume || 0, timestamp: c.timestamp,
+      }));
+
+      const v70Result = v70Engine.generateTradingSignal(candles, strategyState, mergedConfig);
+
+      console.log(`[AutoTradeSignalGenerator] V7.0 generateTradingSignal result: action=${v70Result.action} reason=${v70Result.reason}`);
+
+      if (v70Result.action === 'buy' || v70Result.action === 'sell' || v70Result.action === 'close' || v70Result.action === 'add_long' || v70Result.action === 'add_short') {
+        let signalAction: 'buy' | 'sell' | 'close';
+        if (v70Result.action === 'close') {
+          signalAction = 'close';
+        } else if (v70Result.action === 'add_long') {
+          signalAction = 'buy';
+        } else if (v70Result.action === 'add_short') {
+          signalAction = 'sell';
+        } else {
+          signalAction = v70Result.action;
+        }
+        signal = {
+          action: signalAction,
+          symbol: strategy.symbol,
+          price: v70Result.price || marketData.lastPrice,
+          barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          reason: v70Result.reason,
+          confidence: 1.0,
+          lotUsdt: v70Result.lotUsdt,
+        };
+        console.log(`[AutoTradeSignalGenerator] ✅ V7.0 SIGNAL GENERATED: ${signal!.action} ${signal!.symbol} @ ${signal!.price}`);
+      } else {
+        console.log(`[AutoTradeSignalGenerator] ⏸️ V7.0 ${v70Result.action} - ${v70Result.reason}`);
+        holdDetail = { type: 'strategy_hold', detail: `V7.0 策略判斷觀望: ${v70Result.reason}` };
+      }
+    }
+    // Handle V6.1 strategies (KAMA_3K_HF_V61) — must be checked before V5.0 and generic V3.5
+    // 修復：正確調用 generateSignalV61（包含 entry_zone_mode + direction_mode 區域觸發邏輯）
+    else if (strategy.strategyKey === 'KAMA_3K_HF_V61' && engine instanceof BaseStrategyV35) {
+      const strat = freshStrategy || strategy;
+      const martinStateRaw = (strat.martinState && typeof strat.martinState === 'object') ? strat.martinState as Record<string, unknown> : {};
+      const v61Cfg = (martinStateRaw.__v61Config && typeof martinStateRaw.__v61Config === 'object') ? martinStateRaw.__v61Config as Record<string, unknown> : {};
+      const mergedConfig = {
+        ...(engine.defaultConfig || {}),
+        ...(typeof v61Cfg === 'object' ? v61Cfg as Record<string, number | string | boolean> : {}),
+      };
+
+      // 創建 V6.1 引擎實例（帶入用戶配置）
+      const v61Engine = new StrategyKama3kV61(mergedConfig as any);
+
+      // 調用 generateSignalV61（包含 entry_zone_mode 區域觸發 + direction_mode 方向過濾）
+      const candles = marketData.candles.map((c: any) => ({
+        open: c.open, high: c.high, low: c.low, close: c.close,
+        volume: c.volume || 0, timestamp: c.timestamp,
+      }));
+
+      // 檢查當前持倉狀態（從 V3.5 StrategyState 結構讀取正確字段）
+      const currentLayer = (martinStateRaw.currentLayer as number) || 0;
+      const hasPosition = currentLayer > 0 && ((martinStateRaw.totalSize as number) || 0) > 0;
+      const isLongRaw = martinStateRaw.isLong;
+      const positionSide: 'long' | 'short' | undefined = hasPosition
+        ? (isLongRaw === true ? 'long' : isLongRaw === false ? 'short' : undefined)
+        : undefined;
+      const positionLayers = currentLayer;
+      const avgEntryPrice = (martinStateRaw.avgPrice as number) || 0;
+
+      const v61Result = v61Engine.generateSignalV61(
+        candles, hasPosition, positionSide, positionLayers, avgEntryPrice, 0
+      );
+
+      console.log(`[AutoTradeSignalGenerator] V6.1 generateSignalV61 result: action=${v61Result.action} reason=${v61Result.reason} mode=${mergedConfig.entry_zone_mode || 'breakout'}`);
+
+      if (v61Result.action === 'buy' || v61Result.action === 'sell' || v61Result.action === 'close' || v61Result.action === 'add') {
+        // 🔒 加倉信號必須與持倉方向一致（做多持倉加倉 = buy，做空持倉加倉 = sell）
+        let signalAction: 'buy' | 'sell' | 'close';
+        if (v61Result.action === 'close') {
+          signalAction = 'close';
+        } else if (v61Result.action === 'add') {
+          // 加倉必須跟隨持倉方向
+          signalAction = positionSide === 'long' ? 'buy' : 'sell';
+        } else {
+          signalAction = v61Result.action;
+        }
+        signal = {
+          action: signalAction,
+          symbol: strategy.symbol,
+          price: marketData.lastPrice,
+          barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          reason: v61Result.reason,
+          confidence: v61Result.confidence || 1.0,
+          lotUsdt: v61Result.lotUsdt,
+        };
+        console.log(`[AutoTradeSignalGenerator] ✅ V6.1 SIGNAL GENERATED: ${signal!.action} ${signal!.symbol} @ ${signal!.price} (original=${v61Result.action})`);
+      } else {
+        console.log(`[AutoTradeSignalGenerator] ⏸️ V6.1 ${v61Result.action} - ${v61Result.reason}`);
+        holdDetail = { type: 'strategy_hold', detail: `V6.1 策略判斷觀望: ${v61Result.reason}` };
+      }
+    }
+    // Handle V5.0 strategies (KAMA_3K_ULTIMATE_V50) — must be checked before generic V3.5
+    else if (strategy.strategyKey === 'KAMA_3K_ULTIMATE_V50' && engine instanceof BaseStrategyV35) {
+      // V5.0: 正確讀取 __v50Config（存在 martinState 中）
+      const strat50 = freshStrategy || strategy;
+      const martinStateRaw = (strat50.martinState && typeof strat50.martinState === 'object') ? strat50.martinState as Record<string, unknown> : {};
+      const v50Cfg = (martinStateRaw.__v50Config && typeof martinStateRaw.__v50Config === 'object') ? martinStateRaw.__v50Config as Record<string, unknown> : {};
+
+      const v50Instance: StrategyInstanceConfig = {
+        ...strategy,
+        positionSize: parseFloat(strategy.positionSize || '0'),
+        config: {
+          ...(engine.defaultConfig || {}),
+          ...(v50Cfg as Record<string, number | string | boolean>),
+          martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
+          maxMartinLevel: strategy.maxMartinLevel,
+          martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || '0'),
+          reentryEnabled: strategy.reentryEnabled,
+          reentryCooldownBars: strategy.reentryCooldownBars,
+          ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+          // 強制釋放時間濾網，開啟 24/7 全時段交易
+          enable_time_filter: false,
+          // 降低 F6 AI 斜率閾值，適應 BTC 窄幅震盪環境
+          kama_slope_min: 0.02,
+        },
+        state: strategyState,
+      } as StrategyInstanceConfig;
+
+      const config: Record<string, any> = { ...(engine.defaultConfig || {}), ...(v50Cfg as Record<string, any>), enable_time_filter: false, kama_slope_min: 0.02 };
+
+      // ===== V5.0 自主 KAMA 雙線方向判斷（仿 V6.1 模式）=====
+      // 從 K 線數據計算 KAMA 快線和慢線，決定入場方向
+      const closes = marketData.candles.map(c => c.close);
+      const kamaFastLength = Number(config.KAMA_Fast_Length) || 30;
+      const kamaSlowLength = Number(config.KAMA_Slow_Length) || 55;
+      const p2 = Number(config.p2_fastest) || 8;
+      const p3 = Number(config.p3_slowest) || 2;
+      const q2 = Number(config.q2_fastest) || 10;
+      const q3 = Number(config.q3_slowest) || 8;
+
+      // KAMA 計算函數（與 V6.1 一致）
+      const calcKAMA = (data: number[], length: number, fastest: number, slowest: number): number | null => {
+        if (data.length < length + 1) return null;
+        const fastSC = 2 / (fastest + 1);
+        const slowSC = 2 / (slowest + 1);
+        let kama = data[length - 1];
+        for (let i = length; i < data.length; i++) {
+          const direction = Math.abs(data[i] - data[i - length]);
+          let volatility = 0;
+          for (let j = i - length + 1; j <= i; j++) {
+            volatility += Math.abs(data[j] - data[j - 1]);
+          }
+          const er = volatility === 0 ? 0 : direction / volatility;
+          const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2);
+          kama = kama + sc * (data[i] - kama);
+        }
+        return kama;
+      };
+
+      const kamaFast = calcKAMA(closes, kamaFastLength, p2, p3);
+      const kamaSlow = calcKAMA(closes, kamaSlowLength, q2, q3);
+
+      console.log(`[AutoTradeSignalGenerator] V5.0 KAMA: fast=${kamaFast?.toFixed(2) || 'null'} slow=${kamaSlow?.toFixed(2) || 'null'} price=${marketData.lastPrice}`);
+
+      // 如果 KAMA 數據不足，無法判斷方向
+      if (kamaFast === null || kamaSlow === null) {
+        console.log(`[AutoTradeSignalGenerator] ⏸️ V5.0 HOLD - KAMA 數據不足`);
+        holdDetail = { type: 'kama_insufficient' as const, detail: 'KAMA 數據不足，無法判斷方向' };
+      } else {
+        // 根據 KAMA 雙線判斷方向
+        let v50Direction: 'BUY' | 'SELL' | null = null;
+
+        // 策略方向限制
+        const strategyDirection = strategy.direction || 'both';
+
+        if (kamaFast > kamaSlow) {
+          // 快線在慢線上方 → 多頭趨勢
+          if (strategyDirection === 'both' || strategyDirection === 'long') {
+            v50Direction = 'BUY';
+          }
+        } else if (kamaFast < kamaSlow) {
+          // 快線在慢線下方 → 空頭趨勢
+          if (strategyDirection === 'both' || strategyDirection === 'short') {
+            v50Direction = 'SELL';
+          }
+        }
+
+        if (!v50Direction) {
+          console.log(`[AutoTradeSignalGenerator] ⏸️ V5.0 HOLD - KAMA 無明確方向或方向受限 (fast=${kamaFast.toFixed(2)}, slow=${kamaSlow.toFixed(2)}, dir=${strategyDirection})`);
+          holdDetail = { type: 'kama_no_direction' as const, detail: `KAMA 無明確方向 (fast=${kamaFast.toFixed(2)}, slow=${kamaSlow.toFixed(2)}, 方向=${strategyDirection})` };
+        } else {
+          // 構建帶方向的信號
+          const v50Signal: StrategySignal = {
+            action: v50Direction,
+            symbol: strategy.symbol,
+            price: marketData.lastPrice,
+            barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          };
+
+          // 豐富 marketData 的 KAMA 值（供 validateSignal 使用）
+          const enrichedMarketData: MarketData = {
+            ...marketData,
+            kamaFast,
+            kamaSlow,
+            kamaValue: kamaSlow, // KAMA 方向鎖使用慢線
+          };
+
+          // V5.0 驗證（帶方向的信號）
+          const validation = await engine.validateSignal(v50Signal, enrichedMarketData, v50Instance);
+          if (!validation.valid) {
+            console.log(`[AutoTradeSignalGenerator] V5.0 驗證未通過：${validation.reason}`);
+            holdDetail = { type: 'validation_failed' as const, detail: `V5.0 驗證未通過：${validation.reason}` };
+            // 不生成信號
+          } else {
+            const v50Action: StrategyAction = await engine.generateActionsV35(
+              v50Signal,
+              v50Instance,
+              enrichedMarketData,
+              strategyState,
+            );
+            console.log(`[AutoTradeSignalGenerator] V5.0 engine result: action=${v50Action?.action || 'null'} reason=${v50Action?.reason || 'none'}`);
+            if (v50Action && v50Action.action !== "HOLD") {
+              signal = {
+                action: v50Action.action === "OPEN_LONG" ? "buy" : v50Action.action === "OPEN_SHORT" ? "sell" : "close",
+                symbol: strategy.symbol,
+                price: v50Action.price || marketData.lastPrice,
+                barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+                reason: v50Action.reason,
+                confidence: 1.0,
+              };
+              console.log(`[AutoTradeSignalGenerator] ✅ V5.0 SIGNAL GENERATED: ${signal.action} ${signal.symbol} @ ${signal.price}`);
+            } else {
+              console.log(`[AutoTradeSignalGenerator] ⏸️ V5.0 HOLD - ${v50Action?.reason || 'no action needed'}`);
+              holdDetail = { type: 'strategy_hold' as const, detail: `V5.0 策略判斷觀望: ${v50Action?.reason || '條件未滿足'}` };
+            }
+          }
+        }
+      }
+    }
+    // Handle V3.5 strategies (KAMA) separately due to async generateActionsV35
+    else if (engine instanceof BaseStrategyV35) {
+      const v35Signal: StrategyAction = await engine.generateActionsV35(
+        initialSignal,
+        {
+          ...strategy,
+          positionSize: parseFloat(strategy.positionSize || '0'),
+          config: {
+            // Start with the strategy engine's default config
+            ...(engine.defaultConfig || {}),
+            // Override with strategy-specific fields from the 'strategies' table
+            martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
+            maxMartinLevel: strategy.maxMartinLevel,
+            martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || '0'),
+            reentryEnabled: strategy.reentryEnabled,
+            reentryCooldownBars: strategy.reentryCooldownBars,
+            // Merge positionSizeObject if it's a valid object
+            ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+          }
+        } as StrategyInstanceConfig,
+        marketData,
+        strategyState,
+      );
+      console.log(`[AutoTradeSignalGenerator] V35 engine result: action=${v35Signal?.action || 'null'} reason=${v35Signal?.reason || 'none'}`);
+      if (v35Signal && v35Signal.action !== "HOLD") {
+        signal = {
+          action: v35Signal.action === "OPEN_LONG" ? "buy" : v35Signal.action === "OPEN_SHORT" ? "sell" : "close",
+          symbol: strategy.symbol,
+          price: v35Signal.price || marketData.lastPrice,
+          barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          reason: v35Signal.reason, // Add reason
+          confidence: 1.0, // Default confidence for V3.5 signals
+        };
+        console.log(`[AutoTradeSignalGenerator] ✅ SIGNAL GENERATED: ${signal.action} ${signal.symbol} @ ${signal.price}`);
+      } else {
+        console.log(`[AutoTradeSignalGenerator] ⏸️ HOLD - no action needed`);
+        holdDetail = { type: 'strategy_hold', detail: `V3.5 策略判斷觀望: ${v35Signal?.reason || '條件未滿足'}` };
+      }
+    } else {
+      // Handle generic strategies (e.g., EMA Martingale)
+      const genericSignal: StrategyAction = engine.generateActions(
+        initialSignal,
+        {
+          ...strategy,
+          positionSize: parseFloat(strategy.positionSize || '0'),
+          config: {
+            // Start with the strategy engine's default config
+            ...(engine.defaultConfig || {}),
+            // Override with strategy-specific fields from the 'strategies' table
+            martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
+            maxMartinLevel: strategy.maxMartinLevel,
+            martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || '0'),
+            reentryEnabled: strategy.reentryEnabled,
+            reentryCooldownBars: strategy.reentryCooldownBars,
+            // Merge positionSizeObject if it's a valid object
+            ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+          }
+        } as StrategyInstanceConfig,
+        marketData,
+        (freshStrategy || strategy).martinState as any,
+      );
+
+      console.log(`[AutoTradeSignalGenerator] Generic engine result: action=${genericSignal?.action || 'null'} reason=${genericSignal?.reason || 'none'}`);
+      if (genericSignal && genericSignal.action !== "HOLD") {
+        signal = {
+          action: genericSignal.action === "OPEN_LONG" ? "buy" : genericSignal.action === "OPEN_SHORT" ? "sell" : "close",
+          symbol: strategy.symbol,
+          price: genericSignal.price || marketData.lastPrice,
+          barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          reason: genericSignal.reason, // Add reason
+          confidence: 1.0, // Default confidence for generic signals
+        };
+        console.log(`[AutoTradeSignalGenerator] ✅ SIGNAL GENERATED: ${signal.action} ${signal.symbol} @ ${signal.price}`);
+      } else {
+        console.log(`[AutoTradeSignalGenerator] ⏸️ HOLD - no action needed`);
+        holdDetail = { type: 'strategy_hold', detail: `策略判斷觀望: ${genericSignal?.reason || '條件未滿足'}` };
+      }
+    }
+
+    if (withReason) {
+      if (signal) return { signal, holdReason: null };
+      return { signal: null, holdReason: holdDetail || { type: 'strategy_hold', detail: '策略分析完成，無交易信號' } };
+    }
+    return signal;
+  } catch (error) {
+    console.error(`[AutoTradeSignalGenerator] Error generating signal for strategy ${strategy.id}:`, error);
+    if (withReason) return { signal: null, holdReason: { type: 'error' as const, detail: `錯誤: ${(error as Error).message}` } };
+    return null;
+  }
+}
+
+/**
+ * Generate signals for multiple trading pairs (deprecated, use generateTradingSignal with strategy object)
+ */
+export async function generateSignalsForMultiplePairs(
+  symbols: string[],
+  // config: SignalGeneratorConfig, // This is now deprecated
+  apiKeyRecord: any
+): Promise<Record<string, ParsedSignal | null>> {
+  console.warn("generateSignalsForMultiplePairs is deprecated. Use generateTradingSignal with a Strategy object.");
+  return {};
+}

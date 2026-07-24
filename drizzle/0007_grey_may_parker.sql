@@ -1,0 +1,1 @@
+ALTER TABLE `strategy_definitions` ADD `schemaConfig` json;

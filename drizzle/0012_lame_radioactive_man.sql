@@ -1,0 +1,1 @@
+ALTER TABLE `parameter_snapshots` ADD `backtestSettings` json;

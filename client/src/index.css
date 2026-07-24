@@ -1,0 +1,154 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&.dark, .dark &);
+
+/* ==== 簡潔深色交易儀表板主題 ==== */
+
+:root,
+.dark {
+  /* 深色底 */
+  --background: oklch(0.16 0.012 260);
+  --foreground: oklch(0.93 0.005 260);
+
+  --card: oklch(0.2 0.014 260);
+  --card-foreground: oklch(0.93 0.005 260);
+
+  --popover: oklch(0.2 0.014 260);
+  --popover-foreground: oklch(0.93 0.005 260);
+
+  /* 主色：科技藍青 */
+  --primary: oklch(0.75 0.13 195);
+  --primary-foreground: oklch(0.15 0.02 260);
+
+  --secondary: oklch(0.26 0.015 260);
+  --secondary-foreground: oklch(0.9 0.005 260);
+
+  --muted: oklch(0.24 0.014 260);
+  --muted-foreground: oklch(0.65 0.01 260);
+
+  --accent: oklch(0.28 0.02 220);
+  --accent-foreground: oklch(0.93 0.005 260);
+
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.97 0.01 25);
+
+  --border: oklch(0.28 0.012 260);
+  --input: oklch(0.28 0.012 260);
+  --ring: oklch(0.75 0.13 195);
+
+  /* 圖表色 */
+  --chart-1: oklch(0.75 0.13 195);
+  --chart-2: oklch(0.72 0.17 145);
+  --chart-3: oklch(0.65 0.2 25);
+  --chart-4: oklch(0.78 0.14 85);
+  --chart-5: oklch(0.65 0.15 300);
+
+  /* 側邊欄 */
+  --sidebar: oklch(0.13 0.012 260);
+  --sidebar-foreground: oklch(0.88 0.005 260);
+  --sidebar-primary: oklch(0.75 0.13 195);
+  --sidebar-primary-foreground: oklch(0.15 0.02 260);
+  --sidebar-accent: oklch(0.22 0.015 260);
+  --sidebar-accent-foreground: oklch(0.93 0.005 260);
+  --sidebar-border: oklch(0.24 0.012 260);
+  --sidebar-ring: oklch(0.75 0.13 195);
+
+  /* 交易語意色 */
+  --profit: oklch(0.72 0.17 145);
+  --loss: oklch(0.63 0.21 25);
+
+  --radius: 0.5rem;
+
+  --font-sans: "Inter", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-profit: var(--profit);
+  --color-loss: var(--loss);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --ease-out-snappy: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  button {
+    transition: transform 160ms var(--ease-out-snappy);
+  }
+  button:active {
+    transform: scale(0.97);
+  }
+}
+
+@layer utilities {
+  .container {
+    margin-inline: auto;
+    padding-inline: 1rem;
+    width: 100%;
+  }
+  @media (min-width: 640px) {
+    .container {
+      padding-inline: 1.5rem;
+    }
+  }
+  .flex {
+    min-width: 0;
+    min-height: 0;
+  }
+  .text-profit {
+    color: var(--profit);
+  }
+  .text-loss {
+    color: var(--loss);
+  }
+  .font-mono-nums {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}

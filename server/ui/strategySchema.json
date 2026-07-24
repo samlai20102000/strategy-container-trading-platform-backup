@@ -1,0 +1,80 @@
+{
+  "$comment": "V3.5 策略 UI Schema - 依據 pasted_content_3.txt 任務 5 更新（Base_Lot_Size 對象格式 + Symbol 欄位）",
+  "Symbol": {
+    "type": "string",
+    "default": "BTCUSDT",
+    "label": "交易對",
+    "description": "從交易所支援的清單中選擇（透過 exchange.getSymbols API 動態獲取）"
+  },
+  "Base_Lot_Size": {
+    "type": "object",
+    "label": "首單下單大小",
+    "properties": {
+      "value": { "type": "number", "default": 0.01, "label": "數值" },
+      "mode": {
+        "type": "string",
+        "enum": ["quantity", "usdt"],
+        "default": "quantity",
+        "label": "模式",
+        "description": "quantity = 基礎貨幣數量（單位隨交易對動態變更）；usdt = USDT 金額（按市價自動換算）"
+      }
+    }
+  },
+  "Reentry_Enabled": {
+    "type": "boolean",
+    "default": true,
+    "label": "循環再入場",
+    "description": "平倉後若入場條件仍成立，是否立即再入場"
+  },
+  "Reentry_Cooldown_Bars": {
+    "type": "number",
+    "default": 1,
+    "label": "再入場冷卻 K 線數",
+    "description": "平倉後需等待多少根 K 線才允許再入場"
+  },
+  "Position_Mode": {
+    "type": "string",
+    "enum": ["quantity", "usdt"],
+    "default": "quantity",
+    "label": "倉位模式",
+    "description": "與 Position_Value 搭配使用的扁平格式（優先級高於 Base_Lot_Size 對象格式）"
+  },
+  "Position_Value": {
+    "type": "number",
+    "default": 0.01,
+    "label": "倉位數值",
+    "description": "quantity 模式為基礎貨幣數量；usdt 模式為 USDT 金額"
+  },
+  "Martin_Multiplier": {
+    "type": "number",
+    "default": 1.5,
+    "label": "馬丁倍率",
+    "description": "每層加倉倍率：本層倉位 = 首單 × 倍率^層數"
+  },
+  "Max_Layers": {
+    "type": "number",
+    "default": 5,
+    "label": "最大馬丁層數"
+  },
+  "Martin_Step_Pct": {
+    "type": "number",
+    "default": 1.5,
+    "label": "加倉間距（%）"
+  },
+  "K_Line_Period": {
+    "type": "number",
+    "default": 30,
+    "label": "K 線週期（分鐘）",
+    "description": "用於 Bar-Lock 去重 TTL 與冷卻期計算"
+  },
+  "Target_TP_Pct": {
+    "type": "number",
+    "default": 1.0,
+    "label": "移動止盈激活（%）"
+  },
+  "Callback_Pct": {
+    "type": "number",
+    "default": 0.2,
+    "label": "止盈回撤（%）"
+  }
+}
