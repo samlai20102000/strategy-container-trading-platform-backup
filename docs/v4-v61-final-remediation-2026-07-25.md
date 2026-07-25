@@ -43,6 +43,8 @@ V6.1 的 OKX 錯誤 `51010` 則源於下單 payload 與帳戶實際 `posMode` �
 
 `server/exchanges/okx.ts` 在每次下單與設定槓桿前讀取 OKX `/api/v5/account/config`。`long_short_mode` 依買賣方向送出 `posSide=long|short`；`net_mode` 不送 `posSide`；未知或缺失模式直接阻擋下單，不以猜測值冒險送單。模擬盤請求持續攜帶 `x-simulated-trading: 1`，帳戶診斷程序也回報真實 `posMode` 與預期 payload 行為。
 
+2026-07-25 的唯讀帳戶診斷另確認：V6.1 綁定的 API 金鑰 #2 雖標籤為「OKX模擬子帳號samlai01」，資料庫環境旗標與實際憑證都屬 **live**。目前憑證在 live 環境回報 `acctLv=1`、`posMode=long_short_mode`，因此不符合永續合約所需帳戶等級；暫時切換至 demo header 時，OKX 明確回覆 `APIKey does not match current environment`。系統已立即回復原旗標，沒有留下半套配置，也沒有建立任何訂單。唯讀資料同時證實策略 #5 的成交數為 0、`lastEntryPrice=0`，因此已條件式安全停用該自動策略，避免使用者預期模擬盤時意外連向 live；待正確 Demo 憑證通過診斷後，才由使用者決定是否重新啟用。
+
 ## 三、資料安全處理
 
 唯讀檢查確認唯一受舊 0% 快照影響的是策略 #7。該策略的 `Max_Loss_Pct` 已由 `0` 修正為 `5`，停用原因改為需人工覆核的安全提示，並明確維持 `enabled=0`。此次沒有啟用策略、建立訂單、平倉或修改持倉。
@@ -70,6 +72,7 @@ V6.1 的 OKX 錯誤 `51010` 則源於下單 payload 與帳戶實際 `posMode` �
 | 執行期啟動 | 服務正常監聽，無新增 import、型別或啟動錯誤 |
 | UI／資料唯讀核對 | 策略列表可載入；策略 #7 維持停用且快照顯示 5% |
 | V4 盈虧閉環 | 初始狀態、長／短平倉 realizedPnl、非法成交資料 fail-closed、績效聚合、回撤與小額顯示精度均有確定性回歸 |
+| V6.1 帳戶環境 | 現有金鑰實際為 live、`acctLv=1`、`posMode=long_short_mode`；策略 #5 已在 0 成交、0 活動持倉下安全停用；Demo 驗證待使用者更新正確 Demo 憑證 |
 | 全域風控 Heartbeat | `global-risk-check-v4-v61` 已啟用；task UID `2UkhZjFe7SGf4BdnzqeunS`；首次執行 HTTP 200，218 ms |
 
 OKX 公網交易對測試依賴 sandbox 對 `www.okx.com` 的外部網路；先前失敗均為連線逾時，而非斷言或本次程式回歸。為維持 CI 可重現性，預設 Vitest 不再把 live 網路狀態當作單元測試成敗條件，但 live 驗證入口仍完整保留。
