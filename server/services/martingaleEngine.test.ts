@@ -145,7 +145,7 @@ describe("RiskManager V4.0 Core Functions", () => {
     console.log(`Simulated loss: ${loss}, lossPct: ${lossPct}`);
     const { triggered, reason } = shouldTriggerLimitStop(mockState, currentPrice, mockConfig);
     expect(triggered).toBe(true);
-    expect(reason).toContain("总浮亏");
+    expect(reason).toContain("總浮虧");
   });
 
   it("should not trigger limit stop when max loss percentage is not reached", () => {
@@ -153,6 +153,33 @@ describe("RiskManager V4.0 Core Functions", () => {
     const { triggered } = shouldTriggerLimitStop(mockState, currentPrice, mockConfig);
     expect(triggered).toBe(false);
   });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "should disable limit stop for invalid Max_Loss_Pct=%s",
+    (invalidMaxLossPct) => {
+      const config = { ...mockConfig, Max_Loss_Pct: invalidMaxLossPct };
+      const { triggered, reason } = shouldTriggerLimitStop(mockState, 1, config);
+      expect(triggered).toBe(false);
+      expect(reason).toContain("未啟用");
+    },
+  );
+
+  it.each([0, -100, Number.NaN, Number.POSITIVE_INFINITY])(
+    "should return 0 loss percentage for invalid Initial_Capital=%s",
+    (invalidCapital) => {
+      const config = { ...mockConfig, Initial_Capital: invalidCapital };
+      expect(calculateUnrealizedLossPct(mockState, 44000, config)).toBe(0);
+      expect(shouldTriggerLimitStop(mockState, 44000, config).triggered).toBe(false);
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "should not trigger limit stop for non-finite market price=%s",
+    (invalidPrice) => {
+      expect(calculateUnrealizedLoss(mockState, invalidPrice)).toBe(0);
+      expect(shouldTriggerLimitStop(mockState, invalidPrice, mockConfig).triggered).toBe(false);
+    },
+  );
 
   it("should add layer when deviation is met (basePrice = lastLayerPrice)", () => {
     // lastLayerPrice = 50000, currentPrice = 49250 => deviation = (50000 - 49250) / 50000 * 100 = 1.5% >= 1.5%

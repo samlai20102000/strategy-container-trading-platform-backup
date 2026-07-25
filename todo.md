@@ -1975,3 +1975,34 @@
 - [ ] 如需修復 OKX adapter：添加模擬子帳號特殊處理邏輯
 - [ ] 執行 V6.1 完整交易週期回歸測試
 - [ ] 保存檢查點並交付修復結果
+
+## 阻斷性二次修復：V4.0 開倉成功後仍被 0% 硬止損停用（2026-07-25）
+
+- [x] 依圖片時間線核對 13:09:14 開空成功後的實際監控事件、策略狀態與停用原因寫入來源
+- [x] 搜尋所有 `shouldTriggerLimitStop`、`Max_Loss_Pct`、`總浮虧` 與 `disableStrategySystem` 呼叫路徑，確認是否存在舊實作、重複函式或不同監控器
+- [x] 查明 V4.0 實際執行時 `Max_Loss_Pct` 的原始值、正規化值與來源層級，處理字串、null、NaN、0、舊快照及別名配置
+- [x] 僅針對 V4.0／V3.5 管線加入安全閾值解析與失效保護，零值不得觸發且有效正值仍維持硬止損
+- [x] 修復監控器讀取錯誤配置或舊狀態時的自動停用行為，並保留可稽核的原始／有效閾值日誌
+- [x] 為 0、`"0"`、null、undefined、NaN、負值、有效正值及有／無持倉情境新增單元與整合回歸測試
+- [x] 核對並安全清理該 V4.0 實例的舊停用原因；不得自動下單、平倉或變更其他策略
+- [x] 執行 TypeScript、完整 Vitest、生產建置與實際 UI／日誌唯讀驗收
+- [ ] 更新根因紀錄、核對待辦並保存自動發布檢查點
+
+## V4.0 跨實例競態與 V6.1 OKX 持倉模式底層修復（2026-07-25）
+
+- [x] 生產環境停用 process-local 風控／策略監控 setInterval，保留開發環境監控並由 Heartbeat 作為生產唯一排程來源
+- [x] 移除 `/api/scheduled/riskCheck` 對 V35 的重複全域檢查，使 V35 僅由對應策略的 `/api/scheduled/auto-trade` 執行
+- [x] 為單一 V35 策略檢查加入資料庫跨實例租約鎖，避免 Heartbeat 重試或多實例並行造成重複平倉／停用／加倉
+- [x] 將 `disableStrategySystem` 改為 `enabled = true` 條件更新，且只有實際完成狀態轉移時才發送停用通知
+- [x] 移除 V35Monitor 對同一 `checkLimitStop` 的重複呼叫，並加入原始／有效 Max_Loss_Pct 與實際浮虧率稽核日誌
+- [x] 正規化 V4 Max_Loss_Pct：僅接受有限正值；0、負值、null、undefined、NaN 與舊格式一律回退至安全預設值
+- [x] 修正 OKX `placeOrder`：依帳戶 `posMode` 產生 `posSide`，雙向模式使用 long／short，單向模式使用 net／不送 posSide
+- [x] 更新 OKX 帳戶模式診斷，使回報結果與真實下單 payload 相同且清楚辨識模擬子帳號
+- [x] 補齊 V4 零值／字串／空值／負值／正常閾值、跨實例租約與原子停用回歸測試
+- [x] 補齊 OKX `long_short_mode`／`net_mode` 下單 payload 與 V6.1 交易路徑回歸測試
+- [x] 將 auto-trade 的 V35 判定由過寬 `includes("KAMA")` 收斂為精確 `20415_KAMA_MARTIN_V35`，並回歸驗證 V5／V6.1／V7 各自走專屬監控
+- [x] 將直接呼叫 OKX 公網的交易對整合測試改為明確 opt-in，避免 sandbox／CI 連線逾時使預設 Vitest 偽失敗；保留環境變數開關供 live 驗證
+- [x] 修正 V4 移動止盈平倉失敗後仍可能順勢重入的危險路徑；只有交易所確認平倉成功時才能重置、通知成功或開新一輪
+- [ ] 發布後建立每分鐘單一 `/api/scheduled/riskCheck` Heartbeat，驅動泛用、V50、V61 風控；V35 必須由端點內明確跳過並維持個別 auto-trade 單一路徑
+- [x] 執行 TypeScript、完整 Vitest、生產建置與唯讀狀態驗收，確認未影響 20415、V5.0、V6.1 及其他策略
+- [ ] 更新技術紀錄並保存自動發布檢查點

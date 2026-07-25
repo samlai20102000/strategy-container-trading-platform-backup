@@ -22,6 +22,111 @@ function lockKey(strategyId: number, barTimestamp: number): string {
   return `K3_Locked:${strategyId}:${barTimestamp}`;
 }
 
+export interface ProcessLease {
+  lockKey: string;
+  ownerToken: number;
+}
+
+function processLeaseKey(scope: string, strategyId: number): string {
+  return `ProcessLease:${scope}:${strategyId}`;
+}
+
+/**
+ * 嘗試取得跨實例流程租約。
+ *
+ * 與 Bar-Lock 共用資料表的唯一鍵原子性，但使用負 strategyId 儲存，避免
+ * releaseAllLocks(strategyId) 在策略重置時誤刪仍在執行中的流程租約。
+ * DB 不可用或鎖狀態無法確認時採 fail-closed：寧可跳過本輪，也不重複下單。
+ */
+export async function acquireProcessLease(
+  scope: string,
+  strategyId: number,
+  ttlMs: number,
+): Promise<ProcessLease | null> {
+  if (!scope || !Number.isInteger(strategyId) || strategyId <= 0 || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+    console.error(`[ProcessLease] 無效參數 scope=${scope} strategyId=${strategyId} ttlMs=${ttlMs}`);
+    return null;
+  }
+
+  const db = await getDb();
+  if (!db) {
+    console.error(`[ProcessLease] DB 不可用，拒絕放行 ${scope}:${strategyId}`);
+    return null;
+  }
+
+  const key = processLeaseKey(scope, strategyId);
+  const now = Date.now();
+  const expiresAt = now + ttlMs;
+  const ownerToken = now * 1000 + Math.floor(Math.random() * 1000);
+  const row = {
+    lockKey: key,
+    strategyId: -Math.abs(strategyId),
+    barTimestamp: ownerToken,
+    expiresAt: new Date(expiresAt),
+  };
+
+  const tryInsert = async (): Promise<boolean> => {
+    try {
+      await db.insert(barLocks).values(row);
+      memoryLocks.set(key, expiresAt);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    if (await tryInsert()) return { lockKey: key, ownerToken };
+
+    const existing = await db
+      .select()
+      .from(barLocks)
+      .where(eq(barLocks.lockKey, key))
+      .limit(1);
+
+    if (existing.length > 0 && existing[0].expiresAt.getTime() > now) {
+      memoryLocks.set(key, existing[0].expiresAt.getTime());
+      return null;
+    }
+
+    // 過期租約只由符合 key + expiresAt 條件的刪除移除；競爭者仍須再通過唯一鍵插入。
+    await db
+      .delete(barLocks)
+      .where(and(eq(barLocks.lockKey, key), lt(barLocks.expiresAt, new Date(now))));
+
+    return (await tryInsert()) ? { lockKey: key, ownerToken } : null;
+  } catch (error) {
+    console.error(`[ProcessLease] 取得租約失敗 ${key}，採 fail-closed:`, error);
+    return null;
+  }
+}
+
+/** 僅租約擁有者可釋放；過期後若已被新實例接手，舊實例不會刪除新租約。 */
+export async function releaseProcessLease(lease: ProcessLease): Promise<void> {
+  memoryLocks.delete(lease.lockKey);
+  const db = await getDb();
+  if (!db) return;
+
+  const current = await db
+    .select()
+    .from(barLocks)
+    .where(eq(barLocks.lockKey, lease.lockKey))
+    .limit(1);
+  if (current.length === 0 || current[0].barTimestamp !== lease.ownerToken) {
+    console.log(`[ProcessLease] 略過非擁有者釋放 ${lease.lockKey}`);
+    return;
+  }
+
+  await db
+    .delete(barLocks)
+    .where(
+      and(
+        eq(barLocks.lockKey, lease.lockKey),
+        eq(barLocks.barTimestamp, lease.ownerToken),
+      ),
+    );
+}
+
 /**
  * 嘗試獲取 Bar-Lock（原子操作）
  * @returns true = 獲取成功（首次信號）；false = 鎖已存在（重複信號，應攔截）

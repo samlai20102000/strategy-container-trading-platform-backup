@@ -12,10 +12,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const originalFetch = global.fetch;
 let orderCallCount = 0;
 let orderResponses: any[] = [];
+let orderBodies: Record<string, unknown>[] = [];
+let leverageBodies: Record<string, unknown>[] = [];
+let accountConfigHeaders: Record<string, string>[] = [];
 
 beforeEach(() => {
   orderCallCount = 0;
   orderResponses = [];
+  orderBodies = [];
+  leverageBodies = [];
+  accountConfigHeaders = [];
 });
 
 afterEach(() => {
@@ -27,7 +33,7 @@ afterEach(() => {
  * - /api/v5/trade/order (POST) → uses orderResponses queue
  * - Everything else → returns generic success
  */
-function setupMock(responses: any[]) {
+function setupMock(responses: any[], positionMode: string = "long_short_mode") {
   orderResponses = [...responses];
   orderCallCount = 0;
 
@@ -37,6 +43,7 @@ function setupMock(responses: any[]) {
 
     // Route /trade/order POST calls through the response queue
     if (urlStr.includes("/api/v5/trade/order") && method === "POST") {
+      orderBodies.push(JSON.parse(init?.body || "{}"));
       const idx = orderCallCount++;
       const resp = orderResponses[idx] || orderResponses[orderResponses.length - 1];
 
@@ -44,6 +51,24 @@ function setupMock(responses: any[]) {
         throw resp.error;
       }
       return { ok: true, json: async () => resp.data, status: 200 } as Response;
+    }
+
+    if (urlStr.includes("/api/v5/account/config")) {
+      accountConfigHeaders.push(init?.headers || {});
+      return {
+        ok: true,
+        json: async () => ({ code: "0", data: [{ acctLv: "2", posMode: positionMode, uid: "demo-sub-account" }] }),
+        status: 200,
+      } as Response;
+    }
+
+    if (urlStr.includes("/api/v5/account/set-leverage") && method === "POST") {
+      leverageBodies.push(JSON.parse(init?.body || "{}"));
+      return {
+        ok: true,
+        json: async () => ({ code: "0", data: [] }),
+        status: 200,
+      } as Response;
     }
 
     // /api/v5/public/instruments → contract specs
@@ -167,4 +192,87 @@ describe("OKX placeOrder 重試機制", () => {
     // Should have multiple attempts (at least 2 before circuit breaker kicks in)
     expect(orderCallCount).toBeGreaterThanOrEqual(2);
   }, 30000);
+});
+
+describe("OKX placeOrder posMode 契約", () => {
+  const success = { data: { code: "0", data: [{ sCode: "0", ordId: "mode-order-1" }] } };
+
+  it("long_short_mode 開多應送 posSide=long，槓桿亦使用 long", async () => {
+    setupMock([success], "long_short_mode");
+    const { OKXAdapter } = await import("./exchanges/okx");
+    const adapter = new OKXAdapter("key-dual-long", "secret", "pass", true);
+
+    const result = await adapter.placeOrder({
+      symbol: "BTCUSDT",
+      side: "buy",
+      orderType: "limit",
+      price: 65000,
+      size: 0.01,
+      leverage: 5,
+    });
+
+    expect(result.success).toBe(true);
+    expect(orderBodies[0]?.posSide).toBe("long");
+    expect(leverageBodies[0]?.posSide).toBe("long");
+    expect(accountConfigHeaders[0]?.["x-simulated-trading"]).toBe("1");
+  });
+
+  it("long_short_mode 開空應送 posSide=short", async () => {
+    setupMock([success], "long_short_mode");
+    const { OKXAdapter } = await import("./exchanges/okx");
+    const adapter = new OKXAdapter("key-dual-short", "secret", "pass", true);
+
+    const result = await adapter.placeOrder({
+      symbol: "BTCUSDT",
+      side: "sell",
+      orderType: "limit",
+      price: 65000,
+      size: 0.01,
+      leverage: 5,
+    });
+
+    expect(result.success).toBe(true);
+    expect(orderBodies[0]?.posSide).toBe("short");
+    expect(leverageBodies[0]?.posSide).toBe("short");
+  });
+
+  it("net_mode 開倉與設定槓桿都應省略 posSide", async () => {
+    setupMock([success], "net_mode");
+    const { OKXAdapter } = await import("./exchanges/okx");
+    const adapter = new OKXAdapter("key-net", "secret", "pass", true);
+
+    const result = await adapter.placeOrder({
+      symbol: "BTCUSDT",
+      side: "buy",
+      orderType: "limit",
+      price: 65000,
+      size: 0.01,
+      leverage: 5,
+      posSide: "net",
+    });
+
+    expect(result.success).toBe(true);
+    expect(orderBodies[0]).not.toHaveProperty("posSide");
+    expect(leverageBodies[0]).not.toHaveProperty("posSide");
+  });
+
+  it("未知 posMode 應 fail-closed，且不得送出交易訂單", async () => {
+    setupMock([success], "unknown");
+    const { OKXAdapter } = await import("./exchanges/okx");
+    const adapter = new OKXAdapter("key-unknown", "secret", "pass", true);
+
+    const result = await adapter.placeOrder({
+      symbol: "BTCUSDT",
+      side: "buy",
+      orderType: "limit",
+      price: 65000,
+      size: 0.01,
+      leverage: 5,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain("為避免 51010 已取消下單");
+    expect(orderCallCount).toBe(0);
+    expect(orderBodies).toHaveLength(0);
+  });
 });

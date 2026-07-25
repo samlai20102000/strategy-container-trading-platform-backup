@@ -24,7 +24,7 @@ import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter } from "../exchanges/types";
 import type { Strategy } from "../../drizzle/schema";
 import type { V4Config, StrategyState, MartinLayer } from "./martingaleEngine";
-import { getLayerSize, shouldAddLayer, getFirstOrderValue } from "./martingaleEngine";
+import { calculateUnrealizedLossPct, getLayerSize, shouldAddLayer, getFirstOrderValue } from "./martingaleEngine";
 import { parseMartinLayersStrict } from "./parameterValidator";
 import { RiskManagerV4 } from "./riskManager";
 import { updateTrailingStop } from "./trailingStopManager";
@@ -36,7 +36,20 @@ import { calculateKAMA } from "./backtest/kama";
 import { fetchOKXCandles, fetchBybitCandles } from "./backtest/dataFetcher";
 import { getTimeframeMilliseconds } from "./backtest/timeframeParser";
 
-const V35_KEY = "20415_KAMA_MARTIN_V35";
+export const V35_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
+export function isV35StrategyKey(strategyKey: unknown): boolean {
+  return strategyKey === V35_STRATEGY_KEY;
+}
+
+export type V35PostCloseAction = "retry_close" | "reenter" | "cooldown" | "none";
+
+/** 平倉未獲交易所確認時一律只允許重試，禁止重置狀態或建立新一輪持倉。 */
+export function decideV35PostCloseAction(
+  positionClosed: boolean,
+  requestedAction: "reenter" | "cooldown" | "none",
+): V35PostCloseAction {
+  return positionClosed ? requestedAction : "retry_close";
+}
 const CHECK_INTERVAL_MS = 20_000;
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
@@ -61,7 +74,7 @@ export async function runV35Check(): Promise<void> {
   running = true;
   try {
     const enabled = await listEnabledStrategies();
-    const v35Strategies = enabled.filter((s) => s.strategyKey === V35_KEY);
+    const v35Strategies = enabled.filter((s) => isV35StrategyKey(s.strategyKey));
     console.log(`[V35Monitor] 運行檢查: 全部啟用策略=${enabled.length}, V35策略=${v35Strategies.length}, keys=[${v35Strategies.map(s => `${s.id}:${s.strategyKey}`).join(',')}]`);
     for (const strategy of v35Strategies) {
       try {
@@ -132,7 +145,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     return false;
   }
 
-  const cfg = readV4Config(strategy); // 使用新的 readV4Config
+  const { config: cfg, audit: configAudit } = readV4Config(strategy);
 
   // 馬丁層數（文件語義，首單 = 第 0 層）= currentLayer - 1
   const martinDepth = state.currentLayer; // V4.0 currentLayer 直接表示層數
@@ -142,34 +155,29 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
 
   // ===== 1. 🛡️ V3.7 硬止損（Max_Loss_Pct，取代 KAMA 反轉割肉）+ 極限防爆倉止損（含 O4）=====
   const riskManager = new RiskManagerV4(cfg); // 使用 RiskManagerV4
+  const currentLossPct = calculateUnrealizedLossPct(state, currentPrice, cfg);
+  console.log(
+    `[V35Monitor][RiskAudit] strategy=${strategy.id} rawMaxLossPct=${configAudit.rawDisplay} ` +
+    `effectiveMaxLossPct=${cfg.Max_Loss_Pct} status=${configAudit.status} ` +
+    `capital=${cfg.Initial_Capital} totalSize=${state.totalSize} avgPrice=${state.avgPrice} ` +
+    `markPrice=${currentPrice} lossPct=${currentLossPct.toFixed(6)}`,
+  );
 
   // 🛡️ V3.7 硬止損檢查（整組馬丁持倉總浮虧 % >= Max_Loss_Pct → 全線市價平倉 + 暫停 + 重置馬丁 + 警報）
   const hardStop = riskManager.checkLimitStop(state, currentPrice);
   if (hardStop.triggered) {
     console.log(`   馬丁層數: ${martinDepth}`);
-    await executeFullClose(strategy, adapter, state, "hard_stop_loss", hardStop.reason, {
+    const closeResult = await executeFullClose(strategy, adapter, state, "hard_stop_loss", hardStop.reason, {
       disable: true, // 暫停策略（防止立即重入）
       cooldownMinutes: cfg.K_Line_Period * 2,
     });
-    await notifyOwner(
-      `🛡️ 硬止損觸發（HARD_STOP_LOSS） - 策略 #${strategy.id} ${strategy.name}`,
-      `${hardStop.reason}\n馬丁層數：${martinDepth}\n當前價格：${currentPrice}\n已市價全平並暫停策略，請人工檢查後手動恢復。`,
-    );
+    if (!closeResult.positionClosed) {
+      await notifyOwner(
+        `🚨 硬止損平倉失敗 - 策略 #${strategy.id} ${strategy.name}`,
+        `${hardStop.reason}\n馬丁層數：${martinDepth}\n當前價格：${currentPrice}\n本地持倉狀態未重置、策略保持啟用，下一次 Heartbeat 將重試。`,
+      );
+    }
     return true; // 已觸發平倉（止損）
-  }
-
-  const limitStop = riskManager.checkLimitStop(state, currentPrice);
-
-  if (limitStop.triggered) {
-    await executeFullClose(strategy, adapter, state, "risk_limit_stop", limitStop.reason, {
-      disable: true,
-      cooldownMinutes: cfg.K_Line_Period * 2,
-    });
-    await notifyOwner(
-      `🚨 極限止損觸發 - 策略 #${strategy.id} ${strategy.name}`,
-      `${limitStop.reason}\n已市價全平並停用策略，請人工檢查後手動恢復。`,
-    );
-    return true; // 已觸發平倉（極限止損）
   }
 
   // ===== 2. 移動止盈追蹤 =====
@@ -197,12 +205,22 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       reentryEnabled: true, // V4.0 默認啟用重入
     });
 
-    await executeFullClose(strategy, adapter, state, "trailing_take_profit", trailing.reason, {
+    const closeResult = await executeFullClose(strategy, adapter, state, "trailing_take_profit", trailing.reason, {
       disable: false,
       cooldownMinutes: split.action === "cooldown" ? cfg.K_Line_Period * 2 : 0,
     });
 
-    if (split.action === "reenter" && kama) {
+    const requestedAction = split.action === "reenter" && !kama ? "none" : split.action;
+    const postCloseAction = decideV35PostCloseAction(closeResult.positionClosed, requestedAction);
+    if (postCloseAction === "retry_close") {
+      await notifyOwner(
+        `🚨 移動止盈平倉失敗 - 策略 #${strategy.id} ${strategy.name}`,
+        `${trailing.reason}\n交易所尚未確認平倉；本地持倉狀態未重置、未執行順勢重入，下一次 Heartbeat 將重試。`,
+      );
+      return true;
+    }
+
+    if (postCloseAction === "reenter" && kama) {
       // ✅ O3：第 0 層順勢重入（立即市價重入首單）
       const reentered = await executeReentry(strategy, adapter, state, currentPrice, kama.fast > kama.slow, cfg);
       await notifyOwner(
@@ -212,7 +230,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     } else {
       await notifyOwner(
         `✅ 移動止盈觸發 - 策略 #${strategy.id} ${strategy.name}`,
-        `${trailing.reason}\n${split.action === "cooldown" ? `馬丁解套（第 ${martinDepth} 層馬丁），進入冷卻期 ${cfg.K_Line_Period * 2} 分鐘` : split.reason}`,
+        `${trailing.reason}\n${postCloseAction === "cooldown" ? `馬丁解套（第 ${martinDepth} 層馬丁），進入冷卻期 ${cfg.K_Line_Period * 2} 分鐘` : kama ? split.reason : "KAMA 行情暫時不可用，本輪不執行順勢重入"}`,
       );
     }
     return true; // 已觸發平倉（止盈）
@@ -310,8 +328,43 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
   return false; // 未觸發平倉
 }
 
-/** 讀取策略的 V4.0 合併配置 */
-function readV4Config(strategy: Strategy): V4Config {
+type MaxLossConfigStatus = "configured" | "fallback_missing" | "fallback_invalid";
+
+export function normalizeV4MaxLossPct(
+  rawValue: unknown,
+  fallback = 5,
+): { value: number; status: MaxLossConfigStatus; rawDisplay: string } {
+  const rawDisplay = rawValue === undefined
+    ? "undefined"
+    : rawValue === null
+      ? "null"
+      : typeof rawValue === "number" && Number.isNaN(rawValue)
+        ? "NaN"
+        : JSON.stringify(rawValue);
+
+  if (
+    rawValue === undefined ||
+    rawValue === null ||
+    (typeof rawValue === "string" && rawValue.trim() === "")
+  ) {
+    return { value: fallback, status: "fallback_missing", rawDisplay };
+  }
+  if (typeof rawValue === "boolean") {
+    return { value: fallback, status: "fallback_invalid", rawDisplay };
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 50) {
+    return { value: fallback, status: "fallback_invalid", rawDisplay };
+  }
+  return { value: parsed, status: "configured", rawDisplay };
+}
+
+/** 讀取策略的 V4.0 合併配置，並保留硬止損原始值供稽核。 */
+function readV4Config(strategy: Strategy): {
+  config: V4Config;
+  audit: ReturnType<typeof normalizeV4MaxLossPct>;
+} {
   // 從 strategy.martinState JSON 中讀取擴展配置（__v35Config 鍵，由策略設定 UI 寫入）
   // 🔥 固定金本位馬丁預設值
   const defaults: V4Config = {
@@ -330,16 +383,19 @@ function readV4Config(strategy: Strategy): V4Config {
     K_Line_Period: 30,
   };
 
+  const defaultAudit = normalizeV4MaxLossPct(undefined, defaults.Max_Loss_Pct);
+
   try {
     const ms = strategy.martinState;
     if (ms && typeof ms === "object") {
       const v35 = (ms as Record<string, unknown>).__v35Config;
       if (v35 && typeof v35 === "object") {
         const c = v35 as Record<string, unknown>;
-        return {
-          Initial_Capital: Number.isFinite(Number(c.Initial_Capital)) ? Number(c.Initial_Capital) : defaults.Initial_Capital,
+        const maxLossAudit = normalizeV4MaxLossPct(c.Max_Loss_Pct, defaults.Max_Loss_Pct);
+        return { config: {
+          Initial_Capital: Number.isFinite(Number(c.Initial_Capital)) && Number(c.Initial_Capital) > 0 ? Number(c.Initial_Capital) : defaults.Initial_Capital,
           First_Order_Pct: Number.isFinite(Number(c.First_Order_Pct)) ? Number(c.First_Order_Pct) : defaults.First_Order_Pct,
-          Max_Loss_Pct: Number.isFinite(Number(c.Max_Loss_Pct)) ? Number(c.Max_Loss_Pct) : defaults.Max_Loss_Pct,
+          Max_Loss_Pct: maxLossAudit.value,
           Martin_Step_Pct: Number.isFinite(Number(c.Martin_Step_Pct)) ? Number(c.Martin_Step_Pct) : (Number.isFinite(Number((strategy as any).martinSpacingPct)) && Number((strategy as any).martinSpacingPct) > 0 ? Number((strategy as any).martinSpacingPct) : defaults.Martin_Step_Pct),
           Martin_Layers: (() => {
             // 🔥 修復：Martin_Layers 可能是 JSON 字串或陣列，統一用 parseMartinLayersStrict 解析
@@ -353,14 +409,14 @@ function readV4Config(strategy: Strategy): V4Config {
           Max_Layers: Number.isFinite(Number(c.Max_Layers)) ? Number(c.Max_Layers) : defaults.Max_Layers,
           Target_TP_Pct: Number.isFinite(Number(c.Target_TP_Pct)) ? Number(c.Target_TP_Pct) : defaults.Target_TP_Pct,
           Callback_Pct: Number.isFinite(Number(c.Callback_Pct)) ? Number(c.Callback_Pct) : defaults.Callback_Pct,
-          K_Line_Period: Number.isFinite(Number(c.K_Line_Period)) ? Number(c.K_Line_Period) : defaults.K_Line_Period,
-        };
+          K_Line_Period: Number.isFinite(Number(c.K_Line_Period)) && Number(c.K_Line_Period) > 0 ? Number(c.K_Line_Period) : defaults.K_Line_Period,
+        }, audit: maxLossAudit };
       }
     }
   } catch {
     // 解析失敗使用預設
   }
-  return defaults;
+  return { config: defaults, audit: defaultAudit };
 }
 
 /**
@@ -463,7 +519,7 @@ async function executeFullClose(
   triggerSource: string,
   reason: string,
   opts: { disable: boolean; cooldownMinutes: number },
-): Promise<void> {
+): Promise<{ positionClosed: boolean; strategyDisabled: boolean }> {
   let positionClosed = false;
   let exitPrice = 0;
   let pnl: number | undefined;
@@ -537,24 +593,28 @@ async function executeFullClose(
     }
   }
 
-  // 重置狀態 + 分流冷卻
-  const newState = createInitialStrategyState();
-  if (opts.cooldownMinutes > 0) {
-    newState.isCooldown = true;
-    newState.cooldownUntil = Date.now() + opts.cooldownMinutes * 60 * 1000;
-  }
-  await saveStrategyState(strategy.id, newState);
+  let strategyDisabled = false;
+  if (positionClosed) {
+    // 僅在交易所確認平倉後重置本地狀態；失敗時保留持倉狀態供下一輪重試。
+    const newState = createInitialStrategyState();
+    if (opts.cooldownMinutes > 0) {
+      newState.isCooldown = true;
+      newState.cooldownUntil = Date.now() + opts.cooldownMinutes * 60 * 1000;
+    }
+    await saveStrategyState(strategy.id, newState);
 
-  if (opts.disable) {
-    await disableStrategySystem(strategy.id, reason);
+    if (opts.disable) {
+      strategyDisabled = await disableStrategySystem(strategy.id, reason);
+    }
   }
 
   await createRiskEvent({
     strategyId: strategy.id,
     userId: strategy.userId,
-    eventType: triggerSource === "risk_limit_stop" ? "stop_loss" : "take_profit",
+    eventType: triggerSource.includes("stop") ? "stop_loss" : "take_profit",
     detail: `[V4.0] ${reason}`,
     positionClosed,
-    strategyDisabled: opts.disable,
+    strategyDisabled,
   });
+  return { positionClosed, strategyDisabled };
 }

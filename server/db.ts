@@ -215,13 +215,35 @@ export async function updateStrategy(
 }
 
 /** 系統層級停用策略（風險觸發，無 userId 限制） */
-export async function disableStrategySystem(id: number, reason: string) {
-  const db = await getDb();
-  if (!db) throw new Error("資料庫不可用");
+export async function transitionStrategyToDisabled(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  id: number,
+  reason: string,
+): Promise<boolean> {
   const result = await db
     .update(strategies)
     .set({ enabled: false, disabledReason: reason })
-    .where(eq(strategies.id, id));
+    .where(and(eq(strategies.id, id), eq(strategies.enabled, true)));
+
+  const rawResult = result as unknown as
+    | { affectedRows?: number; rowsAffected?: number }
+    | [{ affectedRows?: number; rowsAffected?: number }, ...unknown[]];
+  const header = Array.isArray(rawResult) ? rawResult[0] : rawResult;
+  const affectedRows = header?.affectedRows ?? header?.rowsAffected ?? 0;
+  return affectedRows > 0;
+}
+
+/** 系統層級停用策略（風險觸發，無 userId 限制） */
+export async function disableStrategySystem(id: number, reason: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  const disabledNow = await transitionStrategyToDisabled(db, id, reason);
+
+  if (!disabledNow) {
+    console.log(`[disableStrategySystem] 策略 #${id} 已停用或不存在，略過重複通知`);
+    return false;
+  }
+
   // 策略被系統自動停用時通知擁有者（告警連線，失敗不影響主流程）
   try {
     const { notifyOwner } = await import("./services/notifier");
@@ -232,7 +254,7 @@ export async function disableStrategySystem(id: number, reason: string) {
   } catch (e) {
     console.warn("[disableStrategySystem] 通知發送失敗:", (e as Error)?.message);
   }
-  return result;
+  return true;
 }
 
 export async function deleteStrategy(id: number, userId: number) {

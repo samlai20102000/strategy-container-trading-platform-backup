@@ -11,6 +11,7 @@ import {
 import { createInitialStrategyState } from "../strategies/base";
 import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter, Position } from "../exchanges/types";
+import { isV35StrategyKey } from "./v35Monitor";
 
 /**
  * 風險監控循環
@@ -63,7 +64,15 @@ export async function runRiskCheck(): Promise<void> {
 // 避免雙重監控器同時搶平同一倉位，造成 API 請求風暴（50001 錯誤）
 const V61_STRATEGY_KEYS = ["KAMA_3K_HF_V61"];
 
+export function shouldSkipGenericRiskMonitor(strategyKey: unknown): boolean {
+  return isV35StrategyKey(strategyKey);
+}
+
 async function checkStrategyRisk(strategy: any): Promise<void> {
+  // V35/V4 有獨立的硬止損、移動止盈、馬丁加倉與跨實例租約。
+  // 泛用 RiskMonitor 若再掃描，會以另一套 stopLossPct 語義重複平倉／停用。
+  if (shouldSkipGenericRiskMonitor(strategy.strategyKey)) return;
+
   const stopLossPct = parseFloat(strategy.stopLossPct);
   let takeProfitPct = parseFloat(strategy.takeProfitPct);
   const maxDailyLoss = parseFloat(strategy.maxDailyLoss);

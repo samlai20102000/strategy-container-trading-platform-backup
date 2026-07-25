@@ -552,7 +552,14 @@ export function shouldAddLayer(
  * 🔥 修復：方向感知，做空時價格上漲 = 虧損
  */
 export function calculateUnrealizedLoss(state: StrategyState, currentPrice: number): number {
-  if (state.totalSize === 0) return 0;
+  if (
+    !Number.isFinite(state.totalSize) ||
+    state.totalSize <= 0 ||
+    !Number.isFinite(state.avgPrice) ||
+    state.avgPrice <= 0 ||
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0
+  ) return 0;
   if (state.isLong) {
     // 做多：價格下跌 = 虧損（正值）
     return (state.avgPrice - currentPrice) * state.totalSize;
@@ -566,8 +573,10 @@ export function calculateUnrealizedLoss(state: StrategyState, currentPrice: numb
  * 🔥 V4.0：计算总浮亏率（%）
  */
 export function calculateUnrealizedLossPct(state: StrategyState, currentPrice: number, config: V4Config): number {
+  if (!Number.isFinite(config.Initial_Capital) || config.Initial_Capital <= 0) return 0;
   const loss = calculateUnrealizedLoss(state, currentPrice);
-  return (loss / config.Initial_Capital) * 100;
+  const lossPct = (loss / config.Initial_Capital) * 100;
+  return Number.isFinite(lossPct) ? lossPct : 0;
 }
 
 /**
@@ -578,24 +587,41 @@ export function shouldTriggerLimitStop(
   currentPrice: number,
   config: V4Config,
 ): { triggered: boolean; reason: string } {
-  if (state.totalSize === 0) {
-    return { triggered: false, reason: '无持仓' };
+  if (!Number.isFinite(state.totalSize) || state.totalSize <= 0) {
+    return { triggered: false, reason: '無有效持倉' };
   }
 
-  // 🔧 修復：Max_Loss_Pct 必須 > 0 才能觸發硬止損
-  if (config.Max_Loss_Pct <= 0) {
-    return { triggered: false, reason: '硬止損未啟用（Max_Loss_Pct ≤ 0）' };
+  const maxLossPct = Number(config.Max_Loss_Pct);
+  if (!Number.isFinite(maxLossPct) || maxLossPct <= 0) {
+    return { triggered: false, reason: '硬止損未啟用或閾值無效（Max_Loss_Pct ≤ 0）' };
+  }
+
+  if (!Number.isFinite(config.Initial_Capital) || config.Initial_Capital <= 0) {
+    return { triggered: false, reason: '硬止損配置無效（Initial_Capital ≤ 0）' };
+  }
+
+  if (
+    !Number.isFinite(state.avgPrice) ||
+    state.avgPrice <= 0 ||
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0
+  ) {
+    return { triggered: false, reason: '價格資料無效，拒絕觸發硬止損' };
   }
 
   const loss = calculateUnrealizedLoss(state, currentPrice);
   const lossPct = (loss / config.Initial_Capital) * 100;
 
-  if (lossPct >= config.Max_Loss_Pct) {
+  if (!Number.isFinite(lossPct) || lossPct <= 0) {
+    return { triggered: false, reason: '未觸發（無浮虧）' };
+  }
+
+  if (lossPct >= maxLossPct) {
     return {
       triggered: true,
-      reason: `总浮亏 ${lossPct.toFixed(2)}% ≥ ${config.Max_Loss_Pct}%`,
+      reason: `總浮虧 ${lossPct.toFixed(2)}% ≥ ${maxLossPct}%`,
     };
   }
 
-  return { triggered: false, reason: '未触发' };
+  return { triggered: false, reason: '未觸發' };
 }

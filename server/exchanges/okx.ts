@@ -32,6 +32,8 @@ interface CircuitState {
   failCount: number;
   cooldownUntil: number; // Unix ms
 }
+type OKXPositionMode = "long_short_mode" | "net_mode";
+
 const circuitBreakers = new Map<string, CircuitState>();
 const CIRCUIT_MAX_FAILS = 3;
 const CIRCUIT_COOLDOWN_MS = 2 * 60 * 1000; // 2 分鐘冷卻（有端點切換後可縮短）
@@ -275,7 +277,7 @@ export class OKXAdapter implements ExchangeAdapter {
       case "50114":
         return "API 權限不足，請確認已勾選「讀取」與「交易」權限";
       case "51010":
-        return "帳戶模式不匹配：請在 OKX 將帳戶切換為「單幣種保證金模式」或「跨幣種保證金模式」（系統使用永續合約 cross 模式下單）";
+        return "OKX 拒絕訂單（51010 帳戶模式不匹配）：系統已依當前 posMode 自動組裝訂單；請確認此 API Key 對應正確的實盤／模擬子帳號，並重新執行帳戶模式診斷";
       case "51008":
         return "訂單金額不足：請確認帳戶有足夠 USDT 保證金";
       case "50001":
@@ -337,14 +339,36 @@ export class OKXAdapter implements ExchangeAdapter {
     }
   }
 
+  private async getPositionMode(): Promise<OKXPositionMode> {
+    const config = await this.getAccountConfig();
+    if (config.posMode !== "long_short_mode" && config.posMode !== "net_mode") {
+      throw new Error(`無法確認 OKX 持倉模式（posMode=${config.posMode || "empty"}），為避免 51010 已取消下單`);
+    }
+    return config.posMode;
+  }
+
   async placeOrder(params: OrderParams): Promise<OrderResult> {
     const TAG = `[OKX][placeOrder]`;
     try {
       const instId = this.normalizeSymbol(params.symbol);
+      // 以這組 API Key 的真實帳戶設定為準；模擬子帳號與實盤可能使用不同 posMode。
+      // 查詢失敗時採 fail-closed，絕不猜測模式後送出可能不相容的訂單。
+      const posMode = await this.getPositionMode();
+      const inferredPosSide: "long" | "short" = params.reduceOnly
+        ? (params.side === "buy" ? "short" : "long")
+        : (params.side === "buy" ? "long" : "short");
+      const dualModePosSide: "long" | "short" =
+        params.posSide === "long" || params.posSide === "short"
+          ? params.posSide
+          : inferredPosSide;
+
       if (params.leverage && !params.reduceOnly) {
-        // 雙向持倉模式下，指定 posSide 避免影響另一個方向的槓桿
-        const leveragePosSide: "long" | "short" = params.side === "buy" ? "long" : "short";
-        await this.setLeverage(instId, params.leverage, leveragePosSide);
+        // 雙向持倉分方向設定槓桿；單向模式不得傳 long／short posSide。
+        await this.setLeverage(
+          instId,
+          params.leverage,
+          posMode === "long_short_mode" ? dualModePosSide : undefined,
+        );
       }
 
       // ★ 核心修復：將 base 幣數量轉換為 OKX 合約張數，並按 lotSz 步長取整
@@ -368,19 +392,14 @@ export class OKXAdapter implements ExchangeAdapter {
         ordType: params.orderType,
         sz: String(conversion.contracts),
       };
-      // OKX 雙向持倉模式需要 posSide；單向持倉模式用 "net"
-      if (params.posSide) {
-        body.posSide = params.posSide;
-      } else {
-        // 預設根據 side 推斷 posSide（相容雙向持倉模式）
-        if (params.reduceOnly) {
-          // 平倉：buy 平 short，sell 平 long
-          body.posSide = params.side === "buy" ? "short" : "long";
-        } else {
-          // 開倉：buy 開 long，sell 開 short
-          body.posSide = params.side === "buy" ? "long" : "short";
-        }
+      // 雙向持倉模式必須送 long／short；單向持倉模式省略 posSide。
+      if (posMode === "long_short_mode") {
+        body.posSide = dualModePosSide;
       }
+      console.log(
+        `${TAG} 帳戶模式=${posMode}，訂單 posSide=${String(body.posSide ?? "(omitted/net)")}，` +
+        `環境=${this.isTestnet ? "demo" : "live"}`,
+      );
       if (params.orderType === "limit" && params.price) {
         body.px = String(params.price);
       }

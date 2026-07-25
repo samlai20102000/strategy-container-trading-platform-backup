@@ -489,16 +489,29 @@ export const autoTradeRouter = router({
         // acctLv: 1=simple, 2=single-currency margin, 3=multi-currency margin, 4=portfolio margin
         const acctLv = config?.acctLv || "unknown";
         const posMode = config?.posMode || "unknown";
-        // For perpetual swap trading, need acctLv >= 2 and posMode should be "long_short_mode"
-        const compatible = Number(acctLv) >= 2;
+        const accountLevelCompatible = Number(acctLv) >= 2;
+        const positionModeCompatible = posMode === "long_short_mode" || posMode === "net_mode";
+        const compatible = accountLevelCompatible && positionModeCompatible;
+        const environment = apiKeyRecord.isTestnet ? "demo" : "live";
+        const environmentLabel = apiKeyRecord.isTestnet ? "OKX 模擬盤" : "OKX 實盤";
+        const positionModeLabel = posMode === "long_short_mode"
+          ? "雙向持倉（下單送 long／short）"
+          : posMode === "net_mode"
+            ? "單向持倉（下單省略 posSide）"
+            : `未知持倉模式（${posMode}）`;
         return {
           compatible,
           exchange: "okx",
           acctLv,
           posMode,
+          environment,
+          uid: config?.uid || "",
+          orderPosSideBehavior: posMode === "long_short_mode" ? "long_or_short" : posMode === "net_mode" ? "omitted" : "blocked",
           message: compatible
-            ? `帳戶模式正常（Level ${acctLv}，${posMode === "long_short_mode" ? "雙向持倉" : "單向持倉"}）`
-            : `帳戶模式不兼容：當前為 Level ${acctLv}（需要 Level 2+，請在 OKX 切換為保證金交易模式）`,
+            ? `${environmentLabel}帳戶模式正常（Level ${acctLv}，${positionModeLabel}）；系統會自動匹配下單 payload`
+            : !accountLevelCompatible
+              ? `${environmentLabel}帳戶模式不兼容：當前為 Level ${acctLv}（永續合約需要 Level 2+）`
+              : `${environmentLabel}回傳無法辨識的 posMode=${posMode}，為避免 51010 系統將阻止下單`,
         };
       } catch (err: any) {
         return {

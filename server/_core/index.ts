@@ -8,7 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { registerWebhookRoute } from "../webhook";
 import { startRiskMonitor, runRiskCheck } from "../services/riskMonitor";
-import { startV35Monitor, runV35Check } from "../services/v35Monitor";
+import { isV35StrategyKey, startV35Monitor } from "../services/v35Monitor";
 import { startV61Monitor, runV61Check } from "../services/v61Monitor";
 import { startV50Monitor, runV50Check } from "../services/v50Monitor";
 import { sdk } from "./sdk";
@@ -48,8 +48,8 @@ async function startServer() {
   registerWebhookRoute(app);
   registerStorageProxy(app);
   registerOAuthRoutes(app);
-  // 生產環境（serverless）週期監控：由 Manus Heartbeat 排程 POST 觸發
-  // 執行 V3.5 監控（極限止損/移動止盈/馬丁加倉）+ 舊版風控（止損/止盈/每日虧損）
+  // 生產環境（serverless）週期監控：由 Manus Heartbeat 排程 POST 觸發。
+  // V35 僅由對應策略的 auto-trade 端點執行，避免同一策略被全域 riskCheck 重複掃描。
   app.post("/api/scheduled/riskCheck", async (req, res) => {
     try {
       const user = await sdk.authenticateRequest(req);
@@ -57,7 +57,6 @@ async function startServer() {
         return res.status(403).json({ error: "cron-only" });
       }
       await runRiskCheck();
-      await runV35Check();
       await runV50Check();
       await runV61Check();
       return res.json({ ok: true, ranAt: new Date().toISOString() });
@@ -73,6 +72,7 @@ async function startServer() {
   // 24/7 自動交易 Heartbeat 回調端點
   // 每次 K 線週期觸發（例如 5 分鐘）產生信號並執行交易
   app.post("/api/scheduled/auto-trade", async (req, res) => {
+    let strategyExecutionLease: import("../services/barLock").ProcessLease | null = null;
     try {
       const user = await sdk.authenticateRequest(req);
       if (!user || !user.isCron) {
@@ -95,7 +95,7 @@ async function startServer() {
       const { strategies } = await import("../../drizzle/schema");
       const { eq } = await import("drizzle-orm");
       const strategyResult = await db.select().from(strategies).where(eq(strategies.id, strategyId)).limit(1);
-      const strategy = strategyResult[0];
+      let strategy = strategyResult[0];
 
       if (!strategy) {
         return res.status(404).json({ error: `Strategy ${strategyId} not found` });
@@ -116,10 +116,41 @@ async function startServer() {
         return res.json({ ok: true, message: "Strategy disabled, skipped", ranAt: new Date().toISOString() });
       }
 
+      let strategyKey = (strategy as any).strategyKey || "";
+      let isV35Strategy = isV35StrategyKey(strategyKey);
+
+      // V35 的風控、信號生成與下單必須共用同一跨實例租約。
+      // Heartbeat 重試、舊 revision 與多個 autoscale instance 同時到達時，只允許一條路徑執行。
+      if (isV35Strategy) {
+        const { acquireProcessLease } = await import("../services/barLock");
+        strategyExecutionLease = await acquireProcessLease("v35-auto-trade", strategyId, 180_000);
+        if (!strategyExecutionLease) {
+          console.warn(`[Heartbeat/AutoTrade] 🔒 Strategy ${strategyId}: 另一個 V35 執行仍在進行，本輪安全跳過`);
+          return res.json({
+            ok: true,
+            message: "V35 execution already in progress, skipped",
+            ranAt: new Date().toISOString(),
+          });
+        }
+
+        // 取得租約後重新讀取策略，防止等待期間策略已被停用或配置已更新。
+        const freshResult = await db
+          .select()
+          .from(strategies)
+          .where(eq(strategies.id, strategyId))
+          .limit(1);
+        const freshStrategy = freshResult[0];
+        if (!freshStrategy?.enabled) {
+          console.log(`[Heartbeat/AutoTrade] ⛔ Strategy ${strategyId}: 取得租約後發現已停用，本輪跳過`);
+          return res.json({ ok: true, message: "Strategy disabled while waiting for lease", ranAt: new Date().toISOString() });
+        }
+        strategy = freshStrategy;
+        strategyKey = (strategy as any).strategyKey || "";
+        isV35Strategy = isV35StrategyKey(strategyKey);
+      }
+
       // ===== 止盈/止損/風控檢查（在信號生成前執行，確保每次 heartbeat 觸發都會檢查止盈）=====
       try {
-        const strategyKey = (strategy as any).strategyKey || '';
-        const isV35Strategy = strategyKey.includes('V35') || strategyKey.includes('KAMA');
         const isV61Strategy = strategyKey.includes('V61');
         
         if (isV35Strategy) {
@@ -306,6 +337,15 @@ async function startServer() {
         context: { url: req.originalUrl },
         timestamp: new Date().toISOString(),
       });
+    } finally {
+      if (strategyExecutionLease) {
+        try {
+          const { releaseProcessLease } = await import("../services/barLock");
+          await releaseProcessLease(strategyExecutionLease);
+        } catch (error) {
+          console.error("[Heartbeat/AutoTrade] 釋放 V35 跨實例租約失敗:", error);
+        }
+      }
     }
   });
 
@@ -355,11 +395,16 @@ async function startServer() {
     console.log(`Server running on http://localhost:${port}/`);
   });
 
-  // 啟動風險監控循環（止損/止盈/每日虧損自動執行）
-  startRiskMonitor();
-  startV35Monitor();
-  startV50Monitor();
-  startV61Monitor();
+  // Autoscale production 不保證程序常駐；生產只允許 Heartbeat 端點驅動監控。
+  // 本機 development 保留輪詢，方便開發驗證，但跨實例租約仍可防止重入。
+  if (process.env.NODE_ENV === "development") {
+    startRiskMonitor();
+    startV35Monitor();
+    startV50Monitor();
+    startV61Monitor();
+  } else {
+    console.log("[Monitor] Production process-local loops disabled; scheduled Heartbeat is the single runner");
+  }
   // 策略工作室：註冊內建策略 + 從 DB 重載自訂策略（冷啟動自動重建）
   initStrategyStudio().catch((e) =>
     console.warn("[StrategyStudio] 初始化失敗:", e?.message),

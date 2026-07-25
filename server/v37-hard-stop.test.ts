@@ -10,7 +10,46 @@
  */
 import { describe, expect, it } from "vitest";
 import { RiskManager } from "./services/riskManager";
+import { shouldSkipGenericRiskMonitor } from "./services/riskMonitor";
+import {
+  decideV35PostCloseAction,
+  isV35StrategyKey,
+  normalizeV4MaxLossPct,
+} from "./services/v35Monitor";
 import { strategyKama3kV35 } from "./strategies/v35/strategy_kama_3k_v35";
+
+describe("V35 auto-trade 精確策略分類", () => {
+  it("只接受 V35 內建鍵，不誤收其他 KAMA 版本", () => {
+    expect(isV35StrategyKey("20415_KAMA_MARTIN_V35")).toBe(true);
+    expect(isV35StrategyKey("KAMA_3K_ULTIMATE_V50")).toBe(false);
+    expect(isV35StrategyKey("KAMA_3K_HF_V61")).toBe(false);
+    expect(isV35StrategyKey("KAMA_3K_TORNADO_V70")).toBe(false);
+    expect(isV35StrategyKey("KAMA_3K_BREAKOUT_V25")).toBe(false);
+    expect(isV35StrategyKey(undefined)).toBe(false);
+  });
+
+  it("泛用 RiskMonitor 只跳過 V35，其他策略仍保留各自既有風控", () => {
+    expect(shouldSkipGenericRiskMonitor("20415_KAMA_MARTIN_V35")).toBe(true);
+    expect(shouldSkipGenericRiskMonitor("strategy_20415")).toBe(false);
+    expect(shouldSkipGenericRiskMonitor("KAMA_3K_ULTIMATE_V50")).toBe(false);
+    expect(shouldSkipGenericRiskMonitor("KAMA_3K_HF_V61")).toBe(false);
+    expect(shouldSkipGenericRiskMonitor("KAMA_3K_TORNADO_V70")).toBe(false);
+  });
+});
+
+describe("V35 平倉後安全分流", () => {
+  it("交易所未確認平倉時一律只允許重試，禁止順勢重入", () => {
+    expect(decideV35PostCloseAction(false, "reenter")).toBe("retry_close");
+    expect(decideV35PostCloseAction(false, "cooldown")).toBe("retry_close");
+    expect(decideV35PostCloseAction(false, "none")).toBe("retry_close");
+  });
+
+  it("只有確認平倉成功後才保留原分流決策", () => {
+    expect(decideV35PostCloseAction(true, "reenter")).toBe("reenter");
+    expect(decideV35PostCloseAction(true, "cooldown")).toBe("cooldown");
+    expect(decideV35PostCloseAction(true, "none")).toBe("none");
+  });
+});
 
 describe("V3.7 硬止損 Max_Loss_Pct：RiskManager.checkHardStopLoss", () => {
   const makeRm = (maxLossPct: number) =>
@@ -139,5 +178,26 @@ describe("V3.7 策略預設值驗證", () => {
     expect(layers[2].multiplier).toBe(1.0);
     expect(layers[2].start).toBe(10);
     expect(layers[2].end).toBe(11);
+  });
+});
+
+describe("V4.0 監控層 Max_Loss_Pct 正規化", () => {
+  it.each([undefined, null, "", "   ", 0, "0", -1, "-2", Number.NaN, Number.POSITIVE_INFINITY])(
+    "非法或停用值 %s 應回退安全預設 5%%",
+    (raw) => {
+      const normalized = normalizeV4MaxLossPct(raw);
+      expect(normalized.value).toBe(5);
+      expect(normalized.status).not.toBe("configured");
+    },
+  );
+
+  it.each([
+    ["3", 3],
+    [3.5, 3.5],
+    [" 6.25 ", 6.25],
+  ])("有效值 %s 應正確解析為 %s", (raw, expected) => {
+    const normalized = normalizeV4MaxLossPct(raw);
+    expect(normalized.value).toBe(expected);
+    expect(normalized.status).toBe("configured");
   });
 });

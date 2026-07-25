@@ -4,7 +4,12 @@
  */
 import { describe, it, expect } from "vitest";
 
-describe("OKX 模擬盤/實盤交易對驗證", () => {
+// 此檔會直接連線 OKX 公網，屬 live 整合測試而非確定性單元測試。
+// 預設測試套件不依賴外網；需要驗證交易所即時清單時請設定：
+// RUN_OKX_INTEGRATION_TESTS=1 pnpm vitest run server/testnet-symbol.test.ts --testTimeout=30000
+const RUN_LIVE_OKX_TESTS = process.env.RUN_OKX_INTEGRATION_TESTS === "1";
+
+describe.runIf(RUN_LIVE_OKX_TESTS)("OKX 模擬盤/實盤交易對驗證", () => {
   it("實盤應包含 WLD-USDT-SWAP", async () => {
     const res = await fetch("https://www.okx.com/api/v5/public/instruments?instType=SWAP");
     const data = await res.json();
