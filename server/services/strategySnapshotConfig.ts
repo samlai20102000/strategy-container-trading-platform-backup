@@ -43,20 +43,6 @@ export function resolveSnapshotPositionMode(
   return "usdt";
 }
 
-/** 快照部署時前端只可確認原單位，不能覆蓋快照保存的倉位語意。 */
-export function assertSnapshotPositionMode(
-  requestedMode: SnapshotPositionMode,
-  backtestSettings: unknown,
-): SnapshotPositionMode {
-  const snapshotMode = resolveSnapshotPositionMode(backtestSettings);
-  if (requestedMode !== snapshotMode) {
-    throw new Error(
-      `倉位單位與快照不一致（快照：${snapshotMode}；提交：${requestedMode}），已停止建立。`,
-    );
-  }
-  return snapshotMode;
-}
-
 export function getLegacyConfigKey(strategyKey: string): string | undefined {
   return LEGACY_CONFIG_KEY_BY_STRATEGY[strategyKey];
 }

@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { strategyKama3kV35 } from "./strategies/v35/strategy_kama_3k_v35";
+import { StrategyKama3kV50 } from "./strategies/v50/strategy_kama_3k_v50";
 
 describe("倉位大小雙模式系統", () => {
   describe("calculateLotSize - 首單倉位計算", () => {
@@ -224,6 +225,56 @@ describe("倉位大小雙模式系統", () => {
   });
 
   describe("配置相容性", () => {
+    it("V3.5 非同步計算以實盤數量覆寫快照百分比控倉", async () => {
+      const lotSize = await strategyKama3kV35.calculateLotSize({
+        Position_Mode: "quantity",
+        Position_Value: 0.003,
+        Initial_Capital: 10000,
+        First_Order_Pct: 50,
+        Base_Lot_Size: 30,
+      }, 50000);
+
+      expect(lotSize).toBe(0.003);
+    });
+
+    it("V3.5 同步決策同樣以實盤 USDT 覆寫快照百分比控倉", () => {
+      const action = strategyKama3kV35.generateActions(
+        { action: "BUY", symbol: "BTCUSDT", price: 50000 },
+        {
+          id: 1,
+          symbol: "BTCUSDT",
+          direction: "both",
+          positionSize: 999,
+          leverage: 1,
+          config: {
+            Position_Mode: "usdt",
+            Position_Value: 25,
+            Initial_Capital: 10000,
+            First_Order_Pct: 50,
+            Base_Lot_Size: 30,
+          },
+        },
+        null,
+        { lossCount: 0, currentLot: 0, lastEntryPrice: 0 },
+      );
+
+      expect(action.action).toBe("OPEN_LONG");
+      expect(action.lotSize).toBe(0.0005);
+    });
+
+    it("V5.0 也以實盤部署值高於快照百分比控倉", async () => {
+      const strategy = new StrategyKama3kV50();
+      const lotSize = await strategy.calculateLotSize({
+        Position_Mode: "usdt",
+        Position_Value: 40,
+        Initial_Capital: 10000,
+        First_Order_Pct: 50,
+        Base_Lot_Size: 30,
+      }, 50000);
+
+      expect(lotSize).toBe(0.0008);
+    });
+
     it("支持新格式配置", async () => {
       const config = {
         Base_Lot_Size: {

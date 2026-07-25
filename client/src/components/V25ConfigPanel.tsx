@@ -233,7 +233,7 @@ export function V25ConfigPanel({
               {[
                 { label: "契約", value: validation.valid ? "VALID" : "REVIEW", icon: ShieldCheck, ok: validation.valid },
                 { label: "馬丁上限", value: `${maxLayer} L`, icon: Layers3, ok: true },
-                { label: "首單單位", value: "USDT", icon: LockKeyhole, ok: true },
+                { label: "配置單位", value: "USDT", icon: LockKeyhole, ok: true },
               ].map((item) => (
                 <div key={item.label} className="rounded-lg border border-slate-700/80 bg-black/25 px-3 py-3">
                   <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.16em] text-slate-500">
@@ -260,12 +260,12 @@ export function V25ConfigPanel({
               </div>
             </Section>
 
-            <Section index="02" title="首單與資金單位" subtitle="Base_Lot_Size 在全部入口固定解讀為 USDT 金額，實際合約數量由交易所規格換算。" icon={Gauge} tone="amber">
+            <Section index="02" title="回測首單基準" subtitle="Base_Lot_Size 在策略配置與回測中仍以 USDT 保存；真正送單的數值與單位由上方「實盤部署倉位」獨立覆寫。" icon={Gauge} tone="amber">
               <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(220px,.8fr)]">
-                <NumberField id="v25-base-lot" label="首單金額" value={config.Base_Lot_Size} onChange={(value) => updateNumber("Base_Lot_Size", value)} min={1} step={1} unit="USDT" disabled={disabled} />
+                <NumberField id="v25-base-lot" label="配置首單金額" value={config.Base_Lot_Size} onChange={(value) => updateNumber("Base_Lot_Size", value)} min={1} step={1} unit="USDT" disabled={disabled} />
                 <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.06] p-3.5">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-amber-100"><LockKeyhole className="h-4 w-4" /> 單位鎖定</div>
-                  <p className="mt-2 text-xs leading-5 text-amber-100/60">回測、新增策略與快照導入均保存同一 USDT 數值；不以數量模式重新解讀。</p>
+                  <div className="flex items-center gap-2 text-xs font-semibold text-amber-100"><LockKeyhole className="h-4 w-4" /> 原始配置單位</div>
+                  <p className="mt-2 text-xs leading-5 text-amber-100/60">此處只保存策略模板與快照的 USDT 基準；實盤可在上方改用 USDT 或幣數量，不會改寫原始配置。</p>
                 </div>
               </div>
             </Section>

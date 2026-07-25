@@ -75,33 +75,14 @@ export class StrategyKama3kV35 extends BaseStrategyV35 {
    * V3.x/V4.0：計算首單倉位大小（base 幣數量）
    * 
    * 優先級：
-   * 1. Initial_Capital + First_Order_Pct（百分比控倉 - V4.0+ 推薦）
-   * 2. Position_Mode + Position_Value（舊版雙模式）
+   * 1. Position_Mode + Position_Value（實盤部署覆寫）
+   * 2. Initial_Capital + First_Order_Pct（沒有部署覆寫時的策略回退）
    * 3. Base_Lot_Size（最舊版本回退）
-   * 
-   * ★ 核心修復：當有 Initial_Capital 和 First_Order_Pct 時，
-   *   首單金額 = Initial_Capital × (First_Order_Pct / 100)
-   *   首單數量 = 首單金額 / 當前價格
-   *   這確保無論交易對是 BTC、ETH 還是其他，都能正確計算
    */
   async calculateLotSize(config: Record<string, any>, price: number): Promise<number> {
     const MIN_LOT = 0.00001;
 
-    // ★ 最高優先級：百分比控倉（V4.0+ 推薦方式）
-    // 當配置中有 Initial_Capital 和 First_Order_Pct 時，使用百分比計算
-    if (config.Initial_Capital && config.First_Order_Pct && config.Initial_Capital > 0 && config.First_Order_Pct > 0) {
-      if (!price || price <= 0) {
-        throw new Error('無效的市價，無法計算百分比控倉');
-      }
-      // 首單金額（USDT）= 初始本金 × 首單佔本金百分比
-      const firstOrderUsdt = config.Initial_Capital * (config.First_Order_Pct / 100);
-      // 首單數量（base 幣）= 首單金額 / 當前價格
-      const lot = firstOrderUsdt / price;
-      console.log(`[calculateLotSize] 百分比控倉：${config.Initial_Capital} × ${config.First_Order_Pct}% = ${firstOrderUsdt.toFixed(2)} USDT → ${lot.toFixed(6)} 幣（價格 ${price}）`);
-      return Math.max(lot, MIN_LOT);
-    }
-
-    // 第二優先級：Position_Mode + Position_Value（舊版雙模式）
+    // 最高優先級：實盤部署覆寫不得被快照內的百分比控倉蓋過。
     if (config.Position_Mode) {
       const mode = config.Position_Mode;
       const value = config.Position_Value ?? (typeof config.Base_Lot_Size === 'number' ? config.Base_Lot_Size : 0.01);
@@ -118,6 +99,17 @@ export class StrategyKama3kV35 extends BaseStrategyV35 {
         console.log(`[calculateLotSize] 數量模式：${value} 幣`);
         return Math.max(value, MIN_LOT);
       }
+    }
+
+    // 第二優先級：快照策略原始百分比控倉；僅在沒有部署覆寫時使用。
+    if (config.Initial_Capital && config.First_Order_Pct && config.Initial_Capital > 0 && config.First_Order_Pct > 0) {
+      if (!price || price <= 0) {
+        throw new Error('無效的市價，無法計算百分比控倉');
+      }
+      const firstOrderUsdt = config.Initial_Capital * (config.First_Order_Pct / 100);
+      const lot = firstOrderUsdt / price;
+      console.log(`[calculateLotSize] 百分比控倉：${config.Initial_Capital} × ${config.First_Order_Pct}% = ${firstOrderUsdt.toFixed(2)} USDT → ${lot.toFixed(6)} 幣（價格 ${price}）`);
+      return Math.max(lot, MIN_LOT);
     }
 
     // 第三優先級：Base_Lot_Size 對象格式
@@ -337,22 +329,22 @@ export class StrategyKama3kV35 extends BaseStrategyV35 {
     const isLong = signal.action === 'BUY';
     const config = this.mergeConfig(instance);
 
-    // ★ 統一倉位計算：優先使用百分比控倉
+    // ★ 統一倉位計算：實盤部署覆寫必須高於快照百分比控倉
     let baseLot: number;
     const _initCap = Number(config.Initial_Capital) || 0;
     const _firstPct = Number(config.First_Order_Pct) || 0;
-    if (_initCap > 0 && _firstPct > 0 && signal.price > 0) {
-      // ★ 百分比控倉（V4.0+ 推薦）
-      const firstOrderUsdt = _initCap * (_firstPct / 100);
-      baseLot = firstOrderUsdt / signal.price;
-    } else if (config.Position_Mode) {
-      const mode = config.Position_Mode;
-      const value = Number(config.Position_Value) || (typeof config.Base_Lot_Size === 'number' ? config.Base_Lot_Size : 0.01);
-      if (mode === 'usdt' && signal.price > 0) {
+    if (config.Position_Mode === 'usdt' || config.Position_Mode === 'quantity') {
+      const value = Number(config.Position_Value ?? (typeof config.Base_Lot_Size === 'number' ? config.Base_Lot_Size : 0.01));
+      if (config.Position_Mode === 'usdt') {
+        if (!signal.price || signal.price <= 0) throw new Error('無效的市價');
         baseLot = value / signal.price;
       } else {
         baseLot = value;
       }
+    } else if (_initCap > 0 && _firstPct > 0 && signal.price > 0) {
+      // ★ 百分比控倉（V4.0+ 推薦）
+      const firstOrderUsdt = _initCap * (_firstPct / 100);
+      baseLot = firstOrderUsdt / signal.price;
     } else if (typeof config.Base_Lot_Size === 'number') {
       baseLot = config.Base_Lot_Size;
     } else {

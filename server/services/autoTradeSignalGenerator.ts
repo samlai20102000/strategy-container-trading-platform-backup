@@ -27,6 +27,11 @@ import {
   evaluateRainbow20415Decision,
   type Rainbow20415AccountMetrics,
 } from "../strategies/rainbow20415/core";
+import {
+  resolveDeploymentPosition,
+  withNumericDeploymentBaseLot,
+  withObjectDeploymentBaseLot,
+} from "./deploymentPosition";
 
 
 
@@ -190,7 +195,17 @@ export async function generateTradingSignal(
         ?? effectiveMartinState.__v2_0Config
         ?? initialSnapshotConfig
         ?? {};
-      const rainbowConfig = normalizeRainbow20415Config(boundConfig);
+      const snapshotRainbowConfig = normalizeRainbow20415Config(boundConfig);
+      const deploymentPosition = resolveDeploymentPosition(
+        effectiveStrategy,
+        snapshotRainbowConfig.Base_Lot_Size,
+      );
+      const rainbowConfig = normalizeRainbow20415Config(
+        withObjectDeploymentBaseLot(
+          boundConfig as Record<string, unknown>,
+          deploymentPosition,
+        ),
+      );
       const hasPosition =
         strategyState.currentLayer > 0 &&
         strategyState.totalSize > 0 &&
@@ -351,15 +366,22 @@ export async function generateTradingSignal(
       effectiveMartinState,
       strategy.strategyKey || "",
     ) ?? {};
+    const deploymentPosition = resolveDeploymentPosition(effectiveStrategy, {
+      value: 1,
+      mode: "quantity",
+    });
 
     console.log(`[AutoTradeSignalGenerator] Analysing strategy ${strategy.id} (${strategy.name}) | engine=${strategy.strategyKey} | kLine=${kLinePeriod}m | lastPrice=${marketData.lastPrice}`);
 
     // Handle V2.5 KAMA 三K突破策略：直接調用文件同源純核心，不硬編碼方向或馬丁層數。
     if (strategy.strategyKey === 'KAMA_3K_BREAKOUT_V25' && engine instanceof StrategyKama3kBreakoutV25) {
-      const mergedConfig = {
-        ...(engine.defaultConfig || {}),
-        ...(boundSnapshotConfig as Record<string, unknown>),
-      };
+      const mergedConfig = withNumericDeploymentBaseLot(
+        {
+          ...(engine.defaultConfig || {}),
+          ...(boundSnapshotConfig as Record<string, unknown>),
+        },
+        deploymentPosition,
+      );
       const candles = marketData.candles.map((c) => ({
         open: c.open,
         high: c.high,
@@ -416,6 +438,9 @@ export async function generateTradingSignal(
       const mergedConfig = {
         ...(engine.defaultConfig || {}),
         ...(boundSnapshotConfig as Record<string, number | string | boolean>),
+        base_lot_size_usdt: deploymentPosition.value,
+        Position_Mode: deploymentPosition.mode,
+        Position_Value: deploymentPosition.value,
       };
 
       const v70Engine = new StrategyKama3kV70();
@@ -458,9 +483,13 @@ export async function generateTradingSignal(
     // 修復：正確調用 generateSignalV61（包含 entry_zone_mode + direction_mode 區域觸發邏輯）
     else if (strategy.strategyKey === 'KAMA_3K_HF_V61' && engine instanceof BaseStrategyV35) {
       const martinStateRaw = effectiveMartinState;
-      const mergedConfig = {
+      const mergedConfig: Record<string, number | string | boolean> = {
         ...(engine.defaultConfig || {}),
         ...(boundSnapshotConfig as Record<string, number | string | boolean>),
+        base_lot_size: deploymentPosition.value,
+        Base_Lot_Size: deploymentPosition.value,
+        Position_Mode: deploymentPosition.mode,
+        Position_Value: deploymentPosition.value,
       };
 
       // 創建 V6.1 引擎實例（帶入用戶配置）
@@ -529,6 +558,9 @@ export async function generateTradingSignal(
           reentryEnabled: strategy.reentryEnabled,
           reentryCooldownBars: strategy.reentryCooldownBars,
           ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+          Base_Lot_Size: deploymentPosition.value,
+          Position_Mode: deploymentPosition.mode,
+          Position_Value: deploymentPosition.value,
           // 強制釋放時間濾網，開啟 24/7 全時段交易
           enable_time_filter: false,
           // 降低 F6 AI 斜率閾值，適應 BTC 窄幅震盪環境
@@ -537,7 +569,15 @@ export async function generateTradingSignal(
         state: strategyState,
       } as StrategyInstanceConfig;
 
-      const config: Record<string, any> = { ...(engine.defaultConfig || {}), ...(boundSnapshotConfig as Record<string, any>), enable_time_filter: false, kama_slope_min: 0.02 };
+      const config: Record<string, any> = {
+        ...(engine.defaultConfig || {}),
+        ...(boundSnapshotConfig as Record<string, any>),
+        Base_Lot_Size: deploymentPosition.value,
+        Position_Mode: deploymentPosition.mode,
+        Position_Value: deploymentPosition.value,
+        enable_time_filter: false,
+        kama_slope_min: 0.02,
+      };
 
       // ===== V5.0 自主 KAMA 雙線方向判斷（仿 V6.1 模式）=====
       // 從 K 線數據計算 KAMA 快線和慢線，決定入場方向
@@ -667,6 +707,9 @@ export async function generateTradingSignal(
             reentryCooldownBars: strategy.reentryCooldownBars,
             // Merge positionSizeObject if it's a valid object
             ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+            Base_Lot_Size: deploymentPosition.value,
+            Position_Mode: deploymentPosition.mode,
+            Position_Value: deploymentPosition.value,
           }
         } as StrategyInstanceConfig,
         marketData,
@@ -706,6 +749,9 @@ export async function generateTradingSignal(
             reentryCooldownBars: strategy.reentryCooldownBars,
             // Merge positionSizeObject if it's a valid object
             ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+            Base_Lot_Size: deploymentPosition.value,
+            Position_Mode: deploymentPosition.mode,
+            Position_Value: deploymentPosition.value,
           }
         } as StrategyInstanceConfig,
         marketData,

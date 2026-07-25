@@ -146,6 +146,8 @@ type SnapshotImportSource = {
   strategyKey: string;
   strategyName: string;
   config: Record<string, unknown>;
+  originalPositionValue: number;
+  originalPositionMode: "quantity" | "usdt";
 };
 
 function finiteSnapshotNumber(value: unknown, fallback: number): number {
@@ -430,7 +432,10 @@ function StrategiesContent() {
 
   const openEdit = (s: NonNullable<typeof strategies>[number]) => {
     setSnapshotImportSource(null);
-    const positionValue = parseFloat(s.positionSize ?? '0') || 0.01;
+    const legacyPosition = ((s as any).positionSizeObject && typeof (s as any).positionSizeObject === "object")
+      ? (s as any).positionSizeObject as { value?: unknown; mode?: unknown }
+      : {};
+    const positionValue = finiteSnapshotNumber(s.positionSize, finiteSnapshotNumber(legacyPosition.value, 0.01));
     const strategyKey = (s as any).strategyKey || "none";
     const state = ((s as any).martinState as Record<string, any> | null) ?? {};
     const isV25 = strategyKey === V25_STRATEGY_KEY;
@@ -438,9 +443,8 @@ function StrategiesContent() {
     const rainbowConfig = isRainbow
       ? normalizeRainbow20415Config(state.__v2_0Config ?? state.__snapshotConfig)
       : createRainbow20415DefaultConfig();
-    const positionMode: 'quantity' | 'usdt' = isRainbow
-      ? rainbowConfig.Base_Lot_Size.mode
-      : isV25 ? "usdt" : ((s as any).positionMode || 'quantity');
+    const storedMode = (s as any).positionMode ?? legacyPosition.mode;
+    const positionMode: 'quantity' | 'usdt' = storedMode === "usdt" ? "usdt" : "quantity";
     
     setForm({
       id: s.id,
@@ -449,7 +453,7 @@ function StrategiesContent() {
       apiKeyId: String(s.apiKeyId),
       symbol: s.symbol,
       positionSize: s.positionSize ?? '',
-      positionValue: isRainbow ? rainbowConfig.Base_Lot_Size.value : positionValue,
+      positionValue,
       positionMode,
       leverage: String(s.leverage),
       direction: s.direction as StrategyForm["direction"],
@@ -516,12 +520,9 @@ function StrategiesContent() {
     }
     const rainbowConfig = rainbowValidation?.config;
     const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
-    const positionValue = isRainbow
-      ? (rainbowConfig?.Base_Lot_Size.value ?? 0)
-      : isV25 ? (v25Validation?.config.Base_Lot_Size ?? 0) : parseFloat(String(form.positionValue));
-    const effectivePositionMode: "quantity" | "usdt" = isRainbow
-      ? (rainbowConfig?.Base_Lot_Size.mode ?? "quantity")
-      : isV25 ? "usdt" : form.positionMode;
+    // 實盤部署倉位永遠由頂層表單控制；策略專用 Base_Lot_Size 僅保留為原始邏輯配置。
+    const positionValue = parseFloat(String(form.positionValue));
+    const effectivePositionMode: "quantity" | "usdt" = form.positionMode;
     if (!Number.isFinite(positionValue) || positionValue <= 0)
       return toast.error("倉位大小需為正數");
     // 第二輪優化 3：依交易對規格驗證（數量模式檢查最小量；USDT 模式檢查預估數量）
@@ -936,7 +937,12 @@ function StrategiesContent() {
                     <div className="grid grid-cols-4 gap-2 text-sm">
                       <div>
                         <p className="text-xs text-muted-foreground">倉位</p>
-                        <p className="font-mono-nums">{s.positionSize}</p>
+                        <p className="font-mono-nums">
+                          {s.positionSize}{" "}
+                          <span className="text-[11px] text-muted-foreground">
+                            {(s as any).positionMode === "usdt" ? "USDT" : parseSymbolClient(s.symbol).base}
+                          </span>
+                        </p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">槓桿</p>
@@ -1575,21 +1581,24 @@ function StrategiesContent() {
                 </div>
               )}
               <div className="space-y-1.5 col-span-2">
-                <Label>倉位大小</Label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label>實盤部署倉位</Label>
+                  <Badge variant="outline" className="border-emerald-500/35 bg-emerald-500/8 text-emerald-300">
+                    可獨立覆寫
+                  </Badge>
+                </div>
                 <div className="flex gap-2">
                   <Input
                     type="number"
-                    step={(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') ? '1' : String(selectedSpec?.qtyStep ?? 0.001)}
-                    min={(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') ? '1' : String(selectedSpec?.minOrderQty ?? 0.001)}
+                    step={form.positionMode === 'usdt' ? '1' : String(selectedSpec?.qtyStep ?? 0.001)}
+                    min={form.positionMode === 'usdt' ? '1' : String(selectedSpec?.minOrderQty ?? 0.001)}
                     className="flex-1"
                     value={form.positionValue}
-                    disabled={Boolean(snapshotImportSource) || form.strategyKey === V25_STRATEGY_KEY}
                     onChange={(e) => setForm({ ...form, positionValue: parseFloat(e.target.value) || 0 })}
-                    placeholder={(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') ? '輸入 USDT 金額' : `輸入 ${positionBaseCurrency} 數量`}
+                    placeholder={form.positionMode === 'usdt' ? '輸入 USDT 金額' : `輸入 ${positionBaseCurrency} 數量`}
                   />
                   <Select
-                    value={form.strategyKey === V25_STRATEGY_KEY ? "usdt" : form.positionMode}
-                    disabled={Boolean(snapshotImportSource) || form.strategyKey === V25_STRATEGY_KEY}
+                    value={form.positionMode}
                     onValueChange={(v) => setForm({ ...form, positionMode: v as 'quantity' | 'usdt' })}
                   >
                     <SelectTrigger className="w-28">
@@ -1602,7 +1611,7 @@ function StrategiesContent() {
                   </Select>
                 </div>
                 {/* 第二輪優化 2：USDT 模式即時換算預覽 */}
-                {(form.strategyKey === V25_STRATEGY_KEY || form.positionMode === 'usdt') && (
+                {form.positionMode === 'usdt' && (
                   <p className={`text-xs mt-1 ${estimatedBelowMin ? 'text-loss' : 'text-muted-foreground'}`}>
                     {tickerQuery.isLoading
                       ? '⏳ 正在獲取市價...'
@@ -1621,8 +1630,21 @@ function StrategiesContent() {
                   </p>
                 )}
                 {snapshotImportSource && (
-                  <p className="text-xs text-cyan-300/90">
-                    倉位單位由快照還原並鎖定，避免把回測 USDT 金額誤作幣種數量。
+                  <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-xs leading-relaxed">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-cyan-100">
+                      <span className="font-medium">快照原始倉位</span>
+                      <span className="font-mono">
+                        {snapshotImportSource.originalPositionValue} {snapshotImportSource.originalPositionMode === "usdt" ? "USDT" : positionBaseCurrency}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-muted-foreground">
+                      上方是本次實盤部署覆寫值；修改數值或單位不會改寫快照、回測報告或策略引擎配置。
+                    </p>
+                  </div>
+                )}
+                {!snapshotImportSource && (
+                  <p className="text-xs text-muted-foreground">
+                    此欄位只控制真正送往交易所的委託倉位；策略專用配置與回測參數會分開保存。
                   </p>
                 )}
               </div>
@@ -1724,8 +1746,6 @@ function StrategiesContent() {
                   setForm((prev) => ({
                     ...prev,
                     v2_5: nextConfig,
-                    positionValue: nextConfig.Base_Lot_Size,
-                    positionMode: "usdt",
                     stopLossPct: String(nextConfig.Hard_Stop_Loss_Pct),
                     takeProfitPct: String(nextConfig.Take_Profit_Pct),
                     martinMultiplier: String(firstRange?.multiplier ?? 1),
@@ -1753,8 +1773,6 @@ function StrategiesContent() {
                   setForm((prev) => ({
                     ...prev,
                     v2_0: nextConfig,
-                    positionValue: nextConfig.Base_Lot_Size.value,
-                    positionMode: nextConfig.Base_Lot_Size.mode,
                     Initial_Capital: String(nextConfig.Initial_Capital),
                     takeProfitPct: String(nextConfig.Take_Profit_Pct),
                     Max_Loss_Pct: String(nextConfig.Max_Account_Loss_Pct),
@@ -2080,10 +2098,28 @@ function StrategiesContent() {
                     const martinLayersJson = typeof cfg.Martin_Layers === 'string' ? cfg.Martin_Layers : cfg.Martin_Layers ? JSON.stringify(cfg.Martin_Layers) : '';
                     const importSymbol = String(bs.symbol ?? cfg.symbol ?? cfg.Symbol ?? "BTCUSDT");
                     const importCapital = finiteSnapshotNumber(bs.initialCapital ?? cfg.Initial_Capital ?? cfg.initial_capital, 100);
-                    const positionMode: "quantity" | "usdt" = bs.baseLotSizeMode === "quantity" ? "quantity" : "usdt";
-                    const configuredLot = positionMode === "quantity"
-                      ? cfg.Base_Lot_Size ?? cfg.base_lot_size
-                      : cfg.base_lot_size_usdt ?? cfg.Base_Lot_Size_USDT;
+                    const isRainbowSnapshot = strategyKey === RAINBOW_20415_STRATEGY_KEY;
+                    const isV25Snapshot = strategyKey === V25_STRATEGY_KEY;
+                    const rainbowSnapshotConfig = normalizeRainbow20415Config(cfg);
+                    const v25SnapshotConfig = normalizeV25Config(cfg);
+                    const rawBaseLot = cfg.Base_Lot_Size ?? cfg.base_lot_size;
+                    const baseLotObject = rawBaseLot && typeof rawBaseLot === "object" && !Array.isArray(rawBaseLot)
+                      ? rawBaseLot as { value?: unknown; mode?: unknown }
+                      : null;
+                    const positionMode: "quantity" | "usdt" = isRainbowSnapshot
+                      ? rainbowSnapshotConfig.Base_Lot_Size.mode
+                      : isV25Snapshot
+                        ? "usdt"
+                        : bs.baseLotSizeMode === "quantity" || bs.baseLotSizeMode === "usdt"
+                          ? bs.baseLotSizeMode
+                          : baseLotObject?.mode === "usdt" ? "usdt" : "quantity";
+                    const configuredLot = isRainbowSnapshot
+                      ? rainbowSnapshotConfig.Base_Lot_Size.value
+                      : isV25Snapshot
+                        ? v25SnapshotConfig.Base_Lot_Size
+                        : baseLotObject?.value ?? (positionMode === "quantity"
+                          ? rawBaseLot
+                          : cfg.base_lot_size_usdt ?? cfg.Base_Lot_Size_USDT ?? rawBaseLot);
                     const percentageLot = importCapital * finiteSnapshotNumber(cfg.First_Order_Pct, 0.5) / 100;
                     const importTradeAmount = finiteSnapshotNumber(
                       bs.tradeAmount ?? configuredLot ?? (positionMode === "usdt" ? percentageLot : undefined),
@@ -2100,6 +2136,8 @@ function StrategiesContent() {
                       strategyKey,
                       strategyName: snap.strategyName || strategyKey,
                       config: cfg,
+                      originalPositionValue: importTradeAmount,
+                      originalPositionMode: positionMode,
                     });
                     setForm({
                       ...emptyForm,
@@ -2126,12 +2164,14 @@ function StrategiesContent() {
                       First_Order_Pct: String(cfg.First_Order_Pct ?? 0.5),
                       Max_Loss_Pct: String(cfg.Max_Loss_Pct ?? cfg.max_drawdown_pct ?? 6),
                       martin_mode: martinLayersJson.trim() ? 'layered' : 'fixed',
+                      v2_5: isV25Snapshot ? v25SnapshotConfig : createV25DefaultConfig(),
+                      v2_0: isRainbowSnapshot ? rainbowSnapshotConfig : createRainbow20415DefaultConfig(),
                       v6_1: strategyKey === "KAMA_3K_HF_V61" ? cfg : undefined,
                       v7_0: strategyKey === "KAMA_3K_TORNADO_V70" ? cfg : undefined,
                     });
                     setShowSnapshotImport(false);
                     setDialogOpen(true);
-                    toast.success(`已載入「${snap.snapshotName}」；原引擎與完整參數已鎖定，請選擇 API 金鑰後建立`);
+                    toast.success(`已載入「${snap.snapshotName}」；原引擎與邏輯參數已鎖定，實盤倉位可獨立覆寫`);
                   }}
                 >
                   <div className="flex items-center justify-between">

@@ -22,10 +22,11 @@ import { validateRiskSettings, buildEnvironmentSnapshot, ENGINE_VERSION } from "
 import { getDb } from "../db";
 import { parameterSnapshots, strategies } from "../../drizzle/schema";
 import { eq, desc, and } from "drizzle-orm";
+import { attachSnapshotConfig } from "../services/strategySnapshotConfig";
 import {
-  assertSnapshotPositionMode,
-  attachSnapshotConfig,
-} from "../services/strategySnapshotConfig";
+  createDeploymentPosition,
+  deploymentPositionColumns,
+} from "../services/deploymentPosition";
 import {
   assertValidV25Config,
   deriveV25MaxMartinLayer,
@@ -558,17 +559,11 @@ export const backtestRouter = router({
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct,
           ),
           ...(v25Config ? {
-            positionSize: String(v25Config.Base_Lot_Size),
-            positionMode: "usdt" as const,
-            positionSizeObject: { value: v25Config.Base_Lot_Size, mode: "usdt" as const },
             stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
             takeProfitPct: String(v25Config.Take_Profit_Pct),
             kLinePeriod: v25Config.K_Line_Period,
             reentryEnabled: v25Config.Reentry_On_Trend,
           } : rainbowConfig ? {
-            positionSize: String(rainbowConfig.Base_Lot_Size.value),
-            positionMode: rainbowConfig.Base_Lot_Size.mode,
-            positionSizeObject: { ...rainbowConfig.Base_Lot_Size },
             stopLossPct: "0",
             takeProfitPct: String(rainbowConfig.Take_Profit_Pct),
             maxLossPct: String(rainbowConfig.Max_Account_Loss_Pct),
@@ -634,18 +629,10 @@ export const backtestRouter = router({
         snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
           ? (snapshot.backtestSettings as Record<string, unknown>)
           : {};
-      const positionMode = assertSnapshotPositionMode(
+      const deploymentPosition = createDeploymentPosition(
+        input.positionSize,
         input.positionMode,
-        backtestSettings,
       );
-      if (v25Config && positionMode !== "usdt") {
-        throw new Error("V2.5 的 Base_Lot_Size 固定為 USDT 金額，倉位單位必須為 usdt");
-      }
-      if (rainbowConfig && positionMode !== rainbowConfig.Base_Lot_Size.mode) {
-        throw new Error(
-          `20415 七彩虹快照的底倉單位為 ${rainbowConfig.Base_Lot_Size.mode}，導入單位必須一致。`,
-        );
-      }
 
       // 生成 webhookSecret
       const { generateWebhookSecret } = await import('../lib/crypto');
@@ -660,11 +647,12 @@ export const backtestRouter = router({
         apiKeyId: input.apiKeyId,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
-        positionSize: String(rainbowConfig?.Base_Lot_Size.value ?? v25Config?.Base_Lot_Size ?? input.positionSize),
+        ...deploymentPositionColumns(deploymentPosition),
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
-        enabled: true,
+        // 快照導入只建立配置，不得在尚未人工覆核實盤倉位前自動啟用或觸發交易。
+        enabled: false,
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
         stopLossPct: String(rainbowConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
@@ -684,7 +672,7 @@ export const backtestRouter = router({
         martinState: attachSnapshotConfig(
           {
             lossCount: 0,
-            currentLot: rainbowConfig?.Base_Lot_Size.value ?? v25Config?.Base_Lot_Size ?? input.positionSize,
+            currentLot: deploymentPosition.value,
             lastEntryPrice: 0,
           },
           snapshotKey,
@@ -695,8 +683,6 @@ export const backtestRouter = router({
           },
         ),
         strategyKey: snapshotKey,
-        positionMode,
-        positionSizeObject: { value: rainbowConfig?.Base_Lot_Size.value ?? v25Config?.Base_Lot_Size ?? input.positionSize, mode: positionMode },
         tradeMode: 'webhook',
         kLinePeriod: rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
         reentryEnabled: rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
@@ -707,8 +693,9 @@ export const backtestRouter = router({
         success: true,
         strategyId: newId,
         strategyKey: snapshotKey,
-        positionMode,
-        message: `已從快照建立新策略「${input.name}」，並鎖定原引擎 ${snapshotKey}`,
+        positionMode: deploymentPosition.mode,
+        enabled: false,
+        message: `已從快照建立停用策略「${input.name}」；原引擎鎖定為 ${snapshotKey}，請確認實盤倉位後再手動啟用`,
       };
     }),
 
@@ -783,17 +770,11 @@ export const backtestRouter = router({
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct,
           ),
           ...(v25Config ? {
-            positionSize: String(v25Config.Base_Lot_Size),
-            positionMode: "usdt" as const,
-            positionSizeObject: { value: v25Config.Base_Lot_Size, mode: "usdt" as const },
             stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
             takeProfitPct: String(v25Config.Take_Profit_Pct),
             kLinePeriod: v25Config.K_Line_Period,
             reentryEnabled: v25Config.Reentry_On_Trend,
           } : rainbowConfig ? {
-            positionSize: String(rainbowConfig.Base_Lot_Size.value),
-            positionMode: rainbowConfig.Base_Lot_Size.mode,
-            positionSizeObject: { ...rainbowConfig.Base_Lot_Size },
             stopLossPct: "0",
             takeProfitPct: String(rainbowConfig.Take_Profit_Pct),
             maxLossPct: String(rainbowConfig.Max_Account_Loss_Pct),

@@ -261,7 +261,7 @@ export function Rainbow20415ConfigPanel({
                 { label: "契約", value: validation.valid ? "VALID" : "REVIEW", icon: ShieldCheck, ok: validation.valid },
                 { label: "雙節奏", value: `${formatRainbow20415Timeframe(config.Entry_Timeframe_Minutes)} / ${formatRainbow20415Timeframe(config.Management_Interval_Minutes)}`, icon: RadioTower, ok: true },
                 { label: "最終戰層", value: `${maxLayer || 0} L`, icon: Layers3, ok: maxLayer > 0 },
-                { label: "底倉單位", value: config.Base_Lot_Size.mode.toUpperCase(), icon: LockKeyhole, ok: true },
+                { label: "配置底倉", value: config.Base_Lot_Size.mode.toUpperCase(), icon: LockKeyhole, ok: true },
               ].map((item) => (
                 <div key={item.label} className="rounded-lg border border-slate-700/80 bg-black/30 px-3 py-3">
                   <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.15em] text-slate-500">
@@ -276,19 +276,19 @@ export function Rainbow20415ConfigPanel({
         </div>
 
         <div className="space-y-4 p-4 sm:p-5">
-          <Sector index="01" title="任務時序與底倉" subtitle="空倉只讀已收盤進場 K 棒；持倉以管理週期監控真實成本與風控。" icon={Crosshair}>
+          <Sector index="01" title="任務時序與配置底倉" subtitle="此處保留快照／回測的策略基準；真正送單的數值與單位由上方「實盤部署倉位」獨立覆寫。" icon={Crosshair}>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <NumberField id="rainbow-entry-tf" label="進場週期" value={config.Entry_Timeframe_Minutes} onChange={(next) => updateConfig({ Entry_Timeframe_Minutes: next })} min={1} max={1440} step={1} unit="MIN" disabled={disabled} />
               <NumberField id="rainbow-manage-tf" label="持倉管理週期" value={config.Management_Interval_Minutes} onChange={(next) => updateConfig({ Management_Interval_Minutes: next })} min={1} max={60} step={1} unit="MIN" disabled={disabled} description="必須可整除進場週期" />
               <NumberField id="rainbow-capital" label="初始資本" value={config.Initial_Capital} onChange={(next) => updateConfig({ Initial_Capital: next })} min={0.01} step={100} unit="USDT" disabled={disabled} />
               <div className="space-y-2">
-                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">底倉單位</Label>
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">配置底倉單位</Label>
                 <Select value={config.Base_Lot_Size.mode} onValueChange={(mode: "quantity" | "usdt") => updateConfig({ Base_Lot_Size: { ...config.Base_Lot_Size, mode } })} disabled={disabled}>
                   <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/85 font-mono text-sm text-slate-100"><SelectValue /></SelectTrigger>
                   <SelectContent><SelectItem value="quantity">幣數 QUANTITY</SelectItem><SelectItem value="usdt">金額 USDT</SelectItem></SelectContent>
                 </Select>
               </div>
-              <NumberField id="rainbow-base-lot" label="底倉數值" value={config.Base_Lot_Size.value} onChange={(next) => updateConfig({ Base_Lot_Size: { ...config.Base_Lot_Size, value: next } })} min={0.00000001} step={config.Base_Lot_Size.mode === "usdt" ? 1 : 0.001} unit={config.Base_Lot_Size.mode.toUpperCase()} disabled={disabled} />
+              <NumberField id="rainbow-base-lot" label="配置底倉數值" value={config.Base_Lot_Size.value} onChange={(next) => updateConfig({ Base_Lot_Size: { ...config.Base_Lot_Size, value: next } })} min={0.00000001} step={config.Base_Lot_Size.mode === "usdt" ? 1 : 0.001} unit={config.Base_Lot_Size.mode.toUpperCase()} disabled={disabled} />
             </div>
           </Sector>
 

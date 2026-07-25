@@ -34,6 +34,11 @@ import {
   getRainbow20415RangeForLayer,
   RAINBOW_20415_STRATEGY_KEY,
 } from "../shared/strategies/rainbow20415";
+import {
+  createDeploymentPosition,
+  deploymentPositionColumns,
+  resolveDeploymentPosition,
+} from "./services/deploymentPosition";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -538,9 +543,11 @@ const strategiesRouter = router({
       const firstRainbowRange = rainbow20415Config
         ? getRainbow20415RangeForLayer(rainbow20415Config.Martin_Ranges, 1)
         : undefined;
-      const resolvedPositionSize = v25Config?.Base_Lot_Size
-        ?? rainbow20415Config?.Base_Lot_Size.value
-        ?? input.positionSize;
+      const deploymentPosition = createDeploymentPosition(
+        input.positionSize,
+        input.positionMode,
+      );
+      const resolvedPositionSize = deploymentPosition.value;
       const webhookSecret = generateWebhookSecret();
       const insertResult: any = await db.createStrategy({
         userId: ctx.user.id,
@@ -549,7 +556,7 @@ const strategiesRouter = router({
         apiKeyId: input.apiKeyId,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
-        positionSize: String(resolvedPositionSize),
+        ...deploymentPositionColumns(deploymentPosition),
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
@@ -578,16 +585,11 @@ const strategiesRouter = router({
           ...(v25Config ? { __v25Config: v25Config } : {}),
         },
         strategyKey: input.strategyKey || null,
-        positionMode: v25Config
-          ? "usdt"
-          : rainbow20415Config?.Base_Lot_Size.mode ?? input.positionMode,
         ...(v25Config ? {
-          positionSizeObject: { value: resolvedPositionSize, mode: "usdt" as const },
           kLinePeriod: v25Config.K_Line_Period,
           reentryEnabled: v25Config.Reentry_On_Trend,
         } : {}),
         ...(rainbow20415Config ? {
-          positionSizeObject: { ...rainbow20415Config.Base_Lot_Size },
           kLinePeriod: rainbow20415Config.Entry_Timeframe_Minutes,
           reentryEnabled: rainbow20415Config.Reentry_Enabled,
         } : {}),
@@ -615,7 +617,17 @@ const strategiesRouter = router({
       if (input.name !== undefined) data.name = input.name;
       if (input.description !== undefined) data.description = input.description;
       if (input.symbol !== undefined) data.symbol = input.symbol.toUpperCase();
-      if (input.positionSize !== undefined) data.positionSize = String(input.positionSize);
+      if (input.positionSize !== undefined || input.positionMode !== undefined) {
+        const currentDeploymentPosition = resolveDeploymentPosition(existing, {
+          value: 1,
+          mode: "quantity",
+        });
+        const deploymentPosition = createDeploymentPosition(
+          input.positionSize ?? currentDeploymentPosition.value,
+          input.positionMode ?? currentDeploymentPosition.mode,
+        );
+        Object.assign(data, deploymentPositionColumns(deploymentPosition));
+      }
       if (input.leverage !== undefined) data.leverage = input.leverage;
       if (input.direction !== undefined) data.direction = input.direction;
       if (input.orderType !== undefined) data.orderType = input.orderType;
@@ -627,7 +639,6 @@ const strategiesRouter = router({
       if (input.maxMartinLevel !== undefined) data.maxMartinLevel = input.maxMartinLevel;
       if (input.martinSpacingPct !== undefined) data.martinSpacingPct = String(input.martinSpacingPct);
       if (input.strategyKey !== undefined) data.strategyKey = input.strategyKey || null;
-      if (input.positionMode !== undefined) data.positionMode = input.positionMode;
       // V2.5：編輯時重用新增／回測／快照的同一嚴格契約，並保留既有持倉運行狀態。
       if (input.v25Config !== undefined) {
         let v25Config: ReturnType<typeof assertValidV25Config>;
@@ -645,8 +656,6 @@ const strategiesRouter = router({
             : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
         const firstRange = v25Config.Martin_Ranges[0];
         data.martinState = { ...prevState, __v25Config: v25Config };
-        data.positionSize = String(v25Config.Base_Lot_Size);
-        data.positionMode = "usdt";
         data.stopLossPct = String(v25Config.Hard_Stop_Loss_Pct);
         data.takeProfitPct = String(v25Config.Take_Profit_Pct);
         data.martinMultiplier = String(firstRange?.multiplier ?? 1);
@@ -696,9 +705,6 @@ const strategiesRouter = router({
             : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
         const firstRange = getRainbow20415RangeForLayer(rainbow20415Config.Martin_Ranges, 1);
         data.martinState = { ...prevState, __v2_0Config: rainbow20415Config };
-        data.positionSize = String(rainbow20415Config.Base_Lot_Size.value);
-        data.positionSizeObject = { ...rainbow20415Config.Base_Lot_Size };
-        data.positionMode = rainbow20415Config.Base_Lot_Size.mode;
         data.takeProfitPct = String(rainbow20415Config.Take_Profit_Pct);
         data.martinMultiplier = String(firstRange?.multiplier ?? 1);
         data.maxMartinLevel = Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges));

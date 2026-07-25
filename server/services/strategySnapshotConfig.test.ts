@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   SNAPSHOT_CONFIG_STATE_KEY,
   SNAPSHOT_META_STATE_KEY,
-  assertSnapshotPositionMode,
   attachSnapshotConfig,
   getBoundStrategyConfig,
   pickStrategyConfigState,
   resolveSnapshotPositionMode,
 } from "./strategySnapshotConfig";
+import { withObjectDeploymentBaseLot } from "./deploymentPosition";
 
 describe("通用快照部署契約", () => {
   it("未知未來策略應完整保存原始配置，而不錯誤回退到 V3.5", () => {
@@ -89,10 +89,20 @@ describe("通用快照部署契約", () => {
     expect(resolveSnapshotPositionMode({ baseLotSizeMode: "quantity" })).toBe("quantity");
   });
 
-  it("前端不得覆蓋快照保存的倉位單位", () => {
-    expect(assertSnapshotPositionMode("usdt", { baseLotSizeMode: "usdt" })).toBe("usdt");
-    expect(() =>
-      assertSnapshotPositionMode("quantity", { baseLotSizeMode: "usdt" }),
-    ).toThrow("倉位單位與快照不一致");
+  it("快照原始單位保持不變，但實盤部署可選擇不同合法單位", () => {
+    const rawConfig = {
+      Base_Lot_Size: { value: 35, mode: "usdt" as const },
+      Take_Profit_Pct: 1.2,
+    };
+    const state = attachSnapshotConfig({}, "strategy_20415", rawConfig);
+    const effectiveConfig = withObjectDeploymentBaseLot(rawConfig, {
+      value: 0.001,
+      mode: "quantity",
+    });
+
+    expect((state[SNAPSHOT_CONFIG_STATE_KEY] as Record<string, unknown>).Base_Lot_Size)
+      .toEqual({ value: 35, mode: "usdt" });
+    expect(effectiveConfig.Base_Lot_Size).toEqual({ value: 0.001, mode: "quantity" });
+    expect(rawConfig.Base_Lot_Size).toEqual({ value: 35, mode: "usdt" });
   });
 });

@@ -48,6 +48,7 @@ import {
   type Rainbow20415CoreAction,
 } from "../strategies/rainbow20415/core";
 import { getBoundStrategyConfig } from "./strategySnapshotConfig";
+import { resolveDeploymentPosition } from "./deploymentPosition";
 
 /**
  * 策略執行引擎
@@ -251,7 +252,12 @@ export async function executeSignal(
   }
 
   // 5. 策略引擎決策（若綁定 strategyKey，由策略代碼決定動作與倉位，含馬丁加倉）
-  let size = parseFloat(strategy.positionSize ?? '0');
+  const deploymentPosition = resolveDeploymentPosition(strategy, {
+    value: 0.01,
+    mode: "quantity",
+  });
+  let size = deploymentPosition.value;
+  let sizeIsFinalQuantity = deploymentPosition.mode === "quantity";
   let engineReason = "";
   if (strategy.strategyKey) {
     await initStrategyStudio();
@@ -299,12 +305,15 @@ export async function executeSignal(
         id: strategy.id,
         symbol: strategy.symbol,
         direction: strategy.direction as "long" | "short" | "both",
-        positionSize: parseFloat(strategy.positionSize ?? '0'),
+        positionSize: deploymentPosition.value,
         leverage: strategy.leverage,
         config: {
           martin_multiplier: parseFloat(strategy.martinMultiplier),
           max_martin_level: strategy.maxMartinLevel,
-          initial_lot: parseFloat(strategy.positionSize ?? '0'),
+          initial_lot: deploymentPosition.value,
+          Base_Lot_Size: deploymentPosition.value,
+          Position_Mode: deploymentPosition.mode,
+          Position_Value: deploymentPosition.value,
         },
       },
       null, // 市場資料（EMA/ATR）由策略自行容錯；無資料時信任訊號方向
@@ -359,7 +368,11 @@ export async function executeSignal(
       ...signal,
       action: decision.action === "OPEN_LONG" ? "buy" : "sell",
     };
-    if (decision.lotSize > 0) size = decision.lotSize;
+    if (decision.lotSize > 0) {
+      size = decision.lotSize;
+      // BaseStrategy 的 lotSize 契約為最終 base 幣數量；不可再依 USDT 模式重複換算。
+      sizeIsFinalQuantity = true;
+    }
     engineReason = decision.reason || "";
     // 記錄本次進場價與倉位（馬丁狀態）
     if (signal.price) {
@@ -369,6 +382,13 @@ export async function executeSignal(
         lastEntryPrice: signal.price,
       });
     }
+  }
+  if (!sizeIsFinalQuantity) {
+    const entryPrice = Number(signal.price);
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
+      return { status: "rejected", message: "缺少有效即時價格，拒絕換算 USDT 部署倉位" };
+    }
+    size /= entryPrice;
   }
   const maxPositionPct = parseFloat(strategy.maxPositionPct);
   if (maxPositionPct > 0 && signal.price) {
@@ -484,7 +504,14 @@ async function executeSignalRainbow20415(
       message: `20415 七彩虹參數校驗失敗：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`,
     };
   }
-  const config = validation.config;
+  const deploymentPosition = resolveDeploymentPosition(
+    strategy,
+    validation.config.Base_Lot_Size,
+  );
+  const config = {
+    ...validation.config,
+    Base_Lot_Size: { ...deploymentPosition },
+  };
   const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
   const currentPrice = Number(signal.price) || 0;
   const now = Date.now();
@@ -503,7 +530,9 @@ async function executeSignalRainbow20415(
 
   if (signal.rainbow20415Decision === true && signal.rainbow20415Action) {
     action = signal.rainbow20415Action;
-    orderSize = signal.rainbow20415OrderSize;
+    orderSize = action === "buy" || action === "sell"
+      ? { ...config.Base_Lot_Size }
+      : signal.rainbow20415OrderSize;
     targetLayer = signal.rainbow20415LayerNum;
     closeReason = signal.rainbow20415CloseReason;
   } else if (signal.action === "close") {
@@ -720,19 +749,25 @@ async function executeSignalV35(
   const v35Config = (strategy.martinState && typeof strategy.martinState === 'object' 
     ? (strategy.martinState as Record<string, unknown>).__v35Config 
     : null) as Record<string, unknown> | null;
+  const rawFallbackMode = v35Config?.Position_Mode ?? cfg.Position_Mode;
+  const rawFallbackValue = v35Config?.Position_Value ?? cfg.Position_Value ?? engine.defaultConfig.Base_Lot_Size;
+  const deploymentPosition = resolveDeploymentPosition(strategy, {
+    value: Number(rawFallbackValue) > 0 ? Number(rawFallbackValue) : 0.01,
+    mode: rawFallbackMode === "usdt" ? "usdt" : "quantity",
+  });
   
   const mergedCfg: Record<string, number | string | boolean> = {
     ...engine.defaultConfig,
-    Base_Lot_Size: strategy.positionSizeObject || engine.defaultConfig.Base_Lot_Size,
-    // 倉位雙模式（pasted_content_3.txt 任務 4）：從策略設定帶入 Position_Mode / Position_Value
-    Position_Mode: ((strategy as unknown as { positionMode?: string }).positionMode ?? "quantity") as string,
-    Position_Value: parseFloat(strategy.positionSize ?? '0') || (typeof engine.defaultConfig.Base_Lot_Size === 'object' ? Number((engine.defaultConfig.Base_Lot_Size as { value: number; mode: string }).value) : Number(engine.defaultConfig.Base_Lot_Size)),
     Martin_Multiplier: parseFloat(strategy.martinMultiplier) || Number(engine.defaultConfig.Martin_Multiplier),
     Max_Layers: strategy.maxMartinLevel || Number(engine.defaultConfig.Max_Layers),
     Martin_Step_Pct: parseFloat(strategy.martinSpacingPct) || Number(engine.defaultConfig.Martin_Step_Pct),
     ...(typeof cfg === "object" ? (cfg as Record<string, number | string | boolean>) : {}),
     // 🔥 V4.0 配置優先級最高（覆蓋默認值和頂層字段）
     ...(v35Config ? (v35Config as Record<string, number | string | boolean>) : {}),
+    // 實盤部署邊界最高優先；不回寫、不污染快照原始配置。
+    Base_Lot_Size: deploymentPosition.value,
+    Position_Mode: deploymentPosition.mode,
+    Position_Value: deploymentPosition.value,
   };
 
   const instance = {
@@ -979,11 +1014,14 @@ async function executeSignalV50(
   // V5.0: 正確從 martinState.__v50Config 讀取配置
   const martinStateRaw = (strategy.martinState && typeof strategy.martinState === 'object') ? strategy.martinState as Record<string, unknown> : {};
   const v50Cfg = (martinStateRaw.__v50Config && typeof martinStateRaw.__v50Config === 'object') ? martinStateRaw.__v50Config as Record<string, unknown> : {};
+  const rawFallbackMode = v50Cfg.Position_Mode ?? cfg.Position_Mode;
+  const rawFallbackValue = v50Cfg.Position_Value ?? cfg.Position_Value ?? engine.defaultConfig.Base_Lot_Size;
+  const deploymentPosition = resolveDeploymentPosition(strategy, {
+    value: Number(rawFallbackValue) > 0 ? Number(rawFallbackValue) : 0.01,
+    mode: rawFallbackMode === "usdt" ? "usdt" : "quantity",
+  });
   const mergedCfg: Record<string, number | string | boolean> = {
     ...engine.defaultConfig,
-    Base_Lot_Size: strategy.positionSizeObject || engine.defaultConfig.Base_Lot_Size,
-    Position_Mode: ((strategy as unknown as { positionMode?: string }).positionMode ?? "quantity") as string,
-    Position_Value: parseFloat(strategy.positionSize ?? '0') || (typeof engine.defaultConfig.Base_Lot_Size === 'object' ? Number((engine.defaultConfig.Base_Lot_Size as { value: number; mode: string }).value) : Number(engine.defaultConfig.Base_Lot_Size)),
     Martin_Multiplier: parseFloat(strategy.martinMultiplier) || Number(engine.defaultConfig.Martin_Multiplier),
     Max_Layers: strategy.maxMartinLevel || Number(engine.defaultConfig.Max_Layers),
     Martin_Step_Pct: parseFloat(strategy.martinSpacingPct) || Number(engine.defaultConfig.Martin_Step_Pct),
@@ -992,6 +1030,10 @@ async function executeSignalV50(
     // 強制釋放時間濾網和降低 AI 斜率閾值（24/7 全時段交易）
     enable_time_filter: false,
     kama_slope_min: 0.02,
+    // 實盤部署邊界最高優先；不回寫快照原始配置。
+    Base_Lot_Size: deploymentPosition.value,
+    Position_Mode: deploymentPosition.mode,
+    Position_Value: deploymentPosition.value,
   };
 
   const instance = {
@@ -1220,12 +1262,17 @@ async function executeSignalV61(
   const state = loadStrategyState(strategy);
   const martinStateRaw = (strategy.martinState && typeof strategy.martinState === 'object') ? strategy.martinState as Record<string, unknown> : {};
   const v61Cfg = (martinStateRaw.__v61Config && typeof martinStateRaw.__v61Config === 'object') ? martinStateRaw.__v61Config as Record<string, unknown> : {};
+  const deploymentPosition = resolveDeploymentPosition(strategy, {
+    value: Number(v61Cfg.base_lot_size ?? 15),
+    mode: "usdt",
+  });
   const mergedCfg: Record<string, number | string | boolean> = {
     ...engine.defaultConfig,
-    Base_Lot_Size: Number(v61Cfg.base_lot_size ?? 15),
-    Position_Mode: ((strategy as unknown as { positionMode?: string }).positionMode ?? "usdt") as string,
-    Position_Value: parseFloat(strategy.positionSize ?? '0') || 15,
     ...(typeof v61Cfg === "object" ? (v61Cfg as Record<string, number | string | boolean>) : {}),
+    base_lot_size: deploymentPosition.value,
+    Base_Lot_Size: deploymentPosition.value,
+    Position_Mode: deploymentPosition.mode,
+    Position_Value: deploymentPosition.value,
   };
 
   const instance = {
@@ -1340,18 +1387,20 @@ async function executeSignalV61(
     return { status: "skipped", message: "策略僅允許做多，忽略做空訊號" };
   }
 
-  // ★ 核心修復：V6.1 引擎返回的是 lotUsdt（USDT 金額），必須轉換為基礎幣數量
+  // 部署層決定值的單位；訊號可保留策略波動率／層級調整後的數值。
   const entryPrice = signal.price ?? 0;
-  const lotUsdt: number = decision.lotSize || 15;
-  let v61Size: number;
-  if (entryPrice > 0) {
-    v61Size = lotUsdt / entryPrice;
-    console.log(`[Executor][V6.1] USDT→幣轉換：${lotUsdt} USDT / ${entryPrice} = ${v61Size.toFixed(8)} 幣`);
-  } else {
-    // 無價格時回退到最小單位（安全防線）
-    v61Size = 0.001;
-    console.warn(`[Executor][V6.1] 無有效價格，回退到最小下單量 0.001`);
+  const orderPositionValue: number = decision.lotSize || deploymentPosition.value;
+  if (deploymentPosition.mode === "usdt" && entryPrice <= 0) {
+    return { status: "rejected", message: "V6.1 缺少有效即時價格，拒絕換算 USDT 倉位" };
   }
+  let v61Size = deploymentPosition.mode === "usdt"
+    ? orderPositionValue / entryPrice
+    : orderPositionValue;
+  console.log(
+    deploymentPosition.mode === "usdt"
+      ? `[Executor][V6.1] USDT→幣轉換：${orderPositionValue} USDT / ${entryPrice} = ${v61Size.toFixed(8)} 幣`
+      : `[Executor][V6.1] 數量模式：直接下單 ${v61Size.toFixed(8)} 幣`,
+  );
 
   // 數量正規化
   try {
@@ -1491,7 +1540,15 @@ async function executeSignalV25(
     ...engine.defaultConfig,
     ...(getBoundStrategyConfig(rawState, V25_STRATEGY_KEY) ?? {}),
   };
-  const cfg = engine.parseConfig(mergedConfig);
+  const snapshotCfg = engine.parseConfig(mergedConfig);
+  const deploymentPosition = resolveDeploymentPosition(freshStrategy, {
+    value: snapshotCfg.Base_Lot_Size,
+    mode: "usdt",
+  });
+  const cfg = engine.parseConfig({
+    ...mergedConfig,
+    Base_Lot_Size: deploymentPosition.value,
+  });
   const barTimestamp = signal.barTimestamp ?? Date.now();
 
   if (signal.action === "close") {
@@ -1585,11 +1642,9 @@ async function executeSignalV25(
     cfg.Martin_Ranges,
     Math.max(1, martinLayerNum),
   );
-  const fallbackLotUsdt = isInitialEntry
-    ? cfg.Base_Lot_Size
-    : cfg.Base_Lot_Size * (martinRange?.multiplier ?? 1);
-  const lotUsdt =
-    Number(signal.lotUsdt) > 0 ? Number(signal.lotUsdt) : fallbackLotUsdt;
+  const orderPositionValue = isInitialEntry
+    ? deploymentPosition.value
+    : deploymentPosition.value * (martinRange?.multiplier ?? 1);
   const entryPrice = Number(signal.price);
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
     return {
@@ -1598,7 +1653,9 @@ async function executeSignalV25(
     };
   }
 
-  let orderQuantity = lotUsdt / entryPrice;
+  let orderQuantity = deploymentPosition.mode === "usdt"
+    ? orderPositionValue / entryPrice
+    : orderPositionValue;
   try {
     const normalized = await normalizeQtyForSymbol(
       strategy.exchange,
@@ -1679,7 +1736,7 @@ async function executeSignalV25(
 
   return {
     status: "executed",
-    message: `[${isInitialEntry ? "首單開倉" : `馬丁加倉 L${martinLayerNum}`}] V2.5 ${isLong ? "買入" : "賣出"} ${lotUsdt.toFixed(2)} USDT 成功（成交 ${filledQuantity} @ ${filledPrice}）${signal.reason ? ` - ${signal.reason}` : ""}`,
+    message: `[${isInitialEntry ? "首單開倉" : `馬丁加倉 L${martinLayerNum}`}] V2.5 ${isLong ? "買入" : "賣出"} ${orderPositionValue.toFixed(deploymentPosition.mode === "usdt" ? 2 : 8)} ${deploymentPosition.mode === "usdt" ? "USDT" : "幣數量"} 成功（成交 ${filledQuantity} @ ${filledPrice}）${signal.reason ? ` - ${signal.reason}` : ""}`,
     orderId: orderResult.orderId,
     exchangeResponse: orderResult.rawResponse,
   };
@@ -1698,14 +1755,25 @@ async function executeSignalV70(
   const state = loadStrategyState(strategy);
   const martinStateRaw = (strategy.martinState && typeof strategy.martinState === 'object') ? strategy.martinState as Record<string, unknown> : {};
   const v70Cfg = (martinStateRaw.__v70Config && typeof martinStateRaw.__v70Config === 'object') ? martinStateRaw.__v70Config as Record<string, unknown> : {};
+  const v70Engine = engine as unknown as StrategyKama3kV70;
+  const snapshotCfg = v70Engine.parseConfig({
+    ...engine.defaultConfig,
+    ...(typeof v70Cfg === 'object' ? v70Cfg : {}),
+  });
+  const deploymentPosition = resolveDeploymentPosition(strategy, {
+    value: snapshotCfg.base_lot_size_usdt,
+    mode: "usdt",
+  });
 
   // 合併配置：策略定義配置 > 用戶覆寫 > 默認值
   const mergedCfg: Record<string, any> = {
     ...engine.defaultConfig,
     ...(typeof v70Cfg === 'object' ? v70Cfg : {}),
+    base_lot_size_usdt: deploymentPosition.value,
+    Position_Mode: deploymentPosition.mode,
+    Position_Value: deploymentPosition.value,
   };
 
-  const v70Engine = engine as unknown as StrategyKama3kV70;
   const cfg = v70Engine.parseConfig(mergedCfg);
 
   const instance = {
@@ -1785,17 +1853,22 @@ async function executeSignalV70(
     return { status: "skipped", message: "策略僅允許做多，忽略做空訊號" };
   }
 
-  // V7.0 使用 base_lot_size_usdt 轉換為幣數量
+  // 訊號保留策略層級調整後的數值，部署層決定該值是 USDT 或直接幣量。
   const entryPrice = signal.price ?? 0;
-  const lotUsdt: number = signal.lotUsdt || cfg.base_lot_size_usdt;
-  let v70Size: number;
-  if (entryPrice > 0) {
-    v70Size = lotUsdt / entryPrice;
-    console.log(`[Executor][V7.0] USDT→幣轉換：${lotUsdt} USDT / ${entryPrice} = ${v70Size.toFixed(8)} 幣`);
-  } else {
-    v70Size = 0.001;
-    console.warn(`[Executor][V7.0] 無有效價格，回退到最小下單量 0.001`);
+  const orderPositionValue = Number(signal.lotUsdt) > 0
+    ? Number(signal.lotUsdt)
+    : cfg.base_lot_size_usdt;
+  if (deploymentPosition.mode === "usdt" && entryPrice <= 0) {
+    return { status: "rejected", message: "V7.0 缺少有效即時價格，拒絕換算 USDT 倉位" };
   }
+  let v70Size = deploymentPosition.mode === "usdt"
+    ? orderPositionValue / entryPrice
+    : orderPositionValue;
+  console.log(
+    deploymentPosition.mode === "usdt"
+      ? `[Executor][V7.0] USDT→幣轉換：${orderPositionValue} USDT / ${entryPrice} = ${v70Size.toFixed(8)} 幣`
+      : `[Executor][V7.0] 數量模式：直接下單 ${v70Size.toFixed(8)} 幣`,
+  );
 
   // 數量正規化
   try {

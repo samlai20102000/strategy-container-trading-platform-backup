@@ -131,19 +131,25 @@ export class StrategyKama3kV50 extends BaseStrategyV35 {
    * V5.0：計算首單倉位大小（base 幣數量）
    * 
    * 優先級：
-   * 1. Initial_Capital + First_Order_Pct（百分比控倉 - V4.0+ 推薦）
-   * 2. Position_Mode + Position_Value（舊版雙模式）
+   * 1. Position_Mode + Position_Value（實盤部署覆寫）
+   * 2. Initial_Capital + First_Order_Pct（沒有部署覆寫時的策略回退）
    * 3. Base_Lot_Size（最舊版本回退）
-   * 
-   * ★ 核心修復：當有 Initial_Capital 和 First_Order_Pct 時，
-   *   首單金額 = Initial_Capital × (First_Order_Pct / 100)
-   *   首單數量 = 首單金額 / 當前價格
-   *   這確保無論交易對是 BTC、ETH 還是其他，都能正確計算
    */
   async calculateLotSize(config: Record<string, any>, price: number): Promise<number> {
     const MIN_LOT = 0.00001;
 
-    // ★ 最高優先級：百分比控倉（V4.0+ 推薦方式）
+    // 最高優先級：實盤部署覆寫不得被快照內的百分比控倉蓋過。
+    if (config.Position_Mode) {
+      const mode = config.Position_Mode;
+      const value = config.Position_Value ?? (typeof config.Base_Lot_Size === 'number' ? config.Base_Lot_Size : 0.01);
+      if (mode === 'usdt') {
+        if (!price || price <= 0) throw new Error('無效的市價');
+        return Math.max(value / price, MIN_LOT);
+      }
+      if (mode === 'quantity') return Math.max(value, MIN_LOT);
+    }
+
+    // 第二優先級：快照策略原始百分比控倉；僅在沒有部署覆寫時使用。
     const initCap = Number(config.Initial_Capital) || 0;
     const firstPct = Number(config.First_Order_Pct) || 0;
     if (initCap > 0 && firstPct > 0) {
@@ -154,17 +160,6 @@ export class StrategyKama3kV50 extends BaseStrategyV35 {
       const lot = firstOrderUsdt / price;
       console.log(`[V5.0 calculateLotSize] 百分比控倉：${initCap} × ${firstPct}% = ${firstOrderUsdt.toFixed(2)} USDT → ${lot.toFixed(6)} 幣（價格 ${price}）`);
       return Math.max(lot, MIN_LOT);
-    }
-
-    // 第二優先級：Position_Mode + Position_Value
-    if (config.Position_Mode) {
-      const mode = config.Position_Mode;
-      const value = config.Position_Value ?? (typeof config.Base_Lot_Size === 'number' ? config.Base_Lot_Size : 0.01);
-      if (mode === 'usdt') {
-        if (!price || price <= 0) throw new Error('無效的市價');
-        return Math.max(value / price, MIN_LOT);
-      }
-      if (mode === 'quantity') return Math.max(value, MIN_LOT);
     }
 
     // 第三優先級：Base_Lot_Size 對象格式
