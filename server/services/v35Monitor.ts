@@ -21,7 +21,7 @@ import {
   listEnabledStrategies,
 } from "../db";
 import { createAdapter } from "../exchanges/factory";
-import type { ExchangeAdapter } from "../exchanges/types";
+import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import type { Strategy } from "../../drizzle/schema";
 import type { V4Config, StrategyState, MartinLayer } from "./martingaleEngine";
 import { calculateUnrealizedLossPct, getLayerSize, shouldAddLayer, getFirstOrderValue } from "./martingaleEngine";
@@ -35,6 +35,7 @@ import { decideCloseSplit, buildReentryState } from "./kamaReversalGuard";
 import { calculateKAMA } from "./backtest/kama";
 import { fetchOKXCandles, fetchBybitCandles } from "./backtest/dataFetcher";
 import { getTimeframeMilliseconds } from "./backtest/timeframeParser";
+import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
 
 export const V35_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
 export function isV35StrategyKey(strategyKey: unknown): boolean {
@@ -265,20 +266,16 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       side: state.entryTrendBull ? "buy" : "sell",
       orderType: "market",
       orderId: orderResult.orderId,
-      size: String(orderResult.filledSize && orderResult.filledSize > 0 ? orderResult.filledSize : lotSize),
-      price: String(orderResult.filledPrice && orderResult.filledPrice > 0 ? orderResult.filledPrice : currentPrice),
+      ...tradeFillRecordFields(orderResult, currentPrice, lotSize),
       status: orderResult.success ? "filled" : "failed",
       triggerSource: "martin_add_layer",
     });
 
     if (orderResult.success) {
       // 🔥 方案 A：優先使用 OKX 實際成交數據（filledPrice/filledSize），而非理論值
-      const actualPrice = orderResult.filledPrice && orderResult.filledPrice > 0
-        ? orderResult.filledPrice
-        : currentPrice;
-      const actualSize = orderResult.filledSize && orderResult.filledSize > 0
-        ? orderResult.filledSize
-        : lotSize;
+      const resolvedFill = resolveTradeFill(orderResult, currentPrice, lotSize);
+      const actualPrice = resolvedFill.price ?? currentPrice;
+      const actualSize = resolvedFill.size;
 
       const newState: StrategyState = {
         ...state,
@@ -480,8 +477,7 @@ async function executeReentry(
       side: currentTrendBull ? "buy" : "sell",
       orderType: "market",
       orderId: orderResult.orderId,
-      size: String(lotSize),
-      price: String(currentPrice),
+      ...tradeFillRecordFields(orderResult, currentPrice, lotSize),
       status: orderResult.success ? "filled" : "failed",
       triggerSource: "trend_reentry",
     });
@@ -491,10 +487,14 @@ async function executeReentry(
       return false;
     }
 
-    // 重置狀態（新一輪開始，保留入場方向）
+    const resolvedFill = resolveTradeFill(orderResult, currentPrice, lotSize);
+    const actualPrice = resolvedFill.price ?? currentPrice;
+    const actualSize = resolvedFill.size;
+
+    // 重置狀態（新一輪開始，保留入場方向），使用實際成交價量。
     const newState = buildReentryState({
-      currentPrice,
-      lotSize,
+      currentPrice: actualPrice,
+      lotSize: actualSize,
       entryTrendBull: currentTrendBull,
       isLong: currentTrendBull, // 重入方向與趨勢一致
       capital: cfg.Initial_Capital,
@@ -502,7 +502,7 @@ async function executeReentry(
 
     await saveStrategyState(strategy.id, newState);
     console.log(
-      `[V35Monitor] O3 順勢重入完成：策略 ${strategy.id} ${currentTrendBull ? "買升" : "買跌"} ${lotSize} @ ${currentPrice}`,
+      `[V35Monitor] O3 順勢重入完成：策略 ${strategy.id} ${currentTrendBull ? "買升" : "買跌"} ${actualSize} @ ${actualPrice}`,
     );
     return true;
   } catch (e: unknown) {
@@ -524,9 +524,11 @@ async function executeFullClose(
   let exitPrice = 0;
   let pnl: number | undefined;
   let orderId: string | undefined;
+  let exchangeCloseResult: OrderResult | undefined;
   try {
     const closeDir = state.entryTrendBull ? "long" : "short";
     const result = await adapter.closePositionSmart(strategy.symbol, closeDir);
+    exchangeCloseResult = result;
     positionClosed = result.success;
     orderId = result.orderId;
     if (result.success) {
@@ -570,7 +572,7 @@ async function executeFullClose(
   }
 
   // 寫入交易記錄（含 signalId 關聯）
-  if (positionClosed) {
+  if (positionClosed && exchangeCloseResult) {
     try {
       await createTrade({
         strategyId: strategy.id,
@@ -581,8 +583,7 @@ async function executeFullClose(
         side: state.entryTrendBull ? "sell" : "buy",
         orderType: "market",
         orderId,
-        size: String(state.totalSize),
-        price: exitPrice > 0 ? String(exitPrice) : undefined,
+        ...tradeFillRecordFields(exchangeCloseResult, undefined, state.totalSize),
         realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
         reduceOnly: true,
         status: "filled",

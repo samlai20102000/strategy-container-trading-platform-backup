@@ -69,6 +69,18 @@ function UnifiedDashboard() {
   const { data: strategies } = trpc.strategies.list.useQuery(undefined, {
     refetchInterval: 10000,
   });
+  const positionSnapshotInput = useMemo(
+    () => ({ strategyIds: strategies?.map((strategy) => strategy.id) ?? [] }),
+    [strategies],
+  );
+  const { data: positionSnapshots } = trpc.exchange.getStrategyPositionSnapshots.useQuery(
+    positionSnapshotInput,
+    {
+      enabled: positionSnapshotInput.strategyIds.length > 0,
+      refetchInterval: 10_000,
+      staleTime: 5_000,
+    },
+  );
   const { data: perfData } = trpc.performance.byStrategy.useQuery({}, { refetchInterval: 30000 });
 
   // ─── Filter State (Block C) ────────────────────────────────────
@@ -103,6 +115,7 @@ function UnifiedDashboard() {
       );
       utils.dashboard.overview.invalidate();
       utils.strategies.list.invalidate();
+      utils.exchange.getStrategyPositionSnapshots.invalidate();
     },
     onError: (e) => toast.error(`緊急全平倉請求異常：${e.message}`, { duration: 10000 }),
   });
@@ -135,6 +148,7 @@ function UnifiedDashboard() {
       else toast.error(r.exchangeError ? `平倉失敗：${r.exchangeError}` : r.message, { duration: 10000 });
       utils.dashboard.overview.invalidate();
       utils.strategies.list.invalidate();
+      utils.exchange.getStrategyPositionSnapshots.invalidate();
     },
     onError: (e) => toast.error(`平倉請求異常：${e.message}`, { duration: 10000 }),
   });
@@ -164,25 +178,41 @@ function UnifiedDashboard() {
     );
   }, [data]);
 
-  // Match positions to strategies for layer info
-  // Fix: Support fuzzy matching - OKX returns "BTC-USDT-SWAP" but strategy may store "BTCUSDT" or "BTC-USDT-SWAP"
+  // 交易所帳戶持倉只能在後端快照確認為 exact 時，才歸屬及開放單策略平倉。
+  // 共享帳戶／交易對／方向的合併持倉保留帳戶級真值，不再模糊配對到第一個策略。
   const positionsWithLayer = useMemo(() => {
     const normalizeSymbol = (sym: string) => sym.replace(/-SWAP$/i, "").replace(/-/g, "").toUpperCase();
+    const strategyById = new Map((strategies ?? []).map((strategy) => [strategy.id, strategy] as const));
     return allPositions.map((p) => {
       const pNorm = normalizeSymbol(p.symbol);
-      // Try exact match first, then fuzzy match by normalized symbol + same apiKeyId
-      const matchedStrategy = strategies?.find(
-        (s) => s.symbol === p.symbol && s.apiKeyId === p.apiKeyId,
-      ) ?? strategies?.find(
-        (s) => normalizeSymbol(s.symbol) === pNorm && s.apiKeyId === p.apiKeyId,
-      ) ?? strategies?.find(
-        (s) => normalizeSymbol(s.symbol) === pNorm,
+      const relatedSnapshots = (positionSnapshots ?? []).filter(
+        (snapshot) => snapshot.apiKeyId === p.apiKeyId
+          && normalizeSymbol(snapshot.symbol) === pNorm
+          && snapshot.side === p.side
+          && snapshot.status === "available",
       );
+      const exactSnapshots = relatedSnapshots.filter((snapshot) => snapshot.attribution === "exact");
+      const exactSnapshot = exactSnapshots.length === 1 ? exactSnapshots[0] : undefined;
+      const matchedStrategy = exactSnapshot ? strategyById.get(exactSnapshot.strategyId) : undefined;
       const martinState = (matchedStrategy?.martinState ?? {}) as any;
       const layer = Number(martinState.currentLayer) || 0;
-      return { ...p, layer, strategyId: matchedStrategy?.id, strategyName: matchedStrategy?.name };
+      const relatedStrategyNames = relatedSnapshots
+        .map((snapshot) => strategyById.get(snapshot.strategyId)?.name)
+        .filter((name): name is string => Boolean(name));
+      return {
+        ...p,
+        layer,
+        strategyId: matchedStrategy?.id,
+        strategyName: matchedStrategy?.name,
+        relatedStrategyNames,
+        positionAttribution: matchedStrategy
+          ? "exact"
+          : relatedSnapshots.length > 0
+            ? "account_aggregate"
+            : "unassigned",
+      };
     });
-  }, [allPositions, strategies]);
+  }, [allPositions, positionSnapshots, strategies]);
 
   // Filtered positions
   const filteredPositions = useMemo(() => {
@@ -1243,9 +1273,11 @@ function BlockD_Positions({
                 </thead>
                 <tbody>
                   {positions.map((p, i) => {
-                    const pnlPct = p.entryPrice > 0
-                      ? ((p.markPrice - p.entryPrice) / p.entryPrice) * 100 * (p.side === "short" ? -1 : 1) * p.leverage
-                      : 0;
+                    const pnlPct = typeof p.unrealizedPnlRatioPct === "number"
+                      ? p.unrealizedPnlRatioPct
+                      : p.positionMargin > 0
+                        ? (p.unrealizedPnl / p.positionMargin) * 100
+                        : null;
                     const liqDistance = p.liquidationPrice && p.markPrice > 0
                       ? Math.abs((p.liquidationPrice - p.markPrice) / p.markPrice) * 100
                       : null;
@@ -1269,10 +1301,24 @@ function BlockD_Positions({
                             <span className="font-semibold text-xs">{p.symbol}</span>
                             <ExchangeBadge exchange={p.exchange} />
                           </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[9px] text-muted-foreground">
+                            <span>交易所持倉</span>
+                            <span>·</span>
+                            <span>{p.updatedAt ? `同步 ${new Date(p.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}` : "同步時間未提供"}</span>
+                            {p.positionAttribution === "exact" ? (
+                              <Badge variant="outline" className="h-4 border-emerald-500/40 px-1 text-[8px] text-emerald-400">精確歸屬</Badge>
+                            ) : p.positionAttribution === "account_aggregate" ? (
+                              <Badge variant="outline" className="h-4 border-amber-500/40 px-1 text-[8px] text-amber-300">帳戶合併</Badge>
+                            ) : (
+                              <Badge variant="outline" className="h-4 border-slate-500/40 px-1 text-[8px] text-slate-400">未歸屬</Badge>
+                            )}
+                          </div>
                         </td>
                         <td className="py-2.5 pr-3"><SideBadge side={p.side} /></td>
                         {/* P1-2: Layer Badge with color coding */}
-                        <td className="py-2.5 pr-3"><LayerBadge layer={p.layer} /></td>
+                        <td className="py-2.5 pr-3">
+                          {p.positionAttribution === "exact" ? <LayerBadge layer={p.layer} /> : <span className="text-[10px] text-muted-foreground">共享／未知</span>}
+                        </td>
                         <td className="py-2.5 pr-3 text-right font-mono text-xs">{formatSize(p.size)}</td>
                         <td className="py-2.5 pr-3 text-right font-mono text-xs">{formatPrice(p.entryPrice)}</td>
                         <td className="py-2.5 pr-3 text-right font-mono text-xs">{formatPrice(p.markPrice)}</td>
@@ -1282,7 +1328,7 @@ function BlockD_Positions({
                         </td>
                         {/* P1-1: PnL Progress Bar */}
                         <td className="py-2.5 pr-3">
-                          <PnlProgressBar pct={pnlPct} usdt={p.unrealizedPnl} />
+                          {pnlPct !== null ? <PnlProgressBar pct={pnlPct} usdt={p.unrealizedPnl} /> : <span className="text-xs text-muted-foreground">—</span>}
                         </td>
                         {/* P2-3: Liquidation with distance */}
                         <td className="py-2.5 pr-3 text-right">
@@ -1298,7 +1344,12 @@ function BlockD_Positions({
                               onConfirm={setConfirmClose}
                             />
                           ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
+                            <span
+                              className="text-[10px] text-muted-foreground"
+                              title={p.positionAttribution === "account_aggregate" ? "合併倉位不可由單一策略平倉，請先確認共享策略歸屬" : "此交易所持倉未能安全歸屬到策略"}
+                            >
+                              {p.positionAttribution === "account_aggregate" ? "合併倉位" : "—"}
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -1313,6 +1364,7 @@ function BlockD_Positions({
               <span>
                 📊 總浮動盈虧：<PnlValue value={totalPnl} suffix=" USDT" className="text-xs font-bold" />
               </span>
+              <span>來源：交易所帳戶持倉毛浮盈虧；費用與資金費以交易所帳單為準</span>
               {avgLayer > 0 && (
                 <span>平均層級：<span className="font-medium text-foreground">Lv.{avgLayer.toFixed(1)}</span></span>
               )}
@@ -1708,10 +1760,15 @@ function PositionDrawer({
   strategies: any[];
   onClose: () => void;
 }) {
-  const matchedStrategy = strategies.find(
-    (s) => s.symbol === position.symbol && s.apiKeyId === position.apiKeyId,
-  );
+  const matchedStrategy = position.strategyId
+    ? strategies.find((strategy) => strategy.id === position.strategyId)
+    : undefined;
   const martinState = (matchedStrategy?.martinState ?? {}) as any;
+  const nativePnlPct = typeof position.unrealizedPnlRatioPct === "number"
+    ? position.unrealizedPnlRatioPct
+    : position.positionMargin > 0
+      ? (position.unrealizedPnl / position.positionMargin) * 100
+      : null;
 
   return (
     <>
@@ -1760,10 +1817,43 @@ function PositionDrawer({
                 <PnlValue value={position.unrealizedPnl} suffix=" USDT" className="font-bold" />
               </div>
               <div>
+                <p className="text-xs text-muted-foreground">交易所浮動盈虧率</p>
+                <p className={cn("font-mono font-semibold", nativePnlPct !== null && nativePnlPct >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                  {nativePnlPct !== null ? `${nativePnlPct >= 0 ? "+" : ""}${nativePnlPct.toFixed(2)}%` : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">持倉保證金</p>
+                <p className="font-mono font-semibold">{position.positionMargin ? `${position.positionMargin.toFixed(4)} USDT` : "—"}</p>
+              </div>
+              <div>
                 <p className="text-xs text-muted-foreground">強平價</p>
                 <p className="font-mono font-semibold">{position.liquidationPrice ? formatPrice(position.liquidationPrice) : "—"}</p>
               </div>
             </div>
+          </div>
+
+          <div className={cn(
+            "rounded-lg border p-3 text-xs",
+            position.positionAttribution === "exact"
+              ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-200"
+              : position.positionAttribution === "account_aggregate"
+                ? "border-amber-500/30 bg-amber-500/5 text-amber-200"
+                : "border-slate-500/30 bg-slate-500/5 text-slate-300",
+          )}>
+            <p className="font-semibold">
+              {position.positionAttribution === "exact"
+                ? "交易所持倉 · 精確歸屬"
+                : position.positionAttribution === "account_aggregate"
+                  ? "交易所帳戶合併倉位 · 不可安全歸屬單一策略"
+                  : "交易所持倉 · 未歸屬策略"}
+            </p>
+            <p className="mt-1 opacity-80">
+              {position.updatedAt ? `交易所更新：${new Date(position.updatedAt).toLocaleString("zh-TW")}` : "交易所未提供更新時間"}。上述為持倉毛浮盈虧，費用與資金費以交易所帳單為準。
+            </p>
+            {position.relatedStrategyNames?.length > 0 && position.positionAttribution !== "exact" && (
+              <p className="mt-1 opacity-80">相關策略：{position.relatedStrategyNames.join("、")}</p>
+            )}
           </div>
 
           {/* Strategy Info */}

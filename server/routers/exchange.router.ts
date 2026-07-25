@@ -223,6 +223,21 @@ let uiSchemaCache: Record<string, unknown> | null = null;
 
 export const exchangeRouter = router({
   /**
+   * 受保護的策略持倉快照：同一 API 金鑰只查一次帳戶持倉，再安全歸屬到策略。
+   * 此程序嚴格唯讀；不下單、不平倉、不修改策略或帳戶設定。
+   */
+  getStrategyPositionSnapshots: protectedProcedure
+    .input(
+      z.object({
+        strategyIds: z.array(z.number().int().positive()).max(200).optional(),
+      }).optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const { getStrategyPositionSnapshotsForUser } = await import("../services/strategyPositionSnapshot");
+      return getStrategyPositionSnapshotsForUser(ctx.user.id, input?.strategyIds);
+    }),
+
+  /**
    * 獲取 V3.5 策略 UI Schema（pasted_content_3.txt 任務 5）
    * 供前端動態表單渲染：Base_Lot_Size 對象格式、Symbol 欄位、Position_Mode/Position_Value
    */

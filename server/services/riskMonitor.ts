@@ -12,6 +12,7 @@ import { createInitialStrategyState } from "../strategies/base";
 import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter, Position } from "../exchanges/types";
 import { isV35StrategyKey } from "./v35Monitor";
+import { tradeFillRecordFields } from "./tradeFillTruth";
 
 /**
  * 風險監控循環
@@ -167,10 +168,14 @@ async function enforceRisk(
         userId: strategy.userId,
         exchange: strategy.exchange,
         symbol: strategy.symbol,
-        side: "sell",
+        side: opts.posSide === "short" ? "buy" : "sell",
         orderType: "market",
         orderId: result.orderId,
-        size: "0",
+        ...tradeFillRecordFields(
+          result,
+          undefined,
+          Number(strategy.martinState?.totalSize || 0),
+        ),
         reduceOnly: true,
         status: "filled",
         triggerSource: `risk_${eventType}`,

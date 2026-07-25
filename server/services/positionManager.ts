@@ -4,6 +4,7 @@ import type { V4Config, StrategyState } from "./martingaleEngine";
 import { getFirstOrderValue } from "./martingaleEngine";
 import { createTrade } from "../db";
 import { saveStrategyState } from "./strategyStateManager";
+import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
 
 /**
  * V4.0: 計算首單開倉數量 (BTC)
@@ -85,8 +86,7 @@ export async function placeInitialOrder(
       side: isLong ? "buy" : "sell",
       orderType: "market",
       orderId: orderResult.orderId,
-      size: String(orderResult.filledSize && orderResult.filledSize > 0 ? orderResult.filledSize : lotSize),
-      price: String(orderResult.filledPrice && orderResult.filledPrice > 0 ? orderResult.filledPrice : currentPrice),
+      ...tradeFillRecordFields(orderResult, currentPrice, lotSize),
       status: orderResult.success ? "filled" : "failed",
       triggerSource: "initial_entry",
     });
@@ -97,12 +97,9 @@ export async function placeInitialOrder(
     }
 
     // 🔥 方案 A：優先使用實際成交數據建立初始狀態
-    const actualPrice = orderResult.filledPrice && orderResult.filledPrice > 0
-      ? orderResult.filledPrice
-      : currentPrice;
-    const actualSize = orderResult.filledSize && orderResult.filledSize > 0
-      ? orderResult.filledSize
-      : lotSize;
+    const resolvedFill = resolveTradeFill(orderResult, currentPrice, lotSize);
+    const actualPrice = resolvedFill.price ?? currentPrice;
+    const actualSize = resolvedFill.size;
     const actualCost = actualSize * actualPrice;
 
     const newState: StrategyState = {

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
 import { Activity, Loader2, RefreshCw } from "lucide-react";
+import { useMemo } from "react";
 import { toast } from "sonner";
 
 export default function PositionsPage() {
@@ -25,6 +26,19 @@ function PositionsContent() {
   const { data, isLoading, isFetching, refetch } =
     trpc.dashboard.overview.useQuery(undefined, { refetchInterval: 10000 });
   const { data: strategies } = trpc.strategies.list.useQuery();
+  const positionSnapshotInput = useMemo(
+    () => ({ strategyIds: strategies?.map((strategy) => strategy.id) ?? [] }),
+    [strategies],
+  );
+  const {
+    data: positionSnapshots,
+    isFetching: positionSnapshotsFetching,
+    refetch: refetchPositionSnapshots,
+  } = trpc.exchange.getStrategyPositionSnapshots.useQuery(positionSnapshotInput, {
+    enabled: positionSnapshotInput.strategyIds.length > 0,
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  });
   const { data: recentTrades } = trpc.performance.trades.useQuery(
     { limit: 50 },
     { refetchInterval: 15000 },
@@ -43,6 +57,8 @@ function PositionsContent() {
         );
       }
       utils.dashboard.overview.invalidate();
+      utils.strategies.list.invalidate();
+      utils.exchange.getStrategyPositionSnapshots.invalidate();
     },
     onError: (e) => toast.error(`平倉請求異常：${e.message}`, { duration: 10000 }),
   });
@@ -57,9 +73,29 @@ function PositionsContent() {
       })),
     ) ?? [];
 
-  /** 找到對應此持倉的策略（依交易對 + 金鑰） */
-  const findStrategy = (symbol: string, apiKeyId: number) =>
-    strategies?.find((s) => s.symbol === symbol && s.apiKeyId === apiKeyId);
+  const attributedPositions = useMemo(() => {
+    const normalizeSymbol = (symbol: string) => symbol.replace(/-SWAP$/i, "").replace(/-/g, "").toUpperCase();
+    const strategyById = new Map((strategies ?? []).map((strategy) => [strategy.id, strategy] as const));
+    return allPositions.map((position) => {
+      const relatedSnapshots = (positionSnapshots ?? []).filter(
+        (snapshot) => snapshot.apiKeyId === position.apiKeyId
+          && normalizeSymbol(snapshot.symbol) === normalizeSymbol(position.symbol)
+          && snapshot.side === position.side
+          && snapshot.status === "available",
+      );
+      const exactSnapshots = relatedSnapshots.filter((snapshot) => snapshot.attribution === "exact");
+      const exactSnapshot = exactSnapshots.length === 1 ? exactSnapshots[0] : undefined;
+      const strategy = exactSnapshot ? strategyById.get(exactSnapshot.strategyId) : undefined;
+      return {
+        ...position,
+        strategy,
+        attribution: strategy ? "exact" : relatedSnapshots.length > 0 ? "account_aggregate" : "unassigned",
+        relatedStrategyNames: relatedSnapshots
+          .map((snapshot) => strategyById.get(snapshot.strategyId)?.name)
+          .filter((name): name is string => Boolean(name)),
+      };
+    });
+  }, [allPositions, positionSnapshots, strategies]);
 
   return (
     <div className="space-y-6">
@@ -67,16 +103,16 @@ function PositionsContent() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">持倉監控</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            即時持倉與交易記錄（每 10 秒自動更新）
+            交易所帳戶持倉真值與成交記錄（每 10 秒自動更新；毛浮盈虧未含逐策略費用與資金費）
           </p>
         </div>
         <Button
           variant="outline"
           size="sm"
-          disabled={isFetching}
-          onClick={() => refetch()}
+          disabled={isFetching || positionSnapshotsFetching}
+          onClick={() => void Promise.all([refetch(), refetchPositionSnapshots()])}
         >
-          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isFetching ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isFetching || positionSnapshotsFetching ? "animate-spin" : ""}`} />
           重新整理
         </Button>
       </div>
@@ -90,7 +126,7 @@ function PositionsContent() {
             <div className="py-8 flex justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
-          ) : allPositions.length === 0 ? (
+          ) : attributedPositions.length === 0 ? (
             <div className="py-12 text-center space-y-2">
               <Activity className="h-8 w-8 mx-auto text-muted-foreground/50" />
               <p className="text-sm text-muted-foreground">目前無持倉</p>
@@ -112,8 +148,13 @@ function PositionsContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {allPositions.map((p, i) => {
-                    const strategy = findStrategy(p.symbol, p.apiKeyId);
+                  {attributedPositions.map((p, i) => {
+                    const strategyId = p.strategy?.id;
+                    const pnlPct = typeof p.unrealizedPnlRatioPct === "number"
+                      ? p.unrealizedPnlRatioPct
+                      : typeof p.positionMargin === "number" && p.positionMargin > 0
+                        ? (p.unrealizedPnl / p.positionMargin) * 100
+                        : null;
                     return (
                       <tr key={i} className="border-b border-border/50 last:border-0">
                         <td className="py-2.5 pr-4">
@@ -122,7 +163,19 @@ function PositionsContent() {
                             <ExchangeBadge exchange={p.exchange} />
                           </div>
                         </td>
-                        <td className="py-2.5 pr-4 font-medium">{p.symbol}</td>
+                        <td className="py-2.5 pr-4">
+                          <p className="font-medium">{p.symbol}</p>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[9px] text-muted-foreground">
+                            <span>{p.updatedAt ? `同步 ${new Date(p.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}` : "同步時間未提供"}</span>
+                            {p.attribution === "exact" ? (
+                              <Badge variant="outline" className="h-4 border-emerald-500/40 px-1 text-[8px] text-emerald-400">{p.strategy?.name ?? "精確歸屬"}</Badge>
+                            ) : p.attribution === "account_aggregate" ? (
+                              <Badge variant="outline" className="h-4 border-amber-500/40 px-1 text-[8px] text-amber-300">帳戶合併倉位</Badge>
+                            ) : (
+                              <Badge variant="outline" className="h-4 border-slate-500/40 px-1 text-[8px] text-slate-400">未歸屬</Badge>
+                            )}
+                          </div>
+                        </td>
                         <td className="py-2.5 pr-4"><SideBadge side={p.side} /></td>
                         <td className="py-2.5 pr-4 text-right font-mono-nums">{p.size}</td>
                         <td className="py-2.5 pr-4 text-right font-mono-nums">{p.entryPrice}</td>
@@ -130,9 +183,12 @@ function PositionsContent() {
                         <td className="py-2.5 pr-4 text-right font-mono-nums">{p.leverage}x</td>
                         <td className="py-2.5 pr-4 text-right">
                           <PnlValue value={p.unrealizedPnl} suffix="" />
+                          <p className="mt-0.5 font-mono-nums text-[10px] text-muted-foreground">
+                            {pnlPct !== null ? `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%` : "盈虧率未提供"}
+                          </p>
                         </td>
                         <td className="py-2.5 text-right">
-                          {strategy ? (
+                          {strategyId ? (
                             <Button
                               variant="outline"
                               size="sm"
@@ -140,14 +196,19 @@ function PositionsContent() {
                               disabled={closeMutation.isPending}
                               onClick={() => {
                                 if (confirm(`確定對 ${p.symbol} 執行市價平倉？`)) {
-                                  closeMutation.mutate({ id: strategy.id });
+                                  closeMutation.mutate({ id: strategyId });
                                 }
                               }}
                             >
                               平倉
                             </Button>
                           ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
+                            <span
+                              className="text-[10px] text-muted-foreground"
+                              title={p.attribution === "account_aggregate" ? `相關策略：${p.relatedStrategyNames.join("、") || "無法唯一判定"}` : "無法安全歸屬此交易所持倉"}
+                            >
+                              {p.attribution === "account_aggregate" ? "合併倉位不可單策略平倉" : "—"}
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -181,6 +242,7 @@ function PositionsContent() {
                     <th className="pb-2 pr-4 font-medium text-right">數量</th>
                     <th className="pb-2 pr-4 font-medium text-right">價格</th>
                     <th className="pb-2 pr-4 font-medium">觸發來源</th>
+                    <th className="pb-2 pr-4 font-medium">成交真值</th>
                     <th className="pb-2 font-medium">狀態</th>
                   </tr>
                 </thead>
@@ -210,6 +272,14 @@ function PositionsContent() {
                       <td className="py-2.5 pr-4 text-xs">
                         {triggerLabel(t.triggerSource)}
                       </td>
+                      <td className="py-2.5 pr-4 text-xs">
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] ${t.priceSource === "exchange_fill" && t.sizeSource === "exchange_fill" ? "border-emerald-500/40 text-emerald-400" : "border-amber-500/40 text-amber-300"}`}
+                        >
+                          {fillTruthLabel(t.priceSource, t.sizeSource)}
+                        </Badge>
+                      </td>
                       <td className="py-2.5">
                         <Badge
                           variant="outline"
@@ -238,6 +308,12 @@ function PositionsContent() {
       </Card>
     </div>
   );
+}
+
+function fillTruthLabel(priceSource: string | null, sizeSource: string | null): string {
+  if (priceSource === "exchange_fill" && sizeSource === "exchange_fill") return "交易所實際成交";
+  if (priceSource === "order_request_fallback" || sizeSource === "order_request_fallback") return "下單請求回退";
+  return "歷史來源未知";
 }
 
 function triggerLabel(source: string | null): string {

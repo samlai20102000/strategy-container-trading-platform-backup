@@ -20,11 +20,12 @@ import {
   createTrade,
 } from "../db";
 import { createAdapter } from "../exchanges/factory";
-import type { ExchangeAdapter } from "../exchanges/types";
+import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import { loadStrategyState, saveStrategyState } from "./strategyStateManager";
 import { notifyOwner } from "./notifier";
 import { validateAndProcessMartinConfig } from "./parameterValidator";
 import { getLayerStepPct } from "./martingaleEngine";
+import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
 
 const V61_KEY = "KAMA_3K_HF_V61";
 const CHECK_INTERVAL_MS = 15_000; // V6.1 高頻版 15 秒檢查一次
@@ -273,9 +274,11 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
     let exitPrice = 0;
     let pnl: number | undefined;
     let orderId: string | undefined;
+    let exchangeCloseResult: OrderResult | undefined;
 
     if (state.totalSize > 0) {
       const result = await adapter.closePositionSmart(strategy.symbol);
+      exchangeCloseResult = result;
       if (!result.success) {
         console.error(`[V61Monitor] closeAndDisable 平倉失敗:`, result.errorMessage, result.rawResponse);
       } else {
@@ -287,6 +290,14 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
           ? (exitPrice - state.avgPrice) * state.totalSize * dirMult
           : undefined;
       }
+    }
+
+    if (!positionClosed || !exchangeCloseResult) {
+      await notifyOwner(
+        `V6.1 風控平倉失敗 - 策略 ${strategy.name || strategy.id}`,
+        `原因：${reason}\n交易所尚未確認平倉；策略保持啟用且本地持倉不重置，下一輪將重試。`,
+      );
+      return;
     }
 
     await disableStrategySystem(strategy.id, reason);
@@ -329,8 +340,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
           side: state.isLong ? "sell" : "buy",
           orderType: "market",
           orderId,
-          size: String(state.totalSize),
-          price: exitPrice > 0 ? String(exitPrice) : undefined,
+          ...tradeFillRecordFields(exchangeCloseResult, price, state.totalSize),
           realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
           reduceOnly: true,
           status: "filled",
@@ -364,6 +374,7 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
     let exitPrice = 0;
     let pnl: number | undefined;
     let orderId: string | undefined;
+    let exchangeCloseResult: OrderResult | undefined;
 
     if (state.totalSize > 0) {
       const result = await adapter.closePositionSmart(strategy.symbol);
@@ -371,6 +382,7 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
         console.error(`[V61Monitor] closePosition 平倉失敗:`, result.errorMessage, result.rawResponse);
         return; // 失敗不重置狀態，等待鎖過期後重試
       }
+      exchangeCloseResult = result;
       positionClosed = true;
       orderId = result.orderId;
       exitPrice = result.filledPrice || price;
@@ -420,8 +432,7 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
           side: state.isLong ? "sell" : "buy",
           orderType: "market",
           orderId,
-          size: String(state.totalSize),
-          price: exitPrice > 0 ? String(exitPrice) : undefined,
+          ...tradeFillRecordFields(exchangeCloseResult!, price, state.totalSize),
           realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
           reduceOnly: true,
           status: "filled",
@@ -463,7 +474,7 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
     // 部分平倉仍用 placeOrder（需要指定精確數量），但傳遞正確的 posSide
     const posSide: "long" | "short" = state.isLong ? "long" : "short";
 
-    await adapter.placeOrder({
+    const orderResult = await adapter.placeOrder({
       symbol: strategy.symbol,
       side,
       orderType: "market",
@@ -472,12 +483,21 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
       posSide,
     });
 
+    if (!orderResult.success) {
+      console.error(`[V61Monitor] partialClose 下單失敗:`, orderResult.errorMessage, orderResult.rawResponse);
+      return;
+    }
+
+    const resolvedFill = resolveTradeFill(orderResult, undefined, closeSize);
+    const actualCloseSize = Math.min(state.totalSize, resolvedFill.size);
+    const actualClosePrice = resolvedFill.price;
+
     // 更新狀態
     const martinState = strategy.martinState ?? {};
     const alreadyClosed: number[] = martinState.__partialClosedLayers ?? [];
     alreadyClosed.push(triggerLayer);
 
-    const newTotalSize = state.totalSize - closeSize;
+    const newTotalSize = Math.max(0, state.totalSize - actualCloseSize);
     await updateStrategy(strategy.id, strategy.userId, {
       martinState: {
         ...martinState,
@@ -487,29 +507,57 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
     });
 
     // 寫入訊號日誌
+    let signalId: number | undefined;
     try {
-      await createSignal({
+      signalId = await createSignal({
         strategyId: strategy.id,
         userId: strategy.userId,
         rawPayload: JSON.stringify({
           action: "partial_close",
           symbol: strategy.symbol,
-          closeSize,
+          requestedCloseSize: closeSize,
+          actualCloseSize,
+          actualClosePrice,
           triggerLayer,
           remainingSize: newTotalSize,
           source: "v61_monitor",
         }),
         parsedAction: "close",
         parsedSymbol: strategy.symbol,
+        parsedPrice: actualClosePrice ? String(actualClosePrice) : undefined,
         status: "executed",
-        message: `[V6.1 Monitor] ${strategy.symbol} 部分獲利平倉 ${closeSize.toFixed(6)}，觸發層=${triggerLayer}，剩餘 ${newTotalSize.toFixed(6)}`,
+        orderId: orderResult.orderId,
+        message: `[V6.1 Monitor] ${strategy.symbol} 部分獲利平倉 ${actualCloseSize.toFixed(6)}，觸發層=${triggerLayer}，剩餘 ${newTotalSize.toFixed(6)}`,
         source: "auto",
       });
     } catch (e) {
       console.error(`[V61Monitor] partialClose 寫入訊號日誌失敗`, e);
     }
 
-    console.log(`[V61Monitor] 策略 ${strategy.id} 部分獲利平倉 ${closeSize.toFixed(6)}，剩餘 ${newTotalSize.toFixed(6)}`);
+    try {
+      const realizedPnl = actualClosePrice && state.avgPrice > 0
+        ? (actualClosePrice - state.avgPrice) * actualCloseSize * (state.isLong ? 1 : -1)
+        : undefined;
+      await createTrade({
+        strategyId: strategy.id,
+        userId: strategy.userId,
+        signalId,
+        exchange: strategy.exchange,
+        symbol: strategy.symbol,
+        side,
+        orderType: "market",
+        orderId: orderResult.orderId,
+        ...tradeFillRecordFields(orderResult, undefined, closeSize),
+        realizedPnl: realizedPnl !== undefined ? String(realizedPnl.toFixed(6)) : undefined,
+        reduceOnly: true,
+        status: "filled",
+        triggerSource: "v61_monitor_partial_close",
+      });
+    } catch (e) {
+      console.error(`[V61Monitor] partialClose 寫入交易記錄失敗`, e);
+    }
+
+    console.log(`[V61Monitor] 策略 ${strategy.id} 部分獲利平倉 ${actualCloseSize.toFixed(6)}，剩餘 ${newTotalSize.toFixed(6)}`);
   } catch (err: any) {
     console.error(`[V61Monitor] partialClose 失敗:`, err?.message);
   }

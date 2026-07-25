@@ -49,6 +49,7 @@ import {
 } from "../strategies/rainbow20415/core";
 import { getBoundStrategyConfig } from "./strategySnapshotConfig";
 import { resolveDeploymentPosition } from "./deploymentPosition";
+import { tradeFillRecordFields } from "./tradeFillTruth";
 
 /**
  * 策略執行引擎
@@ -232,7 +233,11 @@ export async function executeSignal(
         side: closePosSide === "short" ? "buy" : "sell",
         orderType: "market",
         orderId: result.orderId,
-        size: "0",
+        ...tradeFillRecordFields(
+          result,
+          undefined,
+          Number((strategy.martinState as any)?.totalSize || 0),
+        ),
         reduceOnly: true,
         status: "filled",
         triggerSource: "webhook",
@@ -349,7 +354,11 @@ export async function executeSignal(
           side: genericClosePosSide === "short" ? "buy" : "sell",
           orderType: "market",
           orderId: result.orderId,
-          size: "0",
+          ...tradeFillRecordFields(
+            result,
+            undefined,
+            Number((strategy.martinState as any)?.totalSize || 0),
+          ),
           reduceOnly: true,
           status: "filled",
           triggerSource: "webhook",
@@ -455,8 +464,7 @@ export async function executeSignal(
     side: orderSide,
     orderType: strategy.orderType,
     orderId: orderResult.orderId,
-    size: String(size),
-    price: signal.price !== undefined ? String(signal.price) : undefined,
+    ...tradeFillRecordFields(orderResult, signal.price, size),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -618,8 +626,7 @@ async function executeSignalRainbow20415(
       side: state.isLong ? "sell" : "buy",
       orderType: "market",
       orderId: result.orderId,
-      size: String(state.totalSize),
-      price: exitPrice > 0 ? String(exitPrice) : undefined,
+      ...tradeFillRecordFields(result, currentPrice, state.totalSize),
       realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
       reduceOnly: true,
       status: "filled",
@@ -690,8 +697,7 @@ async function executeSignalRainbow20415(
     side: isLong ? "buy" : "sell",
     orderType: "market",
     orderId: orderResult.orderId,
-    size: String(quantity),
-    price: String(currentPrice),
+    ...tradeFillRecordFields(orderResult, currentPrice, quantity),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -847,8 +853,7 @@ async function executeSignalV35(
         side: state.isLong ? "sell" : "buy",
         orderType: "market",
         orderId: result.orderId,
-        size: String(state.totalSize || 0),
-        price: exitPriceV35 > 0 ? String(exitPriceV35) : undefined,
+        ...tradeFillRecordFields(result, undefined, state.totalSize || 0),
         realizedPnl: pnlV35 !== undefined ? String(pnlV35.toFixed(6)) : undefined,
         reduceOnly: true,
         status: "filled",
@@ -924,8 +929,7 @@ async function executeSignalV35(
     side: isLong ? "buy" : "sell",
     orderType: "market",
     orderId: orderResult.orderId,
-    size: String(decision.lotSize),
-    price: entryPrice > 0 ? String(entryPrice) : undefined,
+    ...tradeFillRecordFields(orderResult, entryPrice, decision.lotSize),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -1113,8 +1117,7 @@ async function executeSignalV50(
         side: state.isLong ? "sell" : "buy",
         orderType: "market",
         orderId: result.orderId,
-        size: String(state.totalSize),
-        price: exitPriceV50 > 0 ? String(exitPriceV50) : undefined,
+        ...tradeFillRecordFields(result, undefined, state.totalSize),
         realizedPnl: pnlV50 !== undefined ? String(pnlV50.toFixed(6)) : undefined,
         reduceOnly: true,
         status: "filled",
@@ -1178,8 +1181,7 @@ async function executeSignalV50(
     side: isLong ? "buy" : "sell",
     orderType: "market",
     orderId: orderResult.orderId,
-    size: String(decision.lotSize),
-    price: signal.price ? String(signal.price) : undefined,
+    ...tradeFillRecordFields(orderResult, signal.price, decision.lotSize),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -1357,8 +1359,7 @@ async function executeSignalV61(
         side: state.isLong ? "sell" : "buy",
         orderType: "market",
         orderId: result.orderId,
-        size: String(state.totalSize),
-        price: exitPriceV61 > 0 ? String(exitPriceV61) : undefined,
+        ...tradeFillRecordFields(result, undefined, state.totalSize),
         realizedPnl: pnlV61 !== undefined ? String(pnlV61.toFixed(6)) : undefined,
         reduceOnly: true,
         status: "filled",
@@ -1437,8 +1438,7 @@ async function executeSignalV61(
     side: isLong ? "buy" : "sell",
     orderType: v61OrderType,
     orderId: orderResult.orderId,
-    size: String(decision.lotSize),
-    price: signal.price ? String(signal.price) : undefined,
+    ...tradeFillRecordFields(orderResult, entryPrice, decision.lotSize),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -1580,8 +1580,7 @@ async function executeSignalV25(
       side: state.isLong ? "sell" : "buy",
       orderType: "market",
       orderId: result.orderId,
-      size: String(state.totalSize),
-      price: exitPrice > 0 ? String(exitPrice) : undefined,
+      ...tradeFillRecordFields(result, signal.price, state.totalSize),
       realizedPnl:
         realizedPnl !== undefined ? String(realizedPnl.toFixed(8)) : undefined,
       reduceOnly: true,
@@ -1690,8 +1689,7 @@ async function executeSignalV25(
     side: isLong ? "buy" : "sell",
     orderType: "market",
     orderId: orderResult.orderId,
-    size: String(orderQuantity),
-    price: String(entryPrice),
+    ...tradeFillRecordFields(orderResult, entryPrice, orderQuantity),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -1829,8 +1827,7 @@ async function executeSignalV70(
         side: state.isLong ? "sell" : "buy",
         orderType: "market",
         orderId: result.orderId,
-        size: String(state.totalSize),
-        price: exitPrice > 0 ? String(exitPrice) : undefined,
+        ...tradeFillRecordFields(result, undefined, state.totalSize),
         reduceOnly: true,
         status: "filled",
         triggerSource: "webhook",
@@ -1902,8 +1899,7 @@ async function executeSignalV70(
     side: isLong ? "buy" : "sell",
     orderType: "market",
     orderId: orderResult.orderId,
-    size: String(decision.lotSize),
-    price: signal.price ? String(signal.price) : undefined,
+    ...tradeFillRecordFields(orderResult, entryPrice, decision.lotSize),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
@@ -2032,8 +2028,11 @@ async function handleDailyLossBreach(
         side: dailyLossPosSide === "short" ? "buy" : "sell",
         orderType: "market",
         orderId: result.orderId,
-        size: String(result.filledSize || 0),
-        price: exitPriceDL > 0 ? String(exitPriceDL) : undefined,
+        ...tradeFillRecordFields(
+          result,
+          undefined,
+          Number((strategy.martinState as any)?.totalSize || 0),
+        ),
         reduceOnly: true,
         status: "filled",
         triggerSource: "risk_daily_loss",

@@ -1592,6 +1592,9 @@ const dashboardRouter = router({
         markPrice: number;
         unrealizedPnl: number;
         leverage: number;
+        positionMargin?: number;
+        unrealizedPnlRatioPct?: number;
+        updatedAt?: number;
         liquidationPrice?: number;
         marginRatio?: number;
       }[];

@@ -216,38 +216,26 @@ function StrategiesContent() {
   }, [rangeDays]);
   const { data: performance } = trpc.performance.byStrategy.useQuery(perfInput);
 
-  // 🔥 批量獲取有持倉策略的實時價格（供盈虧計算）
-  const tickerPairs = useMemo(() => {
-    if (!strategies) return [];
-    const pairs: { exchange: "bybit" | "okx"; symbol: string }[] = [];
-    const seen = new Set<string>();
-    for (const s of strategies) {
-      const ms = (s as any).martinState;
-      const sz = Number(ms?.totalSize) || 0;
-      if (sz > 0 && s.exchange && s.symbol) {
-        const key = `${s.exchange}:${s.symbol}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          pairs.push({ exchange: s.exchange as "bybit" | "okx", symbol: s.symbol });
-        }
-      }
-    }
-    return pairs;
-  }, [strategies]);
-  const { data: liveTickersData } = trpc.exchange.getBatchTickers.useQuery(
-    { pairs: tickerPairs },
-    { enabled: tickerPairs.length > 0, refetchInterval: 10_000, staleTime: 5_000 },
+  // 交易所持倉快照是策略卡片未實現盈虧的唯一權威來源。
+  // 同一 API 金鑰只由後端查詢一次，並依帳戶／交易對／方向安全歸屬；不可歸屬時不顯示偽精確盈虧。
+  const positionSnapshotInput = useMemo(
+    () => ({ strategyIds: strategies?.map((strategy) => strategy.id) ?? [] }),
+    [strategies],
   );
-  // 建立 symbol → price 的快速查找 Map
-  const livePriceMap = useMemo(() => {
-    const m = new Map<string, number>();
-    if (liveTickersData) {
-      for (const t of liveTickersData) {
-        m.set(`${t.exchange}:${t.symbol}`, t.price);
-      }
-    }
-    return m;
-  }, [liveTickersData]);
+  const {
+    data: positionSnapshots,
+    isLoading: positionSnapshotsLoading,
+    isFetching: positionSnapshotsFetching,
+    refetch: refetchPositionSnapshots,
+  } = trpc.exchange.getStrategyPositionSnapshots.useQuery(positionSnapshotInput, {
+    enabled: positionSnapshotInput.strategyIds.length > 0,
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  });
+  const positionSnapshotMap = useMemo(
+    () => new Map((positionSnapshots ?? []).map((snapshot) => [snapshot.strategyId, snapshot] as const)),
+    [positionSnapshots],
+  );
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<StrategyForm>(emptyForm);
@@ -401,6 +389,7 @@ function StrategiesContent() {
         );
       }
       utils.strategies.list.invalidate();
+      utils.exchange.getStrategyPositionSnapshots.invalidate();
     },
     onError: (e) => toast.error(`平倉請求異常：${e.message}`, { duration: 10000 }),
   });
@@ -991,58 +980,102 @@ function StrategiesContent() {
                       </div>
                     </div>
 
-                    {/* 本策略持倉狀態 */}
+                    {/* 本策略持倉狀態：盈虧只採同一筆交易所持倉快照 */}
                     {(() => {
                       const ms = (s.martinState as any) || {};
-                      const sz = Number(ms.totalSize) || 0;
+                      const localSize = Number(ms.totalSize) || 0;
                       const layer = Number(ms.currentLayer) || 0;
-                      const avgP = Number(ms.avgPrice) || 0;
-                      const dir = ms.isLong ? 'Long' : 'Short';
+                      const localAvgPrice = Number(ms.avgPrice) || 0;
+                      const snapshot = positionSnapshotMap.get(s.id);
+                      const snapshotAvailable = snapshot?.status === "available";
+                      const sz = snapshotAvailable && snapshot.size !== null ? snapshot.size : localSize;
+                      const avgP = snapshotAvailable && snapshot.entryPrice !== null ? snapshot.entryPrice : localAvgPrice;
+                      const side = snapshot?.side ?? (ms.isLong ? "long" : "short");
+                      const dir = side === "long" ? "Long" : "Short";
                       const baseCurrency = s.symbol.replace(/USDT$|USD$|-USDT-SWAP$|-USD-SWAP$/i, '');
-                      // 實時價格查找
-                      const livePrice = livePriceMap.get(`${s.exchange}:${s.symbol}`) || 0;
-                      // 當前市值 = 持倉數量 × 實時價格
-                      const currentValue = livePrice > 0 ? sz * livePrice : sz * avgP;
-                      // 入場成本 = 持倉數量 × 均價
+                      const livePrice = snapshot?.markPrice ?? 0;
+                      const currentValue = livePrice > 0 ? sz * livePrice : null;
                       const entryCost = sz * avgP;
-                      // 保證金 = 入場成本 / 槓桿倍數（與 OKX 一致）
-                      const leverage = Number(s.leverage) || 1;
-                      const margin = entryCost / leverage;
-                      // 未實現盈虧（考慮做多/做空方向）
-                      const unrealizedPnl = livePrice > 0
-                        ? (ms.isLong ? (livePrice - avgP) * sz : (avgP - livePrice) * sz)
-                        : 0;
-                      // 🔥 盈虧百分比基於保證金（而非入場成本），與 OKX 一致
-                      const unrealizedPnlPct = margin > 0 && livePrice > 0
-                        ? (unrealizedPnl / margin) * 100
-                        : 0;
-                      if (sz > 0) {
+                      const unrealizedPnl = snapshot?.unrealizedPnl ?? null;
+                      const unrealizedPnlPct = snapshot?.unrealizedPnlPct ?? null;
+                      const syncTimestamp = snapshot?.exchangeUpdatedAt ?? snapshot?.capturedAt ?? null;
+                      const syncLabel = syncTimestamp
+                        ? new Date(syncTimestamp).toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                        : "—";
+                      const isExact = snapshot?.attribution === "exact";
+                      const isAggregate = snapshot?.attribution === "account_aggregate";
+                      const sourceTone = isExact
+                        ? "border-emerald-500/30 bg-emerald-500/5"
+                        : isAggregate
+                          ? "border-amber-500/30 bg-amber-500/5"
+                          : "border-rose-500/30 bg-rose-500/5";
+                      if (localSize > 0) {
                         return (
-                          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs text-emerald-400 font-medium">本策略持倉</span>
-                              <span className="text-xs text-muted-foreground">第 {layer} 層</span>
+                          <div className={`rounded-lg border p-2.5 ${sourceTone}`}>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`text-xs font-semibold ${isExact ? "text-emerald-400" : isAggregate ? "text-amber-300" : "text-rose-300"}`}>
+                                  {isExact ? `${s.exchange.toUpperCase()} 真實持倉` : isAggregate ? "帳戶合併倉位" : "交易所對帳異常"}
+                                </span>
+                                {snapshot?.stale && (
+                                  <Badge variant="outline" className="h-5 border-rose-500/40 px-1.5 text-[9px] text-rose-300">資料逾期</Badge>
+                                )}
+                                {isAggregate && (
+                                  <Badge variant="outline" className="h-5 border-amber-500/40 px-1.5 text-[9px] text-amber-300">策略估算，不計入帳戶合計</Badge>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                                <span>同步 {syncLabel}</span>
+                                <span>· 第 {layer} 層</span>
+                                <button
+                                  type="button"
+                                  className="rounded p-0.5 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                  aria-label="重新同步交易所持倉"
+                                  title="重新同步交易所持倉"
+                                  onClick={() => void refetchPositionSnapshots()}
+                                  disabled={positionSnapshotsFetching}
+                                >
+                                  <RefreshCw className={`h-3 w-3 ${positionSnapshotsFetching ? "animate-spin" : ""}`} />
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2 mt-1">
+                            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
                               <span className="font-mono-nums text-sm font-semibold text-foreground">{parseFloat(sz.toPrecision(10))} {baseCurrency}</span>
                               <span className="font-mono-nums text-xs text-muted-foreground">(≈ {entryCost.toFixed(2)} USDT)</span>
-                              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${ms.isLong ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{dir}</span>
+                              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${side === "long" ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{dir}</span>
                               {avgP > 0 && <span className="text-xs text-muted-foreground">均價 {avgP.toFixed(2)}</span>}
                             </div>
-                            {/* 實時盈虧顯示 */}
-                            <div className="flex items-center gap-2 mt-2 pt-2 border-t border-emerald-500/20">
-                              {livePrice > 0 ? (
+                            <div className="mt-2 border-t border-white/10 pt-2">
+                              {positionSnapshotsLoading && !snapshot ? (
+                                <span className="text-xs text-muted-foreground animate-pulse">正在同步交易所持倉...</span>
+                              ) : snapshotAvailable && livePrice > 0 && unrealizedPnl !== null ? (
                                 <>
-                                  <span className="text-xs text-muted-foreground">現價</span>
-                                  <span className="font-mono-nums text-xs font-semibold text-foreground">{livePrice.toFixed(2)}</span>
-                                  <span className="text-xs text-muted-foreground">市值</span>
-                                  <span className="font-mono-nums text-xs font-semibold text-foreground">{currentValue.toFixed(2)} USDT</span>
-                                  <span className={`font-mono-nums text-xs font-bold ${unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                    {unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toFixed(2)} USDT ({unrealizedPnlPct >= 0 ? '+' : ''}{unrealizedPnlPct.toFixed(2)}%)
-                                  </span>
+                                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+                                    <div><p className="text-[10px] text-muted-foreground">標記價格</p><p className="font-mono-nums text-xs font-semibold">{livePrice.toFixed(2)}</p></div>
+                                    <div><p className="text-[10px] text-muted-foreground">目前名義價值</p><p className="font-mono-nums text-xs font-semibold">{currentValue !== null ? `${currentValue.toFixed(2)} U` : "—"}</p></div>
+                                    <div><p className="text-[10px] text-muted-foreground">持倉保證金</p><p className="font-mono-nums text-xs font-semibold">{snapshot.positionMargin !== null ? `${snapshot.positionMargin.toFixed(4)} U` : "—"}</p></div>
+                                    <div>
+                                      <p className="text-[10px] text-muted-foreground">{isExact ? "交易所未實現盈虧" : "策略毛浮盈虧估算"}</p>
+                                      <p className={`font-mono-nums text-xs font-bold ${unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        {unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toFixed(4)} U
+                                        {unrealizedPnlPct !== null ? ` (${unrealizedPnlPct >= 0 ? '+' : ''}${unrealizedPnlPct.toFixed(2)}%)` : ""}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  {isAggregate && snapshot.accountUnrealizedPnl !== null && (
+                                    <p className="mt-1.5 text-[10px] text-amber-200/80">
+                                      同方向帳戶合併持倉：{snapshot.accountPositionSize ?? "—"} {baseCurrency}，OKX／Bybit 帳戶未實現盈虧 {snapshot.accountUnrealizedPnl >= 0 ? "+" : ""}{snapshot.accountUnrealizedPnl.toFixed(4)} U；不可重複歸入單一策略。
+                                    </p>
+                                  )}
+                                  <p className="mt-1 text-[10px] text-muted-foreground">
+                                    費用／資金費未由持倉端點逐策略提供，未納入上述毛浮盈虧；最終淨盈虧以交易所帳單與平倉成交為準。
+                                  </p>
                                 </>
                               ) : (
-                                <span className="text-xs text-muted-foreground animate-pulse">載入實時價格中...</span>
+                                <div className="flex items-start gap-1.5 text-xs text-rose-300">
+                                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                  <span>{snapshot?.message ?? "交易所持倉尚未同步；為避免誤導，已停止顯示本地估算盈虧。"}</span>
+                                </div>
                               )}
                             </div>
                             {/* 距下一層加倉提示 */}

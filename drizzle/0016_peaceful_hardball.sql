@@ -1,0 +1,2 @@
+ALTER TABLE `trades` ADD `priceSource` enum('exchange_fill','order_request','legacy_unknown') DEFAULT 'legacy_unknown' NOT NULL;--> statement-breakpoint
+ALTER TABLE `trades` ADD `sizeSource` enum('exchange_fill','order_request','legacy_unknown') DEFAULT 'legacy_unknown' NOT NULL;

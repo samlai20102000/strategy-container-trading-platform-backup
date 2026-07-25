@@ -1,0 +1,317 @@
+import type { ApiKey, Strategy } from "../../drizzle/schema";
+import { listApiKeys, listStrategies } from "../db";
+import { createAdapter } from "../exchanges/factory";
+import type { Position } from "../exchanges/types";
+
+export type PositionSnapshotSource = "exchange_position" | "local_estimate";
+export type PositionAttribution = "exact" | "account_aggregate" | "unavailable";
+export type PositionSnapshotStatus =
+  | "available"
+  | "no_local_position"
+  | "no_exchange_position"
+  | "exchange_unavailable"
+  | "incomplete_exchange_position";
+export type PositionPnlKind = "exchange_unrealized" | "strategy_gross_estimate" | "unavailable";
+
+export interface StrategyPositionSnapshot {
+  strategyId: number;
+  apiKeyId: number;
+  exchange: Strategy["exchange"];
+  symbol: string;
+  side: "long" | "short" | null;
+  status: PositionSnapshotStatus;
+  source: PositionSnapshotSource;
+  attribution: PositionAttribution;
+  pnlKind: PositionPnlKind;
+  capturedAt: number | null;
+  exchangeUpdatedAt: number | null;
+  stale: boolean;
+  size: number | null;
+  entryPrice: number | null;
+  markPrice: number | null;
+  unrealizedPnl: number | null;
+  unrealizedPnlPct: number | null;
+  leverage: number | null;
+  positionMargin: number | null;
+  accountPositionSize: number | null;
+  accountUnrealizedPnl: number | null;
+  message: string;
+}
+
+export interface AccountPositionResult {
+  positions: Position[];
+  capturedAt: number;
+  error?: string;
+}
+
+interface LocalPositionState {
+  strategy: Strategy;
+  side: "long" | "short" | null;
+  size: number;
+  entryPrice: number;
+  hasPosition: boolean;
+  groupKey: string | null;
+}
+
+const POSITION_CACHE_TTL_MS = 5_000;
+const POSITION_STALE_AFTER_MS = 15_000;
+const accountPositionCache = new Map<
+  string,
+  { expiresAt: number; promise: Promise<AccountPositionResult> }
+>();
+
+function finiteNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function positiveNumber(value: unknown): number | null {
+  const parsed = finiteNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
+}
+
+/** BTCUSDT、BTC-USDT 與 BTC-USDT-SWAP 會被歸到同一標準鍵。 */
+export function normalizePositionSymbol(symbol: string): string {
+  return symbol.toUpperCase().replace(/-SWAP$/i, "").replace(/[^A-Z0-9]/g, "");
+}
+
+function toLocalPositionState(strategy: Strategy): LocalPositionState {
+  const raw = strategy.martinState && typeof strategy.martinState === "object"
+    ? strategy.martinState as Record<string, unknown>
+    : {};
+  const size = positiveNumber(raw.totalSize) ?? 0;
+  const entryPrice = positiveNumber(raw.avgPrice) ?? 0;
+  const side = raw.isLong === true ? "long" : raw.isLong === false ? "short" : null;
+  const hasPosition = size > 0 && entryPrice > 0 && side !== null;
+  return {
+    strategy,
+    side,
+    size,
+    entryPrice,
+    hasPosition,
+    groupKey: hasPosition
+      ? `${strategy.apiKeyId}:${normalizePositionSymbol(strategy.symbol)}:${side}`
+      : null,
+  };
+}
+
+function sanitizeExchangeError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/[\r\n]+/g, " ").slice(0, 240) || "交易所持倉查詢失敗";
+}
+
+async function fetchAccountPositions(
+  userId: number,
+  apiKey: ApiKey,
+): Promise<AccountPositionResult> {
+  const cacheKey = `${userId}:${apiKey.id}:${apiKey.updatedAt.getTime()}`;
+  const cached = accountPositionCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const promise = (async (): Promise<AccountPositionResult> => {
+    try {
+      const adapter = createAdapter(apiKey);
+      const positions = await adapter.getPositions();
+      return { positions, capturedAt: Date.now() };
+    } catch (error) {
+      return { positions: [], capturedAt: Date.now(), error: sanitizeExchangeError(error) };
+    }
+  })();
+  accountPositionCache.set(cacheKey, {
+    expiresAt: Date.now() + POSITION_CACHE_TTL_MS,
+    promise,
+  });
+  return promise;
+}
+
+function baseSnapshot(local: LocalPositionState): StrategyPositionSnapshot {
+  return {
+    strategyId: local.strategy.id,
+    apiKeyId: local.strategy.apiKeyId,
+    exchange: local.strategy.exchange,
+    symbol: local.strategy.symbol,
+    side: local.side,
+    status: "exchange_unavailable",
+    source: "local_estimate",
+    attribution: "unavailable",
+    pnlKind: "unavailable",
+    capturedAt: null,
+    exchangeUpdatedAt: null,
+    stale: true,
+    size: local.hasPosition ? local.size : null,
+    entryPrice: local.hasPosition ? local.entryPrice : null,
+    markPrice: null,
+    unrealizedPnl: null,
+    unrealizedPnlPct: null,
+    leverage: positiveNumber(local.strategy.leverage),
+    positionMargin: null,
+    accountPositionSize: null,
+    accountUnrealizedPnl: null,
+    message: "交易所持倉資料不可用",
+  };
+}
+
+/**
+ * 純函式：把帳戶合併持倉安全歸屬到策略卡片。
+ * exact 才可使用交易所整筆 upl；共享帳戶／交易對／方向時只做策略毛盈虧估算。
+ */
+export function buildStrategyPositionSnapshots(
+  strategies: Strategy[],
+  accountResults: ReadonlyMap<number, AccountPositionResult>,
+  now = Date.now(),
+): StrategyPositionSnapshot[] {
+  const locals = strategies.map(toLocalPositionState);
+  const localGroupCounts = new Map<string, number>();
+  for (const local of locals) {
+    if (local.groupKey) localGroupCounts.set(local.groupKey, (localGroupCounts.get(local.groupKey) ?? 0) + 1);
+  }
+
+  return locals.map((local) => {
+    const snapshot = baseSnapshot(local);
+    const account = accountResults.get(local.strategy.apiKeyId);
+
+    if (!local.hasPosition) {
+      return {
+        ...snapshot,
+        status: "no_local_position",
+        source: account && !account.error ? "exchange_position" : "local_estimate",
+        capturedAt: account?.capturedAt ?? null,
+        stale: !account || now - account.capturedAt > POSITION_STALE_AFTER_MS,
+        message: "本策略目前沒有可歸屬的本地持倉",
+      };
+    }
+    if (!account || account.error) {
+      return {
+        ...snapshot,
+        capturedAt: account?.capturedAt ?? null,
+        message: account?.error ? `交易所持倉查詢失敗：${account.error}` : "找不到本策略的交易所帳戶憑證",
+      };
+    }
+
+    const normalizedSymbol = normalizePositionSymbol(local.strategy.symbol);
+    const matchingPositions = account.positions.filter((position) =>
+      normalizePositionSymbol(position.symbol) === normalizedSymbol && position.side === local.side && position.size > 0,
+    );
+    if (matchingPositions.length === 0) {
+      return {
+        ...snapshot,
+        status: "no_exchange_position",
+        source: "exchange_position",
+        capturedAt: account.capturedAt,
+        stale: now - account.capturedAt > POSITION_STALE_AFTER_MS,
+        message: `交易所同帳戶沒有 ${local.side === "long" ? "多" : "空"}向持倉，已停止顯示估算盈虧`,
+      };
+    }
+
+    const position = matchingPositions[0];
+    const markPrice = positiveNumber(position.markPrice);
+    const exchangeSize = positiveNumber(position.size);
+    const exchangeEntryPrice = positiveNumber(position.entryPrice);
+    const exchangePnl = finiteNumber(position.unrealizedPnl);
+    const positionMargin = positiveNumber(position.positionMargin);
+    const leverage = positiveNumber(position.leverage) ?? positiveNumber(local.strategy.leverage);
+    const groupCount = local.groupKey ? localGroupCounts.get(local.groupKey) ?? 0 : 0;
+    const stale = now - account.capturedAt > POSITION_STALE_AFTER_MS;
+
+    if (markPrice === null || exchangeSize === null || exchangeEntryPrice === null) {
+      return {
+        ...snapshot,
+        status: "incomplete_exchange_position",
+        source: "exchange_position",
+        attribution: "unavailable",
+        capturedAt: account.capturedAt,
+        exchangeUpdatedAt: position.updatedAt ?? null,
+        stale,
+        accountPositionSize: exchangeSize,
+        accountUnrealizedPnl: exchangePnl,
+        message: "交易所持倉欄位不完整，未顯示可能誤導的盈虧",
+      };
+    }
+
+    const sizeDiffRatio = Math.abs(local.size - exchangeSize) / exchangeSize;
+    const entryDiffRatio = Math.abs(local.entryPrice - exchangeEntryPrice) / exchangeEntryPrice;
+    // 只有「唯一候選策略」且本地數量／均價與交易所持倉吻合時，才可把整筆 OKX／Bybit UPL
+    // 精確歸屬給該策略。任何不吻合都視為帳戶合併／外部變更，避免把帳戶總盈虧冒充策略盈虧。
+    const attribution: PositionAttribution = groupCount === 1 && sizeDiffRatio <= 0.01 && entryDiffRatio <= 0.005
+      ? "exact"
+      : "account_aggregate";
+
+    if (attribution === "exact") {
+      const nativePnlPct = finiteNumber(position.unrealizedPnlRatioPct);
+      const derivedPnlPct = exchangePnl !== null && positionMargin !== null
+        ? (exchangePnl / positionMargin) * 100
+        : null;
+      return {
+        ...snapshot,
+        status: "available",
+        source: "exchange_position",
+        attribution,
+        pnlKind: "exchange_unrealized",
+        capturedAt: account.capturedAt,
+        exchangeUpdatedAt: position.updatedAt ?? null,
+        stale,
+        size: exchangeSize,
+        entryPrice: exchangeEntryPrice,
+        markPrice,
+        unrealizedPnl: exchangePnl,
+        unrealizedPnlPct: nativePnlPct ?? derivedPnlPct,
+        leverage,
+        positionMargin,
+        accountPositionSize: exchangeSize,
+        accountUnrealizedPnl: exchangePnl,
+        message: "交易所持倉快照（精確歸屬）",
+      };
+    }
+
+    const directionSign = local.side === "long" ? 1 : -1;
+    const estimatedPnl = directionSign * (markPrice - local.entryPrice) * local.size;
+    const estimatedMargin = leverage && leverage > 0 ? (markPrice * local.size) / leverage : null;
+    return {
+      ...snapshot,
+      status: "available",
+      source: "exchange_position",
+      attribution,
+      pnlKind: "strategy_gross_estimate",
+      capturedAt: account.capturedAt,
+      exchangeUpdatedAt: position.updatedAt ?? null,
+      stale,
+      size: local.size,
+      entryPrice: local.entryPrice,
+      markPrice,
+      unrealizedPnl: estimatedPnl,
+      unrealizedPnlPct: estimatedMargin && estimatedMargin > 0 ? (estimatedPnl / estimatedMargin) * 100 : null,
+      leverage,
+      positionMargin: estimatedMargin,
+      accountPositionSize: exchangeSize,
+      accountUnrealizedPnl: exchangePnl,
+      message: groupCount > 1
+        ? "同帳戶／交易對／方向由多個策略共享；顯示本策略毛盈虧估算，不重複歸入帳戶總盈虧"
+        : "本地策略數量或均價與交易所帳戶持倉不一致；已降級為策略毛盈虧估算，帳戶總盈虧不會被冒充為本策略盈虧",
+    };
+  });
+}
+
+export async function getStrategyPositionSnapshotsForUser(
+  userId: number,
+  requestedStrategyIds?: readonly number[],
+): Promise<StrategyPositionSnapshot[]> {
+  const [strategies, apiKeys] = await Promise.all([listStrategies(userId), listApiKeys(userId)]);
+  const requestedSet = requestedStrategyIds?.length ? new Set(requestedStrategyIds) : null;
+  const requestedStrategies = requestedSet
+    ? strategies.filter((strategy) => requestedSet.has(strategy.id))
+    : strategies;
+  const neededApiKeyIds = new Set(requestedStrategies.map((strategy) => strategy.apiKeyId));
+  const apiKeyById = new Map(apiKeys.map((apiKey) => [apiKey.id, apiKey]));
+  const accountResults = new Map<number, AccountPositionResult>();
+
+  await Promise.all(Array.from(neededApiKeyIds).map(async (apiKeyId) => {
+    const apiKey = apiKeyById.get(apiKeyId);
+    if (!apiKey) return;
+    accountResults.set(apiKeyId, await fetchAccountPositions(userId, apiKey));
+  }));
+
+  const allSnapshots = buildStrategyPositionSnapshots(strategies, accountResults);
+  return requestedSet
+    ? allSnapshots.filter((snapshot) => requestedSet.has(snapshot.strategyId))
+    : allSnapshots;
+}

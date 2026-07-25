@@ -303,6 +303,12 @@ export class BybitAdapter implements ExchangeAdapter {
         markPrice: parseFloat(p.markPrice),
         unrealizedPnl: parseFloat(p.unrealisedPnl),
         leverage: parseFloat(p.leverage),
+        positionMargin: parseFloat(p.positionIM || p.positionBalance || "0") || undefined,
+        unrealizedPnlRatioPct:
+          parseFloat(p.positionIM || p.positionBalance || "0") > 0
+            ? (parseFloat(p.unrealisedPnl || "0") / parseFloat(p.positionIM || p.positionBalance)) * 100
+            : undefined,
+        updatedAt: parseInt(p.updatedTime || p.updatedAt || "0", 10) || undefined,
       }));
   }
 

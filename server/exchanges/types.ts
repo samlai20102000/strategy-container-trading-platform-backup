@@ -51,6 +51,12 @@ export interface Position {
   markPrice: number;
   unrealizedPnl: number;
   leverage: number;
+  /** 該持倉使用的保證金，與 unrealizedPnl 來自同一交易所快照 */
+  positionMargin?: number;
+  /** 交易所原生未實現盈虧率，統一為百分比數值（例如 -0.26 表示 -0.26%） */
+  unrealizedPnlRatioPct?: number;
+  /** 交易所持倉資料更新時間（Unix 毫秒） */
+  updatedAt?: number;
   /** 預估強平價 */
   liquidationPrice?: number;
   /** 保證金率 (%) */

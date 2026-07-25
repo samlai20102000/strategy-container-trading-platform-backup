@@ -206,6 +206,14 @@ export const trades = mysqlTable("trades", {
   orderId: varchar("orderId", { length: 100 }),
   size: decimal("size", { precision: 20, scale: 8 }).notNull(),
   price: decimal("price", { precision: 20, scale: 8 }),
+  /** 價格真值來源：交易所實際成交／下單請求回退／歷史未知 */
+  priceSource: mysqlEnum("priceSource", ["exchange_fill", "order_request", "legacy_unknown"])
+    .default("legacy_unknown")
+    .notNull(),
+  /** 數量真值來源：交易所實際成交／下單請求回退／歷史未知 */
+  sizeSource: mysqlEnum("sizeSource", ["exchange_fill", "order_request", "legacy_unknown"])
+    .default("legacy_unknown")
+    .notNull(),
   /** 是否為平倉單 */
   reduceOnly: boolean("reduceOnly").default(false).notNull(),
   /** 已實現盈虧（平倉時記錄） */

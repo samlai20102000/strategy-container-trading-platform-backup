@@ -591,6 +591,11 @@ export class OKXAdapter implements ExchangeAdapter {
           markPrice: parseFloat(p.markPx),
           unrealizedPnl: parseFloat(p.upl),
           leverage: parseFloat(p.lever),
+          positionMargin: parseFloat(p.margin || p.imr || "0") || undefined,
+          unrealizedPnlRatioPct: p.uplRatio !== undefined && p.uplRatio !== ""
+            ? parseFloat(p.uplRatio) * 100
+            : undefined,
+          updatedAt: parseInt(p.uTime || "0", 10) || undefined,
           liquidationPrice: p.liqPx ? parseFloat(p.liqPx) || undefined : undefined,
           marginRatio: p.mgnRatio ? parseFloat(p.mgnRatio) * 100 : undefined,
         };
