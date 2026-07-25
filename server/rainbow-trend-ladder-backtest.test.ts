@@ -116,8 +116,8 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
       exitPrice: 121.5,
       exitReason: "回測結束強制平倉",
     });
-    expect(result.trades[0].size).toBeCloseTo(0.06, 12);
-    expect(result.equityCurve.at(-1)?.equity).toBeCloseTo(10_000.03, 2);
+    expect(result.trades[0].size).toBeCloseTo(100 / 121, 12); // 100 USDT / 121 entryPrice
+    expect(result.equityCurve.at(-1)?.equity).toBeCloseTo(10_000 + (100 / 121) * (121.5 - 121), 2);
     expect(result.summary).toContain("七彩虹線階梯回測完成");
     expect(progress.at(-1)?.pct).toBe(100);
     expect(saveBacktestResult).toHaveBeenCalledTimes(1);

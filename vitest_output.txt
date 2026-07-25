@@ -1,0 +1,328 @@
+
+ RUN  v2.1.9 /home/ubuntu/策略容器化自動交易平台-的副本
+
+ ✓ server/v35-optimizations.test.ts (32 tests) 15ms
+ ✓ server/rainbow20415-core.test.ts (14 tests) 31ms
+stdout | server/services/martingaleEngine.test.ts > RiskManager V4.0 Core Functions > should trigger limit stop when max loss percentage is reached
+Simulated loss: 60, lossPct: 6
+
+ ✓ server/services/martingaleEngine.test.ts (32 tests) 16ms
+stdout | server/v35-system.test.ts > StrategyKama3kV35 五層驗證 > generateActionsV35：BUY 信號首單返回 OPEN_LONG 與正確倉位
+[calculateLotSize] 百分比控倉：10000 × 0.3% = 30.00 USDT → 0.000600 幣（價格 50000）
+
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+stdout | server/v25-strategy.test.ts > KAMA 三K突破 V2.5｜全鏈路契約
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+stdout | server/studio.test.ts > 內建策略保護機制 > strategy_20415 屬於內建 key
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+stdout | server/backtest-verification.test.ts > multiSymbolEngine 多品種回測（合成數據實跑）
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證 > D2：runId 唯一且含策略 key 與品種
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: FIXTEST-USDT → FIXTEST-USDT-SWAP
+[TradingPairManager] 從 OKX 實盤 獲取 SWAP 交易對...
+
+stdout | server/v25-strategy.test.ts > KAMA 三K突破 V2.5｜全鏈路契約 > 公開回測引擎派送至 V2.5 同源核心並回傳正確策略身份與交易
+[SymbolMiddleware][KAMA_3K_BREAKOUT_V25] 標準化交易對: V25-REGRESSION-USDT → V25REGRESSION-USDT-SWAP
+[TradingPairManager] 從 OKX 實盤 獲取 SWAP 交易對...
+
+ ✓ server/studio.test.ts (23 tests) 1843ms
+   ✓ 內建策略保護機制 > strategy_20415 屬於內建 key 1684ms
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 50001 錯誤應自動重試並在成功後返回正確結果
+[OKX] ✓ 獲取 1 個模擬盤合約規格 (https://www.okx.com)
+[OKX][placeOrder] 帳戶模式=long_short_mode，訂單 posSide=short，環境=demo
+[OKX][placeOrder] 重試 #1/3（端點: https://www.okx.com），等待 907ms...
+
+stdout | server/backtest-verification.test.ts > multiSymbolEngine 多品種回測（合成數據實跑） > 串行回測多品種並生成彙總報告
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: TESTMS-AAA → TESTMSAAA-USDT-SWAP
+[TradingPairManager] 從 OKX 實盤 獲取 SWAP 交易對...
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 50001 錯誤應自動重試並在成功後返回正確結果
+[OKX][placeOrder] ✅ 成功！（端點=https://www.okx.com, attempt=1, endpointsTried=0）orderId=test-order-123
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 非暫時性錯誤（如 51008 資金不足）不應重試
+[OKX][placeOrder] 帳戶模式=long_short_mode，訂單 posSide=long，環境=demo
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 網路超時應重試並最終成功
+[OKX][placeOrder] 帳戶模式=long_short_mode，訂單 posSide=long，環境=demo
+[OKX][placeOrder] 重試 #1/3（端點: https://www.okx.com），等待 524ms...
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 網路超時應重試並最終成功
+[OKX][placeOrder] ✅ 成功！（端點=https://www.okx.com, attempt=1, endpointsTried=0）orderId=retry-success-456
+
+stdout | server/v25-strategy.test.ts > KAMA 三K突破 V2.5｜全鏈路契約 > 公開回測引擎派送至 V2.5 同源核心並回傳正確策略身份與交易
+[TradingPairManager] ✓ 成功獲取 426 個 實盤 SWAP 交易對
+[Backtest] 新回測執行：策略=KAMA_3K_BREAKOUT_V25（KAMA 三K突破 V2.5｜階梯式馬丁） 品種=V25-REGRESSION-USDT 框架=15m 參數={"KAMA_Fast_Length":5,"p2_fastest":2,"p3_slowest":2,"KAMA_Slow_Length":8,"q2_fastest":10,"q3_slowest":6,"Base_Lot_Size":100,"Hard_Stop_Loss_Pct":3,"Take_Profit_Pct":1,"Trailing_TP_Enabled":true,"Trailing_Activation_Pct":0.8,"Trailing_Callback_Pct":0.4,"Martin_Enabled":true,"Martin_Ranges":[{"start":1,"end":3,"multiplier":1.2,"gap":0.8},{"start":4,"end":6,"multiplier":1.1,"gap":1.2},{"start":7,"end":10,"multiplier":1,"gap":2}],"Reentry_On_Trend":true,"K_Line_Period":15}
+
+ ✓ server/v25-strategy.test.ts (17 tests) 4093ms
+   ✓ KAMA 三K突破 V2.5｜全鏈路契約 > 公開回測引擎派送至 V2.5 同源核心並回傳正確策略身份與交易 2291ms
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 所有重試用完後應返回失敗
+[OKX][placeOrder] 帳戶模式=long_short_mode，訂單 posSide=short，環境=demo
+[OKX][placeOrder] 重試 #1/3（端點: https://www.okx.com），等待 806ms...
+
+ ✓ server/v35-system.test.ts (32 tests) 4530ms
+   ✓ BarLock 同 K 線去重（記憶體層） > 首次獲取鎖應成功 1759ms
+   ✓ BarLock 同 K 線去重（記憶體層） > 同一策略同一 bar_timestamp 第二次獲取應被攜截 499ms
+   ✓ BarLock 同 K 線去重（記憶體層） > 不同 bar_timestamp 應可分別獲取 497ms
+   ✓ BarLock 同 K 線去重（記憶體層） > 不同策略同一 bar_timestamp 互不影響 497ms
+stdout | server/position-mode.test.ts > 倉位大小雙模式系統 > 配置相容性 > V3.5 非同步計算以實盤數量覆寫快照百分比控倉
+[calculateLotSize] 數量模式：0.003 幣
+
+ ✓ server/position-mode.test.ts (19 tests) 12ms
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證 > D2：runId 唯一且含策略 key 與品種
+[TradingPairManager] ✓ 成功獲取 426 個 實盤 SWAP 交易對
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=FIXTEST-USDT 框架=1h 參數={}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 30 USDT，Initial_Capital=10000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: FIXTEST-USDT → FIXTEST-USDT-SWAP
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=FIXTEST-USDT 框架=1h 參數={}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 30 USDT，Initial_Capital=10000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證 > D3：回測結果包含 strategyKey 與 strategyName
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOWFIX-USDT → RAINBOWFIX-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOWFIX-USDT 框架=1m 參數={}
+
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證 > D1：不同策略在相同數據上產生不同結果（動態載入生效）
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: RAINBOWFIX-USDT → RAINBOWFIX-USDT-SWAP
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=RAINBOWFIX-USDT 框架=1m 參數={}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 30 USDT，Initial_Capital=10000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證 > D1：不同策略在相同數據上產生不同結果（動態載入生效）
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOWFIX-USDT → RAINBOWFIX-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOWFIX-USDT 框架=1m 參數={}
+
+stdout | server/backtest-fixes.test.ts > Pasted_content_20 修復驗證 > D4：generic 路徑支持 Base_Lot_Size USDT 模式（換算為幣數量）
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: FIXTEST-USDT → FIXTEST-USDT-SWAP
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=FIXTEST-USDT 框架=1h 參數={"Base_Lot_Size":{"mode":"quantity","value":0.5}}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 300 USDT，Initial_Capital=100000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: FIXTEST-USDT → FIXTEST-USDT-SWAP
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=FIXTEST-USDT 框架=1h 參數={"Base_Lot_Size":{"mode":"usdt","value":5000}}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 5000 USDT，Initial_Capital=100000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+
+stdout | server/backtest-fixes.test.ts > V5.7 風控敏感性測試 > 七彩虹 Max_Account_Loss_Pct 嚴格與寬鬆配置均可確定性執行
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOWFIX-USDT → RAINBOWFIX-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOWFIX-USDT 框架=1m 參數={"Max_Account_Loss_Pct":0.1}
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOWFIX-USDT → RAINBOWFIX-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOWFIX-USDT 框架=1m 參數={"Max_Account_Loss_Pct":90}
+
+stdout | server/backtest-fixes.test.ts > V5.7 環境快照完整性 > 回測結果包含 environment 元數據
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: FIXTEST-USDT → FIXTEST-USDT-SWAP
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=FIXTEST-USDT 框架=1h 參數={}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 30 USDT，Initial_Capital=10000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+
+ ✓ server/backtest-fixes.test.ts (17 tests) 4754ms
+   ✓ Pasted_content_20 修復驗證 > D2：runId 唯一且含策略 key 與品種 2502ms
+ ✓ server/services/strategyPositionSnapshot.test.ts (9 tests) 10ms
+ ✓ server/strategies/v70/strategy_kama_3k_v70.test.ts (11 tests) 7ms
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 所有重試用完後應返回失敗
+[OKX][placeOrder] 重試 #2/3（端點: https://www.okx.com），等待 1629ms...
+
+stdout | server/backtest-verification.test.ts > multiSymbolEngine 多品種回測（合成數據實跑） > 串行回測多品種並生成彙總報告
+[TradingPairManager] ✓ 成功獲取 426 個 實盤 SWAP 交易對
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=TESTMS-AAA 框架=1h 參數={}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 30 USDT，Initial_Capital=10000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+[SymbolMiddleware][20415_KAMA_MARTIN_V35] 標準化交易對: TESTMS-BBB → TESTMSBBB-USDT-SWAP
+[Backtest] 新回測執行：策略=20415_KAMA_MARTIN_V35（V4.0 KAMA+3K 動態馬丁策略（百分比控倉）） 品種=TESTMS-BBB 框架=1h 參數={}
+[Backtest] 馬丁模式: 階梯式分層，Max_Layers=11
+[Backtest] 首單模式: 固定金本位 30 USDT，Initial_Capital=10000
+[Backtest] 風控開關: enable_loss_shrink=true, enable_continuous_entry=true
+
+ ✓ server/backtest-verification.test.ts (10 tests) 4940ms
+   ✓ dataFetcher after 分頁邏輯（mock 多頁） > OKX：多頁翻頁直到覆蓋完整區間，結果昇冪且去重 535ms
+   ✓ multiSymbolEngine 多品種回測（合成數據實跑） > 串行回測多品種並生成彙總報告 2298ms
+ ✓ server/backtest-module.test.ts (18 tests) 29ms
+ ✓ server/v50-strategy.test.ts (25 tests) 12ms
+stdout | server/parameter-validator.test.ts > getMartinConfig（引擎啟動日誌接線，用戶提供代碼） > layered 模式回傳完整結果
+[parameterValidator] 馬丁模式: 階梯式分層
+[parameterValidator] 最大層數: 11
+  第 1 層乘數: 1.5
+  第 2 層乘數: 1.5
+  第 3 層乘數: 1.5
+  第 4 層乘數: 1.2
+  第 5 層乘數: 1.2
+  第 6 層乘數: 1.2
+  第 7 層乘數: 1
+  第 8 層乘數: 1
+  第 9 層乘數: 1
+  第 10 層乘數: 1
+  第 11 層乘數: 1
+
+ ✓ server/parameter-validator.test.ts (20 tests) 14ms
+ ❯ server/rainbow-trend-ladder-core.test.ts (5 tests | 1 failed) 23ms
+   × 七彩虹線 M30 進場純核心 > 只在 L1-L4 同升、L4>L3>L1>L2、L5 上穿 L1、收盤價高於 L1 且位於 L6/L7 時買入 13ms
+     → expected { value: 100, mode: 'usdt' } to deeply equal { value: 0.06, mode: 'quantity' }
+stdout | server/dynamic-risk.test.ts > 20415 七彩虹馬丁動態風控整合測試
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+ ✓ server/dynamic-risk.test.ts (9 tests) 28ms
+ ✓ server/v37-hard-stop.test.ts (30 tests) 12ms
+ ✓ server/rainbow-trend-ladder-management.test.ts (7 tests) 12ms
+ ✓ server/rainbow20415-config.test.ts (6 tests) 12ms
+stdout | server/exchange-symbols.test.ts > Position_Mode / Position_Value 配置格式（pasted_content_3.txt 任務 4） > 扁平格式 quantity 模式：直接返回 Position_Value
+[calculateLotSize] 數量模式：0.05 幣
+
+stdout | server/exchange-symbols.test.ts > Position_Mode / Position_Value 配置格式（pasted_content_3.txt 任務 4） > 扁平格式 usdt 模式：按市價換算（100 USDT / 50000 = 0.002）
+[calculateLotSize] USDT 模式：100 USDT → 0.002000 幣（價格 50000）
+
+stdout | server/exchange-symbols.test.ts > Position_Mode / Position_Value 配置格式（pasted_content_3.txt 任務 4） > 扁平格式優先級高於 Base_Lot_Size 對象格式
+[calculateLotSize] USDT 模式：200 USDT → 0.004000 幣（價格 50000）
+
+stdout | server/exchange-symbols.test.ts > Position_Mode / Position_Value 配置格式（pasted_content_3.txt 任務 4） > 僅有 Position_Mode 時回退用 Base_Lot_Size 數值
+[calculateLotSize] 數量模式：0.03 幣
+
+stdout | server/exchange-symbols.test.ts > Position_Mode / Position_Value 配置格式（pasted_content_3.txt 任務 4） > usdt 模式馬丁加倉：第 2 層 = (10/2000) × 1.5^2（ETH 場景）
+[calculateLotSize] USDT 模式：10 USDT → 0.005000 幣（價格 2000）
+
+ ✓ server/exchange-symbols.test.ts (19 tests) 12ms
+ ✓ server/v36-stepPct.test.ts (14 tests) 10ms
+ ❯ server/rainbow-trend-ladder-config.test.ts (5 tests | 3 failed) 24ms
+   × 七彩虹線趨勢跟蹤階梯馬丁設定契約 > 使用獨立身份、固定 M30/M1、七線與預設停用的實盤鎖 13ms
+     → expected { value: 100, mode: 'usdt' } to deeply equal { value: 0.06, mode: 'quantity' }
+   × 七彩虹線趨勢跟蹤階梯馬丁設定契約 > 精確保留八層表、累積觸發間距及最終層 5ms
+     → expected [ { layer: 1, …(4) }, …(7) ] to deeply equal [ { layer: 1, …(4) }, …(7) ]
+   × 七彩虹線趨勢跟蹤階梯馬丁設定契約 > 每次建立預設設定都深拷貝七線與八層，避免跨策略狀態污染 1ms
+     → expected 200 to be 0.09 // Object.is equality
+stdout | server/placeorder-retry.test.ts > OKX placeOrder 重試機制 > 所有重試用完後應返回失敗
+[OKX][placeOrder] 重試 #3/3（端點: https://www.okx.com），等待 3364ms...
+
+stdout | server/martin-activation.test.ts > 馬丁基礎設施與 20415 七彩虹核心修正驗證 > 6. Strategy20415 defaultConfig 參數完整性
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+ ✓ server/martin-activation.test.ts (7 tests) 324ms
+   ✓ 馬丁基礎設施與 20415 七彩虹核心修正驗證 > 6. Strategy20415 defaultConfig 參數完整性 315ms
+ ✓ server/rainbow-trend-ladder-isolation.test.ts (6 tests) 10ms
+stdout | server/v42-registry.test.ts > V4.2 RegistryManager
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder posMode 契約 > long_short_mode 開多應送 posSide=long，槓桿亦使用 long
+[OKX][placeOrder] 帳戶模式=long_short_mode，訂單 posSide=long，環境=demo
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder posMode 契約 > long_short_mode 開空應送 posSide=short
+[OKX][placeOrder] 帳戶模式=long_short_mode，訂單 posSide=short，環境=demo
+
+stdout | server/placeorder-retry.test.ts > OKX placeOrder posMode 契約 > net_mode 開倉與設定槓桿都應省略 posSide
+[OKX][placeOrder] 帳戶模式=net_mode，訂單 posSide=(omitted/net)，環境=demo
+
+ ✓ server/placeorder-retry.test.ts (8 tests) 7603ms
+   ✓ OKX placeOrder 重試機制 > 50001 錯誤應自動重試並在成功後返回正確結果 962ms
+   ✓ OKX placeOrder 重試機制 > 網路超時應重試並最終成功 827ms
+   ✓ OKX placeOrder 重試機制 > 所有重試用完後應返回失敗 5806ms
+ ✓ server/services/strategySnapshotConfig.test.ts (7 tests) 7ms
+stdout | server/martin-layers-verify.test.ts > 馬丁層數驗證（Martin_Tiers 優先級） > 應該從 Martin_Tiers 正確讀取 MaxMartinLevels
+🔍 測試配置:
+Martin_Tiers: [{"start":1,"end":4,"multiplier":1.5,"pipstep":50000},{"start":5,"end":9,"multiplier":1.1,"pipstep":50000},{"start":10,"end":11,"multiplier":1,"pipstep":50000}]
+✓ 解析結果:
+  分層數: 3
+  最後一層 end: 11
+
+stdout | server/martin-layers-verify.test.ts > 馬丁層數驗證（Martin_Tiers 優先級） > 應該在無 Martin_Tiers 時回退到 MaxMartinLevels
+✓ 無分層時的回退:
+  MaxMartinLevels: 8
+
+stdout | server/martin-layers-verify.test.ts > 馬丁層數驗證（Martin_Tiers 優先級） > 前端 Backtest.tsx 應該正確計算 autoMaxLayers
+✓ 前端 autoMaxLayers 計算:
+  martinTiersRules.length: 3
+  autoMaxLayers: 11
+
+stdout | server/martin-layers-verify.test.ts > 馬丁層數驗證（Martin_Tiers 優先級） > 後端 backtest.router 應該將 Martin_Tiers.end 寫入 MaxMartinLevels
+✓ 後端參數正規化:
+  MaxMartinLevels: 11
+
+ ✓ server/martin-layers-verify.test.ts (4 tests) 5ms
+ ✓ server/v42-registry.test.ts (11 tests) 2729ms
+stdout | server/integration.test.ts > 驗收：apiKeys 錯誤處理（前端不會卡 Loading） > testCredentials 使用無效憑證：應在逾時上限內回傳失敗訊息（而非永久等待）
+[createAdapter] 成功解密 bybit 金鑰（長度：key=20, secret=23）
+
+ ❯ server/rainbow-trend-ladder-backtest.test.ts (2 tests | 1 failed) 37ms
+   × 七彩虹線趨勢跟蹤階梯馬丁同源回測 > 由 M1 聚合已收盤 M30，使用正式七線核心進場並在回測尾端全平 31ms
+     → expected 0.8264462809917356 to be close to 0.06, received difference is 0.7664462809917356, but expected 5e-13
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證
+[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70
+
+ ✓ server/services/backtest/scanEngine.test.ts (7 tests) 439ms
+   ✓ 參數掃描引擎 V5.0 > ScanJobManager 應可正常實例化 423ms
+ ✓ server/deployment-position.test.ts (14 tests) 10ms
+ ✓ server/v41-features.test.ts (9 tests) 5162ms
+   ✓ V4.1 - BacktestJobManager 升級 > submit 回傳 jobId 字串 2001ms
+   ✓ V4.1 - BacktestJobManager 升級 > cancel 可取消 queued/running 任務 1991ms
+   ✓ V4.1 - BacktestJobManager 升級 > submit 支持自定義超時秒數 490ms
+   ✓ V4.1 - BacktestJobManager 升級 > getJob 回傳完整任務資訊 566ms
+ ✓ server/services/martinLayers-parsing.test.ts (7 tests) 6ms
+ ✓ server/trading.test.ts (12 tests) 10ms
+stdout | server/integration.test.ts > 驗收：apiKeys 錯誤處理（前端不會卡 Loading） > testCredentials 使用無效憑證：應在逾時上限內回傳失敗訊息（而非永久等待）
+[BybitAdapter] HTTP 401 - Content-Length: 0
+[BybitAdapter] 回應內容: 
+
+stdout | server/services/processLease.test.ts > V4 跨實例 ProcessLease > 舊實例不得釋放新實例已接手的租約
+[ProcessLease] 略過非擁有者釋放 ProcessLease:v35-auto-trade:42
+
+ ✓ server/services/processLease.test.ts (8 tests) 12ms
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證 > 七線同向且排名不變時能在已收盤 M30 產生交易
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOW-E2E-USDT → RAINBOWE2E-USDT-SWAP
+[TradingPairManager] 從 OKX 實盤 獲取 SWAP 交易對...
+
+ ✓ server/v35-accounting.test.ts (6 tests) 6ms
+ ↓ server/testnet-symbol.test.ts (4 tests | 4 skipped)
+stdout | server/telegram.test.ts > Telegram Notifier > should send a test message successfully
+[TelegramNotifier] Notification sent: undefined signal
+
+ ✓ server/telegram.test.ts (2 tests) 8ms
+ ✓ server/strategy-disable-transition.test.ts (5 tests) 9ms
+ ✓ server/auth.logout.test.ts (1 test) 6ms
+ ✓ server/services/tradeFillTruth.test.ts (3 tests) 4ms
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證 > 七線同向且排名不變時能在已收盤 M30 產生交易
+[TradingPairManager] ✓ 成功獲取 426 個 實盤 SWAP 交易對
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOW-E2E-USDT 框架=1m 參數={}
+
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證 > 平均成本百分比止盈能正確觸發
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOW-E2E-USDT → RAINBOWE2E-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOW-E2E-USDT 框架=1m 參數={"Take_Profit_Pct":0.05,"Reentry_Enabled":false}
+
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證 > Max_Hold_Hours 持倉時間鐵幕能正確觸發
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOW-E2E-USDT → RAINBOWE2E-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOW-E2E-USDT 框架=1m 參數={"Take_Profit_Pct":20,"Max_Hold_Hours":1,"Reentry_Enabled":false}
+
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證 > 盲人模式持倉期間不因七線交叉或方向變化平倉轉向
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOW-E2E-USDT → RAINBOWE2E-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOW-E2E-USDT 框架=1m 參數={"Take_Profit_Pct":20,"Max_Hold_Hours":168,"Reentry_Enabled":false}
+
+stdout | server/sma-v3-verify.test.ts > 20415 七彩虹同源回測結果驗證 > 動態階梯的最終層限制不會被回測引擎突破
+[SymbolMiddleware][strategy_20415] 標準化交易對: RAINBOW-E2E-USDT → RAINBOWE2E-USDT-SWAP
+[Backtest] 新回測執行：策略=strategy_20415（20415七彩虹馬丁策略） 品種=RAINBOW-E2E-USDT 框架=1m 參數={"Take_Profit_Pct":20,"Max_Hold_Hours":168,"Max_Margin_Usage_Pct":100,"Max_Account_Loss_Pct":100,"Reentry_Enabled":false,"Martin_Ranges":[{"id":"test-range-1-2","startLayer":1,"endLayer":2,"multiplier":1.2,"useGlobalSpacing":false,"spacingPct":0.05,"enabled":true}]}
+
+ ✓ server/sma-v3-verify.test.ts (5 tests) 4754ms
+   ✓ 20415 七彩虹同源回測結果驗證 > 七線同向且排名不變時能在已收盤 M30 產生交易 2632ms
+ ✓ server/symbol-specs.test.ts (14 tests) 10068ms
+   ✓ getSymbolSpecs 實網規格獲取 > OKX linear 含 BTC-USDT-SWAP 且有 minOrderQty/qtyStep 2398ms
+   ✓ getSymbolSpecs 實網規格獲取 > Bybit linear 含 BTCUSDT 且有 minOrderQty/qtyStep 3138ms
+   ✓ 收藏交易對 DB 幫手 > toggle 兩次：先收藏後取消 2854ms
+   ✓ 收藏交易對 DB 幫手 > 收藏按交易所隔離 1435ms
+ ✓ server/executor-signal-payload.test.ts (1 test) 4ms
+ ✓ server/p1-optimizations.test.ts (9 tests) 3574ms
+   ✓ P1 優化：getServerIP 回傳 TradingView IP 提示 > 應回傳 tradingViewIPs 陣列與 message 字串 3564ms
+ ✓ server/integration.test.ts (4 tests) 9952ms
+   ✓ 驗收：apiKeys 錯誤處理（前端不會卡 Loading） > testCredentials 使用無效憑證：應在逾時上限內回傳失敗訊息（而非永久等待） 5140ms
+   ✓ 驗收：測試信號寫入日誌（sendTestSignal） > 建立金鑰與策略後，sendTestSignal 應寫入 signals 表且狀態為 executed 3784ms
+
+ Test Files  3 failed | 42 passed | 1 skipped (46)
+      Tests  5 failed | 521 passed | 4 skipped (530)
+   Start at  17:38:12
+   Duration  18.54s (transform 1.78s, setup 0ms, collect 11.19s, tests 65.18s, environment 11ms, prepare 3.59s)
+

@@ -276,12 +276,50 @@ export function RainbowTrendLadderConfigPanel({
               <NumberControl id="rtl-point-value" label="每點價格" value={config.Point_Value} onChange={(next) => updateConfig({ Point_Value: next })} min={0.00000001} step={0.1} unit="USDT" disabled={disabled} />
               <div className="space-y-2">
                 <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">配置底倉單位</Label>
-                <Select value={config.Base_Lot_Size.mode} onValueChange={(mode: "quantity" | "usdt") => updateConfig({ Base_Lot_Size: { ...config.Base_Lot_Size, mode } })} disabled={disabled}>
+                    <Select
+                      value={config.Base_Lot_Size.mode}
+                      onValueChange={(mode: "quantity" | "usdt") => {
+                        const newBaseLotSize = { ...config.Base_Lot_Size, mode };
+                        let newMartinLayers = config.Martin_Layers;
+                        if (mode === "usdt") {
+                          newMartinLayers = config.Martin_Layers.map((layer) => ({
+                            ...layer,
+                            lotValue: newBaseLotSize.value * layer.layer,
+                          }));
+                        } else { // quantity 模式下，lotValue 應根據 lotMultiplier 重新計算
+                          newMartinLayers = config.Martin_Layers.map((layer) => ({
+                            ...layer,
+                            lotValue: newBaseLotSize.value * layer.lotMultiplier,
+                          }));
+                        }
+                        updateConfig({ Base_Lot_Size: newBaseLotSize, Martin_Layers: newMartinLayers });
+                      }}
+                      disabled={disabled}
+                    >
                   <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/90 font-mono text-sm text-slate-100"><SelectValue /></SelectTrigger>
                   <SelectContent><SelectItem value="quantity">幣數 QUANTITY</SelectItem><SelectItem value="usdt">金額 USDT</SelectItem></SelectContent>
                 </Select>
               </div>
-              <NumberControl id="rtl-base-lot" label="配置底倉數值" value={config.Base_Lot_Size.value} onChange={(next) => updateConfig({ Base_Lot_Size: { ...config.Base_Lot_Size, value: next } })} min={0.00000001} step={config.Base_Lot_Size.mode === "usdt" ? 1 : 0.01} unit={config.Base_Lot_Size.mode.toUpperCase()} disabled={disabled} />
+              <NumberControl
+                id="rtl-base-lot"
+                label="配置底倉數值"
+                value={config.Base_Lot_Size.value}
+                onChange={(next) => {
+                  const newBaseLotSize = { ...config.Base_Lot_Size, value: next };
+                  let newMartinLayers = config.Martin_Layers;
+                  if (newBaseLotSize.mode === "usdt") {
+                    newMartinLayers = config.Martin_Layers.map((layer) => ({
+                      ...layer,
+                      lotValue: newBaseLotSize.value * layer.layer,
+                    }));
+                  }
+                  updateConfig({ Base_Lot_Size: newBaseLotSize, Martin_Layers: newMartinLayers });
+                }}
+                min={0.00000001}
+                step={config.Base_Lot_Size.mode === "usdt" ? 1 : 0.01}
+                unit={config.Base_Lot_Size.mode.toUpperCase()}
+                disabled={disabled}
+              />
             </div>
           </Sector>
 
@@ -331,7 +369,17 @@ export function RainbowTrendLadderConfigPanel({
                       <td className="px-3 py-3"><Input type="number" min={0} max={100} step={0.01} value={layer.triggerSpacingPct} disabled={disabled || layer.layer === 1} onChange={(event) => updateLayer(index, { triggerSpacingPct: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
                       <td className="px-3 py-3 font-mono text-cyan-200">{cumulativeSpacingPct.toFixed(2)}%</td>
                       <td className="px-3 py-3"><Input type="number" min={0.01} max={100} step={0.1} value={layer.lotMultiplier} disabled={disabled} onChange={(event) => updateLayer(index, { lotMultiplier: Number(event.target.value) })} className="h-9 w-24 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
-                      <td className="px-3 py-3"><Input type="number" min={0.00000001} step={0.01} value={layer.lotValue} disabled={disabled} onChange={(event) => updateLayer(index, { lotValue: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
+                      <td className="px-3 py-3">
+                        <Input
+                          type="number"
+                          min={0.00000001}
+                          step={0.01}
+                          value={layer.lotValue}
+                          disabled={disabled || config.Base_Lot_Size.mode === "usdt"} // USDT 模式下唯讀
+                          onChange={(event) => updateLayer(index, { lotValue: Number(event.target.value) })}
+                          className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs"
+                        />
+                      </td>
                       <td className="px-3 py-3 font-mono text-emerald-200">{cumulativeLot.toFixed(2)}</td>
                     </tr>
                   ))}

@@ -17,7 +17,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(config.Config_Version).toBe(RAINBOW_TREND_LADDER_CONFIG_VERSION);
     expect(config.Entry_Timeframe_Minutes).toBe(30);
     expect(config.Management_Interval_Minutes).toBe(1);
-    expect(config.Base_Lot_Size).toEqual({ value: 0.06, mode: "quantity" });
+    expect(config.Base_Lot_Size).toEqual({ value: 100, mode: "usdt" });
     expect(config.Live_Trading_Armed).toBe(false);
     expect(config.Require_Dedicated_Account).toBe(true);
     expect(config.Kill_Close_Only_Owned_Position).toBe(true);
@@ -41,14 +41,14 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
       lotValue,
       enabled,
     }))).toEqual([
-      { layer: 1, triggerSpacingPct: 0, lotMultiplier: 1, lotValue: 0.06, enabled: true },
-      { layer: 2, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-      { layer: 3, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-      { layer: 4, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-      { layer: 5, triggerSpacingPct: 0.77, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-      { layer: 6, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-      { layer: 7, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-      { layer: 8, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
+      { layer: 1, triggerSpacingPct: 0, lotMultiplier: 1, lotValue: 100, enabled: true },
+      { layer: 2, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 200, enabled: true },
+      { layer: 3, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 300, enabled: true },
+      { layer: 4, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 400, enabled: true },
+      { layer: 5, triggerSpacingPct: 0.77, lotMultiplier: 1.5, lotValue: 500, enabled: true },
+      { layer: 6, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 600, enabled: true },
+      { layer: 7, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 700, enabled: true },
+      { layer: 8, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 800, enabled: true },
     ]);
     const cumulative = config.Martin_Layers.map((layer) =>
       getRainbowTrendLadderCumulativeTriggerPct(config.Martin_Layers, layer.layer),
@@ -66,8 +66,8 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     first.Martin_Layers[1].lotValue = 9;
     first.Base_Lot_Size.value = 7;
     expect(second.Lines[0].period).toBe(30);
-    expect(second.Martin_Layers[1].lotValue).toBe(0.09);
-    expect(second.Base_Lot_Size.value).toBe(0.06);
+    expect(second.Martin_Layers[1].lotValue).toBe(200);
+    expect(second.Base_Lot_Size.value).toBe(100);
   });
 
   it("正規化舊式別名但永遠封印為本策略 V1 契約", () => {
@@ -75,14 +75,14 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
       Config_Version: "foreign-version",
       TIMEFRAME: "30",
       managementInterval: "1",
-      BASE_LOT: "0.06",
+      BASE_LOT: "100",
       maxSpread: "50",
       liveTradingArmed: "false",
     });
     expect(normalized.Config_Version).toBe(RAINBOW_TREND_LADDER_CONFIG_VERSION);
     expect(normalized.Entry_Timeframe_Minutes).toBe(30);
     expect(normalized.Management_Interval_Minutes).toBe(1);
-    expect(normalized.Base_Lot_Size.value).toBe(0.06);
+    expect(normalized.Base_Lot_Size.value).toBe(100);
     expect(normalized.Max_Spread_Points).toBe(50);
     expect(normalized.Live_Trading_Armed).toBe(false);
   });

@@ -94,12 +94,15 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
   Entry_Timeframe_Minutes: 30,
   Management_Interval_Minutes: 1,
   Lines: DEFAULT_LINES,
-  Base_Lot_Size: { value: 0.06, mode: "quantity" },
+  Base_Lot_Size: { value: 100, mode: "usdt" }, // 預設值改為 100 USDT
   Initial_Capital: 10_000,
   Point_Value: 1,
   Max_Spread_Points: 50,
   Max_Slippage_Points: 5,
-  Martin_Layers: DEFAULT_LAYERS,
+  Martin_Layers: DEFAULT_LAYERS.map((layer) => ({
+    ...layer,
+    lotValue: layer.layer * 100, // 預設層級的 lotValue 根據 Base_Lot_Size 預設值計算
+  })),
   Trailing_Activation_Pct: 1.1,
   Trailing_Callback_Pct: 0.1,
   Trend_Deviation_Points: 50,
@@ -334,9 +337,29 @@ export function validateRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadd
     pushNumberIssue(issues, `${path}.lotValue`, layer.lotValue, 0, null, { allowMin: false });
     if (index === 0 && !layer.enabled) issues.push({ path: `${path}.enabled`, message: "底倉第 1 層不可停用" });
   });
+  // 驗證 Base_Lot_Size 與第一層的 lotValue 一致性
   const firstLayer = config.Martin_Layers[0];
-  if (firstLayer && Math.abs(firstLayer.lotValue - config.Base_Lot_Size.value) > 1e-12) {
-    issues.push({ path: "Base_Lot_Size.value", message: "必須與第 1 層明確手數完全一致" });
+  if (firstLayer) {
+    const expectedFirstLayerLotValue = config.Base_Lot_Size.mode === "usdt"
+      ? config.Base_Lot_Size.value
+      : config.Base_Lot_Size.value * firstLayer.lotMultiplier; // 如果是 quantity 模式，則需要乘以 multiplier
+
+    if (Math.abs(firstLayer.lotValue - expectedFirstLayerLotValue) > 1e-12) {
+      issues.push({ path: "Base_Lot_Size.value", message: `必須與第 1 層明確手數（${expectedFirstLayerLotValue}）完全一致` });
+    }
+  }
+
+  // 驗證後續層級的 lotValue 是否符合 Base_Lot_Size * layer 的規則 (僅限 USDT 模式)
+  if (config.Base_Lot_Size.mode === "usdt") {
+    config.Martin_Layers.forEach((layer, index) => {
+      const expectedLotValue = config.Base_Lot_Size.value * (index + 1);
+      if (Math.abs(layer.lotValue - expectedLotValue) > 1e-12) {
+        issues.push({
+          path: `Martin_Layers.${index}.lotValue`,
+          message: `第 ${index + 1} 層的 USDT 金額必須為 Base_Lot_Size (${config.Base_Lot_Size.value}) 乘以層級編號 (${index + 1})，即 ${expectedLotValue}`,
+        });
+      }
+    });
   }
   if (config.Live_Trading_Armed && !config.Require_Dedicated_Account) {
     issues.push({

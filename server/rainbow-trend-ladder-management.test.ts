@@ -15,7 +15,7 @@ function longL1() {
   return applyRainbowTrendLadderFillToState(createRainbowTrendLadderRuntimeState(), {
     action: "buy",
     fillPrice: 100,
-    fillQuantity: 0.06,
+    fillQuantity: 100, // 預設 config.Base_Lot_Size.value 是 100
     timestamp: 1_000,
     barTimestamp: 900,
     accountEquity: 10_000,
@@ -37,19 +37,19 @@ describe("七彩虹線盲人模式、八層階梯與安全狀態", () => {
     }, l1, config);
     expect(decision.action).toBe("add_long");
     expect(decision.layerNum).toBe(2);
-    expect(decision.orderSize).toEqual({ value: 0.09, mode: "quantity" });
+    expect(decision.orderSize).toEqual({ value: 200, mode: "usdt" }); // 第二層是 200 USDT
     expect(decision.metrics).toMatchObject({ nextCumulativeTriggerPct: 0.31, initialEntryPrice: 100 });
 
     const l2 = applyRainbowTrendLadderFillToState(l1, {
       action: "add_long",
       fillPrice: 99.69,
-      fillQuantity: 0.09,
+      fillQuantity: 200,
       timestamp: 2_100,
       targetLayer: 2,
     });
     expect(l2.currentLayer).toBe(2);
-    expect(l2.totalSize).toBeCloseTo(0.15, 12);
-    expect(l2.avgPrice).toBeCloseTo((100 * 0.06 + 99.69 * 0.09) / 0.15, 12);
+    expect(l2.totalSize).toBeCloseTo(300, 12); // 100 + 200
+    expect(l2.avgPrice).toBeCloseTo((100 * 100 + 99.69 * 200) / 300, 12);
     expect(l2.rainbowTrendLadderRuntime?.initialEntryPrice).toBe(100);
   });
 

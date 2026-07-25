@@ -76,7 +76,7 @@ describe("七彩虹線 M30 進場純核心", () => {
       spreadPoints: 1,
     });
     expect(decision.action).toBe("buy");
-    expect(decision.orderSize).toEqual({ value: 0.06, mode: "quantity" });
+    expect(decision.orderSize).toEqual({ value: 100, mode: "usdt" });
     expect(decision.layerNum).toBe(1);
   });
 
