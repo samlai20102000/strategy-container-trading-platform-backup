@@ -238,6 +238,21 @@ export const exchangeRouter = router({
     }),
 
   /**
+   * 手動刷新與一般查詢共用相同帳戶快取鍵，但會以新交易所請求原子替換舊 Promise。
+   * 此程序嚴格唯讀，不會觸發下單、平倉、策略切換或帳戶設定變更。
+   */
+  refreshStrategyPositionSnapshots: protectedProcedure
+    .input(
+      z.object({
+        strategyIds: z.array(z.number().int().positive()).max(200).optional(),
+      }).optional(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getStrategyPositionSnapshotsForUser } = await import("../services/strategyPositionSnapshot");
+      return getStrategyPositionSnapshotsForUser(ctx.user.id, input?.strategyIds, { forceRefresh: true });
+    }),
+
+  /**
    * 獲取 V3.5 策略 UI Schema（pasted_content_3.txt 任務 5）
    * 供前端動態表單渲染：Base_Lot_Size 對象格式、Symbol 欄位、Position_Mode/Position_Value
    */

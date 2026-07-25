@@ -33,11 +33,17 @@ function PositionsContent() {
   const {
     data: positionSnapshots,
     isFetching: positionSnapshotsFetching,
-    refetch: refetchPositionSnapshots,
   } = trpc.exchange.getStrategyPositionSnapshots.useQuery(positionSnapshotInput, {
     enabled: positionSnapshotInput.strategyIds.length > 0,
     refetchInterval: 10_000,
     staleTime: 5_000,
+  });
+  const refreshPositionSnapshotsMutation = trpc.exchange.refreshStrategyPositionSnapshots.useMutation({
+    onSuccess: (refreshedSnapshots) => {
+      utils.exchange.getStrategyPositionSnapshots.setData(positionSnapshotInput, refreshedSnapshots);
+      toast.success("已重新同步交易所持倉");
+    },
+    onError: (refreshError) => toast.error(`交易所持倉同步失敗：${refreshError.message}`),
   });
   const { data: recentTrades } = trpc.performance.trades.useQuery(
     { limit: 50 },
@@ -85,11 +91,13 @@ function PositionsContent() {
       );
       const exactSnapshots = relatedSnapshots.filter((snapshot) => snapshot.attribution === "exact");
       const exactSnapshot = exactSnapshots.length === 1 ? exactSnapshots[0] : undefined;
+      const singletonSnapshots = relatedSnapshots.filter((snapshot) => snapshot.attribution === "singleton_exchange");
+      const singletonSnapshot = singletonSnapshots.length === 1 ? singletonSnapshots[0] : undefined;
       const strategy = exactSnapshot ? strategyById.get(exactSnapshot.strategyId) : undefined;
       return {
         ...position,
         strategy,
-        attribution: strategy ? "exact" : relatedSnapshots.length > 0 ? "account_aggregate" : "unassigned",
+        attribution: strategy ? "exact" : singletonSnapshot ? "singleton_exchange" : relatedSnapshots.length > 0 ? "account_aggregate" : "unassigned",
         relatedStrategyNames: relatedSnapshots
           .map((snapshot) => strategyById.get(snapshot.strategyId)?.name)
           .filter((name): name is string => Boolean(name)),
@@ -109,10 +117,14 @@ function PositionsContent() {
         <Button
           variant="outline"
           size="sm"
-          disabled={isFetching || positionSnapshotsFetching}
-          onClick={() => void Promise.all([refetch(), refetchPositionSnapshots()])}
+          disabled={isFetching || positionSnapshotsFetching || refreshPositionSnapshotsMutation.isPending}
+          onClick={() => {
+            void refreshPositionSnapshotsMutation.mutateAsync(positionSnapshotInput)
+              .then(() => refetch())
+              .catch(() => undefined);
+          }}
         >
-          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isFetching || positionSnapshotsFetching ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isFetching || positionSnapshotsFetching || refreshPositionSnapshotsMutation.isPending ? "animate-spin" : ""}`} />
           重新整理
         </Button>
       </div>
@@ -169,6 +181,8 @@ function PositionsContent() {
                             <span>{p.updatedAt ? `同步 ${new Date(p.updatedAt).toLocaleTimeString("zh-TW", { hour12: false })}` : "同步時間未提供"}</span>
                             {p.attribution === "exact" ? (
                               <Badge variant="outline" className="h-4 border-emerald-500/40 px-1 text-[8px] text-emerald-400">{p.strategy?.name ?? "精確歸屬"}</Badge>
+                            ) : p.attribution === "singleton_exchange" ? (
+                              <Badge variant="outline" className="h-4 border-sky-500/40 px-1 text-[8px] text-sky-300">唯一交易所持倉</Badge>
                             ) : p.attribution === "account_aggregate" ? (
                               <Badge variant="outline" className="h-4 border-amber-500/40 px-1 text-[8px] text-amber-300">帳戶合併倉位</Badge>
                             ) : (
@@ -205,9 +219,9 @@ function PositionsContent() {
                           ) : (
                             <span
                               className="text-[10px] text-muted-foreground"
-                              title={p.attribution === "account_aggregate" ? `相關策略：${p.relatedStrategyNames.join("、") || "無法唯一判定"}` : "無法安全歸屬此交易所持倉"}
+                              title={p.attribution === "account_aggregate" ? `相關策略：${p.relatedStrategyNames.join("、") || "無法唯一判定"}` : p.attribution === "singleton_exchange" ? "原生交易所倉位可讀，但本地策略狀態尚未達精確歸屬門檻" : "無法安全歸屬此交易所持倉"}
                             >
-                              {p.attribution === "account_aggregate" ? "合併倉位不可單策略平倉" : "—"}
+                              {p.attribution === "account_aggregate" ? "合併倉位不可單策略平倉" : p.attribution === "singleton_exchange" ? "待對帳，不開放單策略平倉" : "—"}
                             </span>
                           )}
                         </td>

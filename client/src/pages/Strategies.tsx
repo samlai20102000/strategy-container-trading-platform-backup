@@ -226,7 +226,6 @@ function StrategiesContent() {
     data: positionSnapshots,
     isLoading: positionSnapshotsLoading,
     isFetching: positionSnapshotsFetching,
-    refetch: refetchPositionSnapshots,
   } = trpc.exchange.getStrategyPositionSnapshots.useQuery(positionSnapshotInput, {
     enabled: positionSnapshotInput.strategyIds.length > 0,
     refetchInterval: 10_000,
@@ -236,6 +235,13 @@ function StrategiesContent() {
     () => new Map((positionSnapshots ?? []).map((snapshot) => [snapshot.strategyId, snapshot] as const)),
     [positionSnapshots],
   );
+  const refreshPositionSnapshotsMutation = trpc.exchange.refreshStrategyPositionSnapshots.useMutation({
+    onSuccess: (refreshedSnapshots) => {
+      utils.exchange.getStrategyPositionSnapshots.setData(positionSnapshotInput, refreshedSnapshots);
+      toast.success("已重新同步交易所持倉");
+    },
+    onError: (error) => toast.error(`交易所持倉同步失敗：${error.message}`),
+  });
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<StrategyForm>(emptyForm);
@@ -1003,25 +1009,39 @@ function StrategiesContent() {
                         ? new Date(syncTimestamp).toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
                         : "—";
                       const isExact = snapshot?.attribution === "exact";
+                      const isSingletonExchange = snapshot?.attribution === "singleton_exchange";
+                      const isExchangeTruth = isExact || isSingletonExchange;
                       const isAggregate = snapshot?.attribution === "account_aggregate";
                       const sourceTone = isExact
                         ? "border-emerald-500/30 bg-emerald-500/5"
-                        : isAggregate
-                          ? "border-amber-500/30 bg-amber-500/5"
-                          : "border-rose-500/30 bg-rose-500/5";
+                        : isSingletonExchange
+                          ? "border-sky-500/30 bg-sky-500/5"
+                          : isAggregate
+                            ? "border-amber-500/30 bg-amber-500/5"
+                            : "border-rose-500/30 bg-rose-500/5";
                       if (localSize > 0) {
                         return (
                           <div className={`rounded-lg border p-2.5 ${sourceTone}`}>
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="flex flex-wrap items-center gap-1.5">
-                                <span className={`text-xs font-semibold ${isExact ? "text-emerald-400" : isAggregate ? "text-amber-300" : "text-rose-300"}`}>
-                                  {isExact ? `${s.exchange.toUpperCase()} 真實持倉` : isAggregate ? "帳戶合併倉位" : "交易所對帳異常"}
+                                <span className={`text-xs font-semibold ${isExact ? "text-emerald-400" : isSingletonExchange ? "text-sky-300" : isAggregate ? "text-amber-300" : "text-rose-300"}`}>
+                                  {isExact ? `${s.exchange.toUpperCase()} 真實持倉` : isSingletonExchange ? `${s.exchange.toUpperCase()} 唯一真實持倉` : isAggregate ? "帳戶合併倉位" : "交易所對帳異常"}
                                 </span>
+                                <Badge
+                                  variant="outline"
+                                  className="h-5 border-cyan-500/35 px-1.5 text-[9px] text-cyan-300"
+                                  title={snapshot?.contractVersion ?? "exchange-position-v2"}
+                                >
+                                  同源 V2
+                                </Badge>
                                 {snapshot?.stale && (
                                   <Badge variant="outline" className="h-5 border-rose-500/40 px-1.5 text-[9px] text-rose-300">資料逾期</Badge>
                                 )}
                                 {isAggregate && (
                                   <Badge variant="outline" className="h-5 border-amber-500/40 px-1.5 text-[9px] text-amber-300">策略估算，不計入帳戶合計</Badge>
+                                )}
+                                {isSingletonExchange && (
+                                  <Badge variant="outline" className="h-5 border-sky-500/40 px-1.5 text-[9px] text-sky-300">原生 UPL，本地狀態待對帳</Badge>
                                 )}
                               </div>
                               <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -1032,10 +1052,10 @@ function StrategiesContent() {
                                   className="rounded p-0.5 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                   aria-label="重新同步交易所持倉"
                                   title="重新同步交易所持倉"
-                                  onClick={() => void refetchPositionSnapshots()}
-                                  disabled={positionSnapshotsFetching}
+                                  onClick={() => refreshPositionSnapshotsMutation.mutate(positionSnapshotInput)}
+                                  disabled={positionSnapshotsFetching || refreshPositionSnapshotsMutation.isPending}
                                 >
-                                  <RefreshCw className={`h-3 w-3 ${positionSnapshotsFetching ? "animate-spin" : ""}`} />
+                                  <RefreshCw className={`h-3 w-3 ${positionSnapshotsFetching || refreshPositionSnapshotsMutation.isPending ? "animate-spin" : ""}`} />
                                 </button>
                               </div>
                             </div>
@@ -1055,7 +1075,7 @@ function StrategiesContent() {
                                     <div><p className="text-[10px] text-muted-foreground">目前名義價值</p><p className="font-mono-nums text-xs font-semibold">{currentValue !== null ? `${currentValue.toFixed(2)} U` : "—"}</p></div>
                                     <div><p className="text-[10px] text-muted-foreground">持倉保證金</p><p className="font-mono-nums text-xs font-semibold">{snapshot.positionMargin !== null ? `${snapshot.positionMargin.toFixed(4)} U` : "—"}</p></div>
                                     <div>
-                                      <p className="text-[10px] text-muted-foreground">{isExact ? "交易所未實現盈虧" : "策略毛浮盈虧估算"}</p>
+                                      <p className="text-[10px] text-muted-foreground">{isExchangeTruth ? "交易所未實現盈虧" : "策略毛浮盈虧估算"}</p>
                                       <p className={`font-mono-nums text-xs font-bold ${unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                         {unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toFixed(4)} U
                                         {unrealizedPnlPct !== null ? ` (${unrealizedPnlPct >= 0 ? '+' : ''}${unrealizedPnlPct.toFixed(2)}%)` : ""}

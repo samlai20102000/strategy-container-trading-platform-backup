@@ -81,6 +81,12 @@ function UnifiedDashboard() {
       staleTime: 5_000,
     },
   );
+  const refreshPositionSnapshotsMutation = trpc.exchange.refreshStrategyPositionSnapshots.useMutation({
+    onSuccess: (refreshedSnapshots) => {
+      utils.exchange.getStrategyPositionSnapshots.setData(positionSnapshotInput, refreshedSnapshots);
+    },
+    onError: (refreshError) => toast.error(`交易所持倉同步失敗：${refreshError.message}`),
+  });
   const { data: perfData } = trpc.performance.byStrategy.useQuery({}, { refetchInterval: 30000 });
 
   // ─── Filter State (Block C) ────────────────────────────────────
@@ -432,10 +438,14 @@ function UnifiedDashboard() {
           <Button
             variant="outline"
             size="sm"
-            disabled={isFetching}
-            onClick={() => refetch()}
+            disabled={isFetching || refreshPositionSnapshotsMutation.isPending}
+            onClick={() => {
+              void refreshPositionSnapshotsMutation.mutateAsync(positionSnapshotInput)
+                .then(() => refetch())
+                .catch(() => undefined);
+            }}
           >
-            <RefreshCw className={cn("h-3.5 w-3.5 mr-1", isFetching && "animate-spin")} />
+            <RefreshCw className={cn("h-3.5 w-3.5 mr-1", (isFetching || refreshPositionSnapshotsMutation.isPending) && "animate-spin")} />
             刷新
           </Button>
           <Button

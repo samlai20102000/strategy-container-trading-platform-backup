@@ -3,8 +3,10 @@ import { listApiKeys, listStrategies } from "../db";
 import { createAdapter } from "../exchanges/factory";
 import type { Position } from "../exchanges/types";
 
+export const STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION = "exchange-position-v2" as const;
+
 export type PositionSnapshotSource = "exchange_position" | "local_estimate";
-export type PositionAttribution = "exact" | "account_aggregate" | "unavailable";
+export type PositionAttribution = "exact" | "singleton_exchange" | "account_aggregate" | "unavailable";
 export type PositionSnapshotStatus =
   | "available"
   | "no_local_position"
@@ -14,6 +16,7 @@ export type PositionSnapshotStatus =
 export type PositionPnlKind = "exchange_unrealized" | "strategy_gross_estimate" | "unavailable";
 
 export interface StrategyPositionSnapshot {
+  contractVersion: typeof STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION;
   strategyId: number;
   apiKeyId: number;
   exchange: Strategy["exchange"];
@@ -39,9 +42,14 @@ export interface StrategyPositionSnapshot {
 }
 
 export interface AccountPositionResult {
+  contractVersion: typeof STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION;
   positions: Position[];
   capturedAt: number;
   error?: string;
+}
+
+export interface AccountPositionSnapshotOptions {
+  forceRefresh?: boolean;
 }
 
 interface LocalPositionState {
@@ -53,8 +61,8 @@ interface LocalPositionState {
   groupKey: string | null;
 }
 
-const POSITION_CACHE_TTL_MS = 5_000;
-const POSITION_STALE_AFTER_MS = 15_000;
+export const POSITION_CACHE_TTL_MS = 5_000;
+export const POSITION_STALE_AFTER_MS = 15_000;
 const accountPositionCache = new Map<
   string,
   { expiresAt: number; promise: Promise<AccountPositionResult> }
@@ -100,32 +108,71 @@ function sanitizeExchangeError(error: unknown): string {
   return raw.replace(/[\r\n]+/g, " ").slice(0, 240) || "交易所持倉查詢失敗";
 }
 
-async function fetchAccountPositions(
+/**
+ * 控制中心、策略頁與獨立持倉頁共用的帳戶級交易所持倉快照。
+ * 同一使用者／API 金鑰／金鑰版本在 TTL 內只會建立一個 Promise，避免跨頁各查一次造成時間差。
+ */
+export async function getAccountPositionSnapshot(
   userId: number,
   apiKey: ApiKey,
+  options: AccountPositionSnapshotOptions = {},
 ): Promise<AccountPositionResult> {
   const cacheKey = `${userId}:${apiKey.id}:${apiKey.updatedAt.getTime()}`;
   const cached = accountPositionCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  if (!options.forceRefresh && cached && cached.expiresAt > Date.now()) return cached.promise;
 
   const promise = (async (): Promise<AccountPositionResult> => {
     try {
       const adapter = createAdapter(apiKey);
       const positions = await adapter.getPositions();
-      return { positions, capturedAt: Date.now() };
+      return {
+        contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
+        positions,
+        capturedAt: Date.now(),
+      };
     } catch (error) {
-      return { positions: [], capturedAt: Date.now(), error: sanitizeExchangeError(error) };
+      return {
+        contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
+        positions: [],
+        capturedAt: Date.now(),
+        error: sanitizeExchangeError(error),
+      };
     }
   })();
-  accountPositionCache.set(cacheKey, {
-    expiresAt: Date.now() + POSITION_CACHE_TTL_MS,
+  const cacheEntry = {
+    // 未完成請求永不視為過期；完成後才開始計算 TTL，避免慢速交易所回應造成跨頁重複查詢。
+    expiresAt: Number.POSITIVE_INFINITY,
     promise,
+  };
+  accountPositionCache.set(cacheKey, cacheEntry);
+  void promise.then(() => {
+    if (accountPositionCache.get(cacheKey) === cacheEntry) {
+      cacheEntry.expiresAt = Date.now() + POSITION_CACHE_TTL_MS;
+    }
   });
   return promise;
 }
 
+export function invalidateAccountPositionSnapshotCache(
+  userId?: number,
+  apiKeyId?: number,
+): void {
+  if (userId === undefined && apiKeyId === undefined) {
+    accountPositionCache.clear();
+    return;
+  }
+  for (const key of Array.from(accountPositionCache.keys())) {
+    const [cachedUserId, cachedApiKeyId] = key.split(":", 3).map(Number);
+    if ((userId === undefined || cachedUserId === userId)
+      && (apiKeyId === undefined || cachedApiKeyId === apiKeyId)) {
+      accountPositionCache.delete(key);
+    }
+  }
+}
+
 function baseSnapshot(local: LocalPositionState): StrategyPositionSnapshot {
   return {
+    contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
     strategyId: local.strategy.id,
     apiKeyId: local.strategy.apiKeyId,
     exchange: local.strategy.exchange,
@@ -234,9 +281,11 @@ export function buildStrategyPositionSnapshots(
     // 精確歸屬給該策略。任何不吻合都視為帳戶合併／外部變更，避免把帳戶總盈虧冒充策略盈虧。
     const attribution: PositionAttribution = groupCount === 1 && sizeDiffRatio <= 0.01 && entryDiffRatio <= 0.005
       ? "exact"
-      : "account_aggregate";
+      : groupCount === 1 && matchingPositions.length === 1
+        ? "singleton_exchange"
+        : "account_aggregate";
 
-    if (attribution === "exact") {
+    if (attribution === "exact" || attribution === "singleton_exchange") {
       const nativePnlPct = finiteNumber(position.unrealizedPnlRatioPct);
       const derivedPnlPct = exchangePnl !== null && positionMargin !== null
         ? (exchangePnl / positionMargin) * 100
@@ -259,7 +308,9 @@ export function buildStrategyPositionSnapshots(
         positionMargin,
         accountPositionSize: exchangeSize,
         accountUnrealizedPnl: exchangePnl,
-        message: "交易所持倉快照（精確歸屬）",
+        message: attribution === "exact"
+          ? "交易所持倉快照（精確歸屬）"
+          : "交易所唯一同向持倉快照（原生 UPL；本地狀態待對帳）",
       };
     }
 
@@ -294,6 +345,7 @@ export function buildStrategyPositionSnapshots(
 export async function getStrategyPositionSnapshotsForUser(
   userId: number,
   requestedStrategyIds?: readonly number[],
+  options: AccountPositionSnapshotOptions = {},
 ): Promise<StrategyPositionSnapshot[]> {
   const [strategies, apiKeys] = await Promise.all([listStrategies(userId), listApiKeys(userId)]);
   const requestedSet = requestedStrategyIds?.length ? new Set(requestedStrategyIds) : null;
@@ -307,7 +359,7 @@ export async function getStrategyPositionSnapshotsForUser(
   await Promise.all(Array.from(neededApiKeyIds).map(async (apiKeyId) => {
     const apiKey = apiKeyById.get(apiKeyId);
     if (!apiKey) return;
-    accountResults.set(apiKeyId, await fetchAccountPositions(userId, apiKey));
+    accountResults.set(apiKeyId, await getAccountPositionSnapshot(userId, apiKey, options));
   }));
 
   const allSnapshots = buildStrategyPositionSnapshots(strategies, accountResults);

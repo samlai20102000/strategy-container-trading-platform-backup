@@ -39,6 +39,7 @@ import {
   deploymentPositionColumns,
   resolveDeploymentPosition,
 } from "./services/deploymentPosition";
+import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -1598,6 +1599,8 @@ const dashboardRouter = router({
         liquidationPrice?: number;
         marginRatio?: number;
       }[];
+      positionSnapshotContract: string;
+      positionSnapshotCapturedAt: number | null;
       error: string | null;
     }[] = [];
 
@@ -1610,13 +1613,15 @@ const dashboardRouter = router({
           isTestnet: k.isTestnet,
           balance: null,
           positions: [],
+          positionSnapshotContract: "exchange-position-v2",
+          positionSnapshotCapturedAt: null,
           error: null,
         };
         try {
           const adapter = createAdapter(k);
-          const [balance, positions] = await Promise.all([
+          const [balance, positionSnapshot] = await Promise.all([
             adapter.getBalance(),
-            adapter.getPositions(),
+            getAccountPositionSnapshot(ctx.user.id, k),
           ]);
           entry.balance = {
             free: balance.free,
@@ -1624,7 +1629,10 @@ const dashboardRouter = router({
             unrealizedPnl: balance.unrealizedPnl,
             usedMargin: balance.usedMargin ?? 0,
           };
-          entry.positions = positions;
+          entry.positions = positionSnapshot.positions;
+          entry.positionSnapshotContract = positionSnapshot.contractVersion;
+          entry.positionSnapshotCapturedAt = positionSnapshot.capturedAt;
+          if (positionSnapshot.error) entry.error = positionSnapshot.error;
         } catch (e: any) {
           entry.error = e.message;
         }
