@@ -582,6 +582,11 @@ export function shouldTriggerLimitStop(
     return { triggered: false, reason: '无持仓' };
   }
 
+  // 🔧 修復：Max_Loss_Pct 必須 > 0 才能觸發硬止損
+  if (config.Max_Loss_Pct <= 0) {
+    return { triggered: false, reason: '硬止損未啟用（Max_Loss_Pct ≤ 0）' };
+  }
+
   const loss = calculateUnrealizedLoss(state, currentPrice);
   const lossPct = (loss / config.Initial_Capital) * 100;
 
