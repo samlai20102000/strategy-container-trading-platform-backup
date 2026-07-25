@@ -22,6 +22,11 @@ import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
 import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
 import { getBoundStrategyConfig } from "./strategySnapshotConfig";
+import { normalizeRainbow20415Config } from "../../shared/strategies/rainbow20415";
+import {
+  evaluateRainbow20415Decision,
+  type Rainbow20415AccountMetrics,
+} from "../strategies/rainbow20415/core";
 
 
 
@@ -41,7 +46,8 @@ async function fetchKLineData(
   adapter: ExchangeAdapter,
   symbol: string,
   period: number,
-  limit: number = 100
+  limit: number = 100,
+  closedOnly: boolean = false,
 ): Promise<KLineData[]> {
   try {
     // OKX API format: period in minutes (e.g., "5m", "15m", "1H", "4H", "1D")
@@ -90,8 +96,9 @@ async function fetchKLineData(
     console.log(`[AutoTradeSignalGenerator] Got ${data.data.length} candles for ${instId}`);
     
     // Convert OKX format to KLineData
-    return data.data
+    return [...data.data]
       .reverse() // OKX returns newest first, we need oldest first
+      .filter((candle: string[]) => !closedOnly || candle[8] === "1")
       .map((candle: string[]) => ({
         timestamp: parseInt(candle[0], 10),
         open: parseFloat(candle[1]),
@@ -157,6 +164,133 @@ export async function generateTradingSignal(
       initialState,
       strategy.strategyKey || "",
     );
+
+    // 建立交易所轉接器。20415 會在抓 K 線前先對賬，避免本地狀態剛被重置時仍錯用 M1 進場。
+    const adapter = createAdapter(apiKeyRecord);
+
+    if (strategy.strategyKey === "strategy_20415") {
+      try {
+        const reconcileResult = await reconcileWithExchange(strategy.id, adapter);
+        if (!reconcileResult.matched && reconcileResult.corrections.length > 0) {
+          console.log(`[AutoTradeSignalGenerator][20415] 持倉同步修正：${reconcileResult.corrections.join("; ")}`);
+        }
+      } catch (error: any) {
+        console.warn(`[AutoTradeSignalGenerator][20415] 持倉同步失敗，維持本地狀態且不認領外部倉位：${error.message}`);
+      }
+
+      const { getStrategyById } = await import("../db");
+      const freshStrategy = await getStrategyById(strategy.id);
+      const effectiveStrategy = freshStrategy || strategy;
+      const strategyState = loadStrategyState(effectiveStrategy);
+      const effectiveMartinState =
+        effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
+          ? effectiveStrategy.martinState as Record<string, unknown>
+          : {};
+      const boundConfig = getBoundStrategyConfig(effectiveMartinState, "strategy_20415")
+        ?? effectiveMartinState.__v2_0Config
+        ?? initialSnapshotConfig
+        ?? {};
+      const rainbowConfig = normalizeRainbow20415Config(boundConfig);
+      const hasPosition =
+        strategyState.currentLayer > 0 &&
+        strategyState.totalSize > 0 &&
+        strategyState.avgPrice > 0;
+      const kLinePeriod = hasPosition
+        ? rainbowConfig.Management_Interval_Minutes
+        : rainbowConfig.Entry_Timeframe_Minutes;
+      const maxLinePeriod = Math.max(...rainbowConfig.Lines.map((line) => line.period));
+      const candleLimit = hasPosition ? 100 : Math.min(300, Math.max(100, maxLinePeriod + 2));
+      const klines = await fetchKLineData(
+        adapter,
+        effectiveStrategy.symbol,
+        kLinePeriod,
+        candleLimit,
+        !hasPosition,
+      );
+
+      if (klines.length === 0) {
+        const detail = `20415 無法取得 ${effectiveStrategy.symbol} ${kLinePeriod} 分鐘${hasPosition ? "管理" : "已收盤入場"} K 線`;
+        if (withReason) return { signal: null, holdReason: { type: "no_data", detail } };
+        return null;
+      }
+
+      let currentPrice = klines.at(-1)?.close ?? 0;
+      let accountMetrics: Rainbow20415AccountMetrics | undefined;
+      if (hasPosition) {
+        const [balanceResult, positionsResult] = await Promise.allSettled([
+          adapter.getBalance(),
+          adapter.getPositions(effectiveStrategy.symbol),
+        ]);
+        if (balanceResult.status === "fulfilled") {
+          accountMetrics = {
+            equity: balanceResult.value.total,
+            balance: balanceResult.value.total,
+            usedMargin: balanceResult.value.usedMargin,
+          };
+        } else {
+          console.warn(`[AutoTradeSignalGenerator][20415] 真實帳戶權益取得失敗：${balanceResult.reason}`);
+        }
+        if (positionsResult.status === "fulfilled") {
+          const expectedSide = strategyState.isLong ? "long" : "short";
+          const ownedDirectionPosition = positionsResult.value.find(
+            (position) => position.side === expectedSide && position.size > 0,
+          );
+          if (ownedDirectionPosition && ownedDirectionPosition.markPrice > 0) {
+            currentPrice = ownedDirectionPosition.markPrice;
+          }
+        } else {
+          console.warn(`[AutoTradeSignalGenerator][20415] 真實持倉標記價格取得失敗：${positionsResult.reason}`);
+        }
+      }
+
+      const decision = evaluateRainbow20415Decision(
+        klines,
+        strategyState,
+        rainbowConfig,
+        {
+          allowedDirection: effectiveStrategy.direction as "long" | "short" | "both",
+          now: Date.now(),
+          currentPrice,
+          account: accountMetrics,
+        },
+      );
+
+      const currentRuntime = (strategyState as any).rainbow20415Runtime ?? {};
+      const nextRuntime = (decision.nextState as any).rainbow20415Runtime ?? {};
+      if (JSON.stringify(currentRuntime) !== JSON.stringify(nextRuntime)) {
+        await saveStrategyState(effectiveStrategy.id, decision.nextState);
+      }
+
+      console.log(
+        `[AutoTradeSignalGenerator][20415] mode=${hasPosition ? "M1-BLIND" : "M30-SCAN"} action=${decision.action} reason=${decision.reason}`,
+      );
+      if (decision.action === "hold") {
+        const detail = `20415 七彩虹判斷觀望：${decision.reason}`;
+        if (withReason) return { signal: null, holdReason: { type: "strategy_hold", detail } };
+        return null;
+      }
+
+      const signal: ParsedSignal = {
+        action: decision.action === "close"
+          ? "close"
+          : decision.action === "buy" || decision.action === "add_long"
+            ? "buy"
+            : "sell",
+        symbol: effectiveStrategy.symbol,
+        price: decision.price || currentPrice,
+        barTimestamp: klines.at(-1)?.timestamp,
+        reason: decision.reason,
+        confidence: 1,
+        rainbow20415Decision: true,
+        rainbow20415Action: decision.action,
+        rainbow20415LayerNum: decision.layerNum,
+        rainbow20415CloseReason: decision.closeReason,
+        rainbow20415OrderSize: decision.orderSize,
+      };
+      if (withReason) return { signal, holdReason: null };
+      return signal;
+    }
+
     const configuredPeriod = Number(
       initialSnapshotConfig?.K_Line_Period ??
       strategy.kLinePeriod ??
@@ -167,9 +301,6 @@ export async function generateTradingSignal(
       ? configuredPeriod
       : 5;
 
-    // Create exchange adapter
-    const adapter = createAdapter(apiKeyRecord);
-    
     // Fetch K-line data
     const klines = await fetchKLineData(adapter, strategy.symbol, kLinePeriod, 100);
     

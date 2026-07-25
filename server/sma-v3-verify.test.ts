@@ -1,156 +1,127 @@
 /**
- * SMA v3.00 回測結果驗證
- * 確認交叉入場、網格加倉、金額追踪止盈、方向轉換、硬止損 全部正確運作
+ * 20415 七彩虹同源回測結果驗證
+ *
+ * 此檔原本綁定已被原位取代的 SMA v3.00／金額止損語義。測試覆蓋保留，
+ * 但改為驗證現在真正可執行的七線入場、盲人模式、百分比止盈、三道鐵幕
+ * 與動態階梯層級上限。
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { BacktestEngine } from "./services/backtest/backtestEngine";
+import {
+  getBacktestDatabase,
+  type OHLCVRow,
+} from "./services/backtest/backtestDatabase";
 import { initStrategyStudio } from "./services/strategyStudio";
 
-const TEST_SYMBOL = "BTC-USDT-SWAP";
-const TEST_TF = "1h";
+const TEST_SYMBOL = "RAINBOW-E2E-USDT";
+const TEST_TF = "1m";
+const START_DATE = Date.UTC(2025, 0, 1);
+const CANDLE_COUNT = 7000;
+const END_DATE = START_DATE + CANDLE_COUNT * 60_000;
 
-describe("SMA v3.00 回測結果驗證", () => {
+function buildRainbowCandles(): OHLCVRow[] {
+  const candles: OHLCVRow[] = [];
+  const turningPoint = 4400;
+  let previousClose = 1000;
+  for (let index = 0; index < CANDLE_COUNT; index += 1) {
+    const trend =
+      index < turningPoint
+        ? index * 0.08
+        : turningPoint * 0.08 - (index - turningPoint) * 0.12;
+    const close = 1000 + trend + Math.sin(index / 19) * 0.18;
+    const open = previousClose;
+    candles.push({
+      symbol: TEST_SYMBOL,
+      timeframe: TEST_TF,
+      timestamp: START_DATE + index * 60_000,
+      open,
+      high: Math.max(open, close) + 0.12,
+      low: Math.min(open, close) - 0.12,
+      close,
+      volume: 100 + Math.abs(Math.sin(index / 13)) * 25,
+    });
+    previousClose = close;
+  }
+  return candles;
+}
+
+async function runRainbow(config: Record<string, unknown> = {}) {
+  return new BacktestEngine().runBacktest({
+    strategyKey: "strategy_20415",
+    symbol: TEST_SYMBOL,
+    timeframe: TEST_TF,
+    startDate: START_DATE,
+    endDate: END_DATE,
+    initialCapital: 10_000,
+    config,
+  });
+}
+
+describe("20415 七彩虹同源回測結果驗證", () => {
   beforeAll(async () => {
     await initStrategyStudio();
+    getBacktestDatabase().insertOHLCV(buildRainbowCandles());
   });
-  it("回測能產生交易（交叉入場邏輯正確觸發）", async () => {
-    const engine = new BacktestEngine();
-    const startDate = Date.UTC(2025, 0, 1);
-    const endDate = Date.UTC(2025, 2, 1); // 2 個月
 
-    const result = await engine.runBacktest({
-      strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
-      startDate,
-      endDate,
-      initialCapital: 10000,
-      config: {}, // 使用默認 SMA v3.00 參數
-    });
-
-    // 應該有交易產生
-    expect(result.trades.length).toBeGreaterThan(0);
-    console.log(`[SMA v3.00 驗證] 交易筆數: ${result.trades.length}`);
-    console.log(`[SMA v3.00 驗證] 總收益: ${result.metrics.totalReturn.toFixed(2)}%`);
-    console.log(`[SMA v3.00 驗證] 勝率: ${result.metrics.winRate.toFixed(1)}%`);
-    console.log(`[SMA v3.00 驗證] 最大回撤: ${result.metrics.maxDrawdown.toFixed(2)}%`);
-  }, 120_000);
-
-  it("Dollar_Loss 硬止損能正確觸發", async () => {
-    const engine = new BacktestEngine();
-    const startDate = Date.UTC(2025, 0, 1);
-    const endDate = Date.UTC(2025, 2, 1);
-
-    // 使用極小的止損金額（$1），應該頻繁觸發止損
-    const result = await engine.runBacktest({
-      strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
-      startDate,
-      endDate,
-      initialCapital: 10000,
-      config: { Dollar_Loss: 1 },
-    });
-
-    // 應該有交易
-    expect(result.trades.length).toBeGreaterThan(0);
-    // 止損頻繁觸發，每筆虧損不應超過 $1 + 滑點
-    const lossTrades = result.trades.filter(t => t.pnl < 0);
-    if (lossTrades.length > 0) {
-      // 大部分虧損交易應該在 $1 附近（允許滑點誤差）
-      const avgLoss = lossTrades.reduce((s, t) => s + t.pnl, 0) / lossTrades.length;
-      console.log(`[止損驗證] 虧損交易筆數: ${lossTrades.length}, 平均虧損: $${avgLoss.toFixed(2)}`);
-      // 平均虧損不應超過 $10（考慮滑點和多層加倉的情況）
-      expect(Math.abs(avgLoss)).toBeLessThan(10);
-    }
-  }, 120_000);
-
-  it("Dollar_Start_Buy/Sell 金額追踪止盈能正確觸發", async () => {
-    const engine = new BacktestEngine();
-    const startDate = Date.UTC(2025, 0, 1);
-    const endDate = Date.UTC(2025, 2, 1);
-
-    // 使用極小的止盈啟動金額（$0.1），應該頻繁觸發止盈
-    const result = await engine.runBacktest({
-      strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
-      startDate,
-      endDate,
-      initialCapital: 10000,
-      config: {
-        Dollar_Start_Buy: 0.1,
-        Dollar_Start_Sell: 0.1,
-        Dollar_Trail: 0.05,
-        Dollar_Loss: 1000, // 寬鬆止損
-      },
-    });
-
-    // 應該有交易
-    expect(result.trades.length).toBeGreaterThan(0);
-    // 有盈利交易（止盈觸發）
-    const winTrades = result.trades.filter(t => t.pnl > 0);
-    console.log(`[止盈驗證] 盈利交易筆數: ${winTrades.length}/${result.trades.length}`);
-    expect(winTrades.length).toBeGreaterThan(0);
-  }, 120_000);
-
-  it("方向轉換正確（反向交叉信號觸發平倉轉向）", async () => {
-    const engine = new BacktestEngine();
-    const startDate = Date.UTC(2025, 0, 1);
-    const endDate = Date.UTC(2025, 2, 1);
-
-    const result = await engine.runBacktest({
-      strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
-      startDate,
-      endDate,
-      initialCapital: 10000,
-      config: {
-        Dollar_Loss: 10000, // 極寬止損，讓方向轉換有機會觸發
-        Dollar_Start_Buy: 100, // 較高止盈，不容易觸發
-        Dollar_Start_Sell: 100,
-      },
-    });
-
-    // 應該有交易（方向轉換會產生交易）
-    expect(result.trades.length).toBeGreaterThan(0);
-    // 檢查是否有多空交替（方向轉換的證據）
-    // trade 記錄中 direction 欄位表示交易方向
-    const directions = result.trades.map(t => (t as any).direction || (t as any).side || "");
-    const hasLong = directions.some(d => d === "long" || d === "buy");
-    const hasShort = directions.some(d => d === "short" || d === "sell");
-    console.log(`[方向轉換驗證] 有做多: ${hasLong}, 有做空: ${hasShort}, 交易筆數: ${result.trades.length}`);
-    console.log(`[方向轉換驗證] 第一筆 trade keys:`, Object.keys(result.trades[0] || {}));
-    // 2 個月的數據，應該有交易產生
+  it("七線同向且排名不變時能在已收盤 M30 產生交易", async () => {
+    const result = await runRainbow();
+    expect(result.strategyKey).toBe("strategy_20415");
+    expect(result.strategyName).toBe("20415七彩虹馬丁策略");
     expect(result.trades.length).toBeGreaterThan(0);
   }, 120_000);
 
-  it("MaxMartinLevels 限制加倉層數", async () => {
-    const engine = new BacktestEngine();
-    const startDate = Date.UTC(2025, 0, 1);
-    const endDate = Date.UTC(2025, 1, 1); // 1 個月
+  it("平均成本百分比止盈能正確觸發", async () => {
+    const result = await runRainbow({
+      Take_Profit_Pct: 0.05,
+      Reentry_Enabled: false,
+    });
+    expect(result.trades.length).toBeGreaterThan(0);
+    expect(result.trades.some((trade) => trade.exitReason.includes("止盈"))).toBe(true);
+  }, 120_000);
 
-    // 設定最大 2 層
-    const result = await engine.runBacktest({
-      strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
-      startDate,
-      endDate,
-      initialCapital: 10000,
-      config: {
-        MaxMartinLevels: 2,
-        Dollar_Loss: 10000, // 寬鬆止損
-      },
+  it("Max_Hold_Hours 持倉時間鐵幕能正確觸發", async () => {
+    const result = await runRainbow({
+      Take_Profit_Pct: 20,
+      Max_Hold_Hours: 1,
+      Reentry_Enabled: false,
+    });
+    expect(result.trades.length).toBeGreaterThan(0);
+    expect(result.trades.some((trade) => trade.exitReason.includes("持倉超時"))).toBe(true);
+  }, 120_000);
+
+  it("盲人模式持倉期間不因七線交叉或方向變化平倉轉向", async () => {
+    const result = await runRainbow({
+      Take_Profit_Pct: 20,
+      Max_Hold_Hours: 168,
+      Reentry_Enabled: false,
+    });
+    expect(result.trades.length).toBeGreaterThan(0);
+    expect(
+      result.trades.some((trade) => /七線|交叉|反向/.test(trade.exitReason)),
+    ).toBe(false);
+  }, 120_000);
+
+  it("動態階梯的最終層限制不會被回測引擎突破", async () => {
+    const result = await runRainbow({
+      Take_Profit_Pct: 20,
+      Max_Hold_Hours: 168,
+      Max_Margin_Usage_Pct: 100,
+      Max_Account_Loss_Pct: 100,
+      Reentry_Enabled: false,
+      Martin_Ranges: [
+        {
+          id: "test-range-1-2",
+          startLayer: 1,
+          endLayer: 2,
+          multiplier: 1.2,
+          useGlobalSpacing: false,
+          spacingPct: 0.05,
+          enabled: true,
+        },
+      ],
     });
 
-    // 應該有交易
-    if (result.trades.length > 0) {
-      console.log(`[層數限制驗證] 交易筆數: ${result.trades.length}`);
-      // 由於最大 2 層，單筆最大倉位不應超過 baseLot * multiplier^1 = 0.01 * 1.5 = 0.015
-      // （第 0 層 0.01，第 1 層 0.015）
-    }
-    expect(result.trades.length).toBeGreaterThanOrEqual(0);
+    expect(result.trades.length).toBeGreaterThan(0);
+    expect(Math.max(...result.trades.map((trade) => trade.martinLayer))).toBeLessThanOrEqual(1);
   }, 120_000);
 });

@@ -1,10 +1,10 @@
 /**
- * EMA 馬丁核心修正驗證
- * 確認回測引擎和策略引擎的核心邏輯正確
+ * 通用馬丁基礎設施與 20415 七彩虹執行邊界驗證
+ * 確認通用回測引擎及七彩虹專用管線的核心邏輯正確
  */
 import { describe, it, expect } from "vitest";
 
-describe("EMA 馬丁核心修正驗證", () => {
+describe("馬丁基礎設施與 20415 七彩虹核心修正驗證", () => {
   it("1. 回測引擎主迴圈中不存在 checkReverse 方向轉換", async () => {
     const fs = await import("fs");
     const engineCode = fs.readFileSync(
@@ -64,20 +64,18 @@ describe("EMA 馬丁核心修正驗證", () => {
     expect(engineCode).toContain("peakProfit - totalProfit >= trail");
   });
 
-  it("5. 實盤執行器：收到反向信號時直接忽略（不平倉、不轉向）", async () => {
+  it("5. 七彩虹實盤執行器：封印內部決策並在盲人模式拒絕反向指令", async () => {
     const fs = await import("fs");
     const executorCode = fs.readFileSync(
       "./server/services/executor.ts",
       "utf-8"
     );
     
-    // 確認有方向轉換攔截
-    expect(executorCode).toContain("已停用方向轉換");
-    // 確認反向信號直接返回 skipped
-    expect(executorCode).toContain("等待 DollarAmount 止盈或止損觸發");
-    // 確認沒有 closePos + 開反向倉的邏輯
-    expect(executorCode).not.toContain("浮盈保護觸發");
-    expect(executorCode).not.toContain("反轉計時器生效中");
+    expect(executorCode).toContain("rainbow20415Decision?: boolean");
+    expect(executorCode).toContain("20415 盲人模式拒絕反向指令");
+    expect(executorCode).toContain("20415 已有持倉，禁止重複底倉");
+    expect(executorCode).toContain("所有狀態轉移都發生在交易所成功回報之後");
+    expect(executorCode).not.toContain("等待 DollarAmount 止盈或止損觸發");
   });
 
   it("6. Strategy20415 defaultConfig 參數完整性", async () => {
@@ -87,25 +85,20 @@ describe("EMA 馬丁核心修正驗證", () => {
     expect(strategy).not.toBeNull();
     
     const config = strategy!.defaultConfig;
-    // 確認新 EMA 馬丁關鍵參數存在
-    expect(config.ema_killer).toBeDefined();
-    expect(config.ema_wave).toBeDefined();
-    expect(config.ema_enter).toBeDefined();
-    expect(config.multiplier).toBeDefined();
-    expect(config.max_layers).toBeDefined();
-    expect(config.pip_step_base).toBeDefined();
-    expect(config.tp_normal).toBeDefined();
-    expect(config.tp_trend).toBeDefined();
-    expect(config.trail_normal).toBeDefined();
-    expect(config.trail_trend).toBeDefined();
-    expect(config.hard_stop_max).toBeDefined();
-    expect(config.hard_stop_atr_multiplier).toBeDefined();
-    expect(config.Point_Value).toBeDefined();
+    expect(config.Config_Version).toBe("rainbow20415.v1");
+    expect(config.Entry_Timeframe_Minutes).toBe(30);
+    expect(config.Management_Interval_Minutes).toBe(1);
+    expect(config.Lines).toHaveLength(7);
+    expect(config.Martin_Ranges.length).toBeGreaterThan(0);
+    expect(config.Take_Profit_Pct).toBe(0.2);
+    expect(config.Max_Hold_Hours).toBe(48);
+    expect(config.Max_Margin_Usage_Pct).toBe(70);
+    expect(config.Max_Account_Loss_Pct).toBe(5);
     expect(config.Base_Lot_Size).toBeDefined();
-    
-    // 確認 max_layers 是合理的數字
-    expect(Number(config.max_layers)).toBeGreaterThan(0);
-    expect(Number(config.max_layers)).toBeLessThanOrEqual(50);
+
+    const finalLayer = Math.max(...config.Martin_Ranges.map((range: { endLayer: number }) => range.endLayer));
+    expect(finalLayer).toBeGreaterThan(0);
+    expect(finalLayer).toBeLessThanOrEqual(200);
   });
 
   it("7. 回測引擎主迴圈中 addMartinLayer 被正確調用", async () => {

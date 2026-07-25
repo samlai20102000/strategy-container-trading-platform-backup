@@ -1,7 +1,7 @@
 /**
  * V5.5 STRATEGIES_DYNAMIC_SCHEMA
  * 用於策略管理「新增/編輯策略」彈窗中的 DynamicForm
- * 根據 strategyKey 動態選擇 V35 或 EMA 馬丁 schema
+ * 根據 strategyKey 動態選擇仍使用 DynamicForm 的策略 schema
  */
 import type { SchemaConfig, FieldSchema } from "@/components/DynamicForm";
 
@@ -39,52 +39,6 @@ export const STRATEGIES_DYNAMIC_SCHEMA: SchemaConfig = {
   ],
 };
 
-/** EMA 均線回歸馬丁格爾（優化版）schema */
-export const STRATEGIES_V20_SCHEMA: SchemaConfig = {
-  groups: [
-    { name: "EMA 指標參數", fields: ["ema_killer", "ema_wave", "ema_enter", "K_Line_Period"] },
-    { name: "緩衝區與入場", fields: ["buffer_points", "Point_Value", "slope_threshold"] },
-    { name: "資金與倉位", fields: ["Base_Lot_Size", "Initial_Capital"] },
-    { name: "馬丁加倉", fields: ["multiplier", "max_layers", "pip_step_base", "enable_dynamic_pip"] },
-    { name: "動態間距（ATR）", fields: ["atr_period", "pipstep_atr_multiplier", "pipstep_min", "pipstep_max"] },
-    { name: "動態止盈（模組 A）", fields: ["tp_normal", "tp_trend", "trail_normal", "trail_trend", "trend_threshold"] },
-    { name: "動態硬止損（模組 E）", fields: ["hard_stop_max", "hard_stop_atr_multiplier"] },
-  ],
-  advancedFields: [],
-  fields: [
-    // ---- EMA 指標參數 ----
-    { key: "ema_killer", type: "number", label: "Killer EMA 週期", default: 3, min: 1, max: 100, step: 1, description: "Killer 快線（預設 3），交叉判斷方向" },
-    { key: "ema_wave", type: "number", label: "Wave EMA 週期", default: 6, min: 2, max: 100, step: 1, description: "Wave 中線（預設 6），交叉判斷方向" },
-    { key: "ema_enter", type: "number", label: "Enter EMA 週期", default: 15, min: 3, max: 200, step: 1, description: "Enter 入場中心線（預設 15），定義可買賣區域" },
-    { key: "K_Line_Period", type: "number", label: "K 線時間框架 (分鐘)", default: 30, min: 1, max: 1440, step: 1, description: "策略監控的 K 線時間框架" },
-    // ---- 緩衝區與入場 ----
-    { key: "buffer_points", type: "number", label: "緩衝區 (點數)", default: 8000, min: 10, max: 100000, step: 100, description: "EMA15 ±Buffer 定義可買賣區域（BTC 8000 = 80 USD）" },
-    { key: "Point_Value", type: "number", label: "每點價值 (USD)", default: 0.01, min: 0.0001, max: 100, step: 0.0001, description: "每 1 點對應的價格變動（BTC=0.01, XAUUSD=0.01）" },
-    { key: "slope_threshold", type: "number", label: "EMA 斜率門檻 (USD/5根)", default: 3.0, min: 0, max: 100, step: 0.1, description: "EMA15 近 5 根變化 >= 此值才允許開倉（模組 D 濾網）" },
-    // ---- 資金與倉位 ----
-    { key: "Base_Lot_Size", type: "number", label: "首單倉位", default: 0.01, min: 0.001, max: 100000, step: 0.001, description: "首單手數（entry_lot），配合 positionMode 使用" },
-    { key: "Initial_Capital", type: "number", label: "初始本金 (USDT)", default: 10000, min: 100, step: 100, description: "策略專屬本金" },
-    // ---- 馬丁加倉 ----
-    { key: "multiplier", type: "number", label: "馬丁倍數", default: 1.5, min: 1.0, max: 5.0, step: 0.1, description: "每層加倉倍率（lot = base × mult^layer）" },
-    { key: "max_layers", type: "number", label: "最大層數", default: 12, min: 1, max: 50, step: 1, description: "馬丁最大加倉層數" },
-    { key: "pip_step_base", type: "number", label: "基準加倉間距 (USD)", default: 500, min: 10, max: 10000, step: 10, description: "動態間距關閉時使用此固定值" },
-    { key: "enable_dynamic_pip", type: "boolean", label: "啟用動態間距", default: true, description: "開啟後使用 ATR 計算動態加倉間距" },
-    // ---- 動態間距（ATR） ----
-    { key: "atr_period", type: "number", label: "ATR 週期", default: 14, min: 5, max: 50, step: 1, description: "ATR 計算週期（根數）" },
-    { key: "pipstep_atr_multiplier", type: "number", label: "ATR 乘數", default: 0.15, min: 0.01, max: 1.0, step: 0.01, description: "動態間距 = ATR × 此乘數" },
-    { key: "pipstep_min", type: "number", label: "動態間距下限 (USD)", default: 200, min: 10, max: 5000, step: 10, description: "動態間距不低於此值" },
-    { key: "pipstep_max", type: "number", label: "動態間距上限 (USD)", default: 800, min: 50, max: 10000, step: 10, description: "動態間距不超過此值" },
-    // ---- 動態止盈（模組 A） ----
-    { key: "tp_normal", type: "number", label: "止盈啟動 - 盤整 (USD)", default: 150, min: 1, max: 10000, step: 1, description: "盤整行情下浮盈達此金額啟動追蹤止盈" },
-    { key: "tp_trend", type: "number", label: "止盈啟動 - 趨勢 (USD)", default: 250, min: 1, max: 10000, step: 1, description: "趨勢行情下浮盈達此金額啟動追蹤止盈" },
-    { key: "trail_normal", type: "number", label: "追蹤回撤 - 盤整 (USD)", default: 25, min: 0.1, max: 1000, step: 0.1, description: "盤整行情下從峰值回撤此金額即平倉" },
-    { key: "trail_trend", type: "number", label: "追蹤回撤 - 趨勢 (USD)", default: 30, min: 0.1, max: 1000, step: 0.1, description: "趨勢行情下從峰值回撤此金額即平倉" },
-    { key: "trend_threshold", type: "number", label: "趨勢判定門檻 (USD)", default: 50, min: 1, max: 500, step: 1, description: "EMA3-EMA6 絕對差值 > 此值視為趨勢行情" },
-    // ---- 動態硬止損（模組 E） ----
-    { key: "hard_stop_max", type: "number", label: "硬止損上限 (USD)", default: -1200, min: -100000, max: 0, step: 10, description: "最大虧損金額（負數），超過此值強制全平" },
-    { key: "hard_stop_atr_multiplier", type: "number", label: "硬止損 ATR 乘數", default: 0.6, min: 0.1, max: 3.0, step: 0.1, description: "動態硬止損 = -(持倉手數 × ATR × 此乘數)" },
-  ],
-};
 
 /** V5.0 KAMA+3K 極致優化馬丁策略 schema */
 export const STRATEGIES_V50_SCHEMA: SchemaConfig = {
@@ -231,6 +185,5 @@ export const STRATEGIES_V61_SCHEMA: SchemaConfig = {
 export function getSchemaForStrategy(strategyKey: string | null | undefined): SchemaConfig {
   if (strategyKey === "KAMA_3K_HF_V61") return STRATEGIES_V61_SCHEMA;
   if (strategyKey === "KAMA_3K_ULTIMATE_V50") return STRATEGIES_V50_SCHEMA;
-  if (strategyKey === "strategy_20415") return STRATEGIES_V20_SCHEMA;
   return STRATEGIES_DYNAMIC_SCHEMA;
 }

@@ -25,9 +25,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SymbolCombobox, parseSymbolClient } from "@/components/SymbolCombobox";
 import MartinLayersEditor, { parseLayersValue, validateLayersUI } from "@/components/backtest/MartinLayersEditor";
 import { DynamicForm, type SchemaConfig, type FieldSchema } from "@/components/DynamicForm";
-import { STRATEGIES_DYNAMIC_SCHEMA, STRATEGIES_V20_SCHEMA, getSchemaForStrategy } from "./_strategies_dynamic_schema";
+import { STRATEGIES_DYNAMIC_SCHEMA, getSchemaForStrategy } from "./_strategies_dynamic_schema";
 import { V70ConfigPanel, serializeV70Config, deserializeV70Config, type V70Config } from "@/components/V70ConfigPanel";
 import { V25ConfigPanel } from "@/components/V25ConfigPanel";
+import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { trpc } from "@/lib/trpc";
 import {
   V25_STRATEGY_KEY,
@@ -37,6 +38,16 @@ import {
   validateV25Config,
   type V25StrategyConfig,
 } from "@shared/strategies/kama3kBreakoutV25";
+import {
+  RAINBOW_20415_STRATEGY_KEY,
+  createRainbow20415DefaultConfig,
+  deriveRainbow20415FinalEnabledLayer,
+  getRainbow20415EffectiveSpacing,
+  getRainbow20415NextEnabledLayer,
+  normalizeRainbow20415Config,
+  validateRainbow20415Config,
+  type Rainbow20415Config,
+} from "@shared/strategies/rainbow20415";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -119,32 +130,8 @@ type StrategyForm = {
   Max_Loss_Pct: string;
   /** V4.5：馬丁模式（fixed=固定乘數, layered=階梯式分層） */
   martin_mode: "fixed" | "layered";
-  // V6.0：EMA 均線回歸馬丁格爾（優化版）參數
-  v2_0?: {
-    ema_killer: number;
-    ema_wave: number;
-    ema_enter: number;
-    K_Line_Period: number;
-    buffer_points: number;
-    Point_Value: number;
-    slope_threshold: number;
-    Initial_Capital: number;
-    multiplier: number;
-    max_layers: number;
-    pip_step_base: number;
-    enable_dynamic_pip: boolean;
-    atr_period: number;
-    pipstep_atr_multiplier: number;
-    pipstep_min: number;
-    pipstep_max: number;
-    tp_normal: number;
-    tp_trend: number;
-    trail_normal: number;
-    trail_trend: number;
-    trend_threshold: number;
-    hard_stop_max: number;
-    hard_stop_atr_multiplier: number;
-  };
+  // 20415 七彩虹：七線排名、盲人模式、動態階梯與三道風控的完整配置。
+  v2_0?: Rainbow20415Config;
   // V7.0：龍捲風雙渦輪配置
   v7_0?: Record<string, any>;
   // V6.1：高頻掃射完整配置
@@ -208,31 +195,7 @@ const emptyForm: StrategyForm = {
   Max_Loss_Pct: "6",
   martin_mode: "fixed",
   v2_5: createV25DefaultConfig(),
-  v2_0: {
-    ema_killer: 3,
-    ema_wave: 6,
-    ema_enter: 15,
-    K_Line_Period: 30,
-    buffer_points: 8000,
-    Point_Value: 0.01,
-    slope_threshold: 3.0,
-    Initial_Capital: 10000,
-    multiplier: 1.5,
-    max_layers: 12,
-    pip_step_base: 500,
-    enable_dynamic_pip: true,
-    atr_period: 14,
-    pipstep_atr_multiplier: 0.15,
-    pipstep_min: 200,
-    pipstep_max: 800,
-    tp_normal: 150,
-    tp_trend: 250,
-    trail_normal: 25,
-    trail_trend: 30,
-    trend_threshold: 50,
-    hard_stop_max: -1200,
-    hard_stop_atr_multiplier: 0.6,
-  },
+  v2_0: createRainbow20415DefaultConfig(),
 };
 
 function StrategiesContent() {
@@ -302,32 +265,36 @@ function StrategiesContent() {
       const cfg = imported.config || {};
       const martinLayersJson = typeof cfg.Martin_Layers === 'string' ? cfg.Martin_Layers : cfg.Martin_Layers ? JSON.stringify(cfg.Martin_Layers) : '';
       const isV25Import = imported.definitionKey === V25_STRATEGY_KEY;
+      const isRainbowImport = imported.definitionKey === RAINBOW_20415_STRATEGY_KEY;
       const v25Config = normalizeV25Config(cfg);
+      const rainbowConfig = normalizeRainbow20415Config(cfg);
+      const firstRainbowRange = rainbowConfig.Martin_Ranges.find((range) => range.enabled);
       setForm({
         ...emptyForm,
         name: imported.suggestedName || `${imported.definitionKey || '未知策略'}_導入`,
         symbol: (cfg.symbol || cfg.Symbol || 'BTCUSDT').toUpperCase(),
         strategyKey: imported.definitionKey || 'none',
-        positionValue: isV25Import ? v25Config.Base_Lot_Size : (cfg.Base_Lot_Size ?? cfg.First_Order_Pct ?? 0.01),
-        positionMode: isV25Import ? "usdt" : emptyForm.positionMode,
+        positionValue: isRainbowImport ? rainbowConfig.Base_Lot_Size.value : isV25Import ? v25Config.Base_Lot_Size : (cfg.Base_Lot_Size ?? cfg.First_Order_Pct ?? 0.01),
+        positionMode: isRainbowImport ? rainbowConfig.Base_Lot_Size.mode : isV25Import ? "usdt" : emptyForm.positionMode,
         leverage: String(cfg.Leverage || 1),
         direction: cfg.Direction || 'both',
         stopLossPct: isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
-        takeProfitPct: isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
-        martinMultiplier: String(isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
-        maxMartinLevel: String(isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
-        martinSpacingPct: String(isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
+        takeProfitPct: isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
+        martinMultiplier: String(isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
+        maxMartinLevel: String(isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
+        martinSpacingPct: String(isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
         martinLayersJson,
         maxLossPct: String(cfg.Max_Loss_Pct || 6),
         callbackPct: String(cfg.Callback_Pct || 0.1),
-        kLinePeriod: String(isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
-        reentryOnTrend: isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
+        kLinePeriod: String(isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
+        reentryOnTrend: isRainbowImport ? rainbowConfig.Reentry_Enabled : isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
         maxLossUsdt: String(cfg.Max_Loss_USDT || cfg.EscapeLossUSD || 15),
         Initial_Capital: String(cfg.Initial_Capital || 100),
         First_Order_Pct: String(cfg.First_Order_Pct || 0.5),
         Max_Loss_Pct: String(cfg.Max_Loss_Pct || 6),
         martin_mode: martinLayersJson.trim() ? 'layered' : 'fixed',
         v2_5: isV25Import ? v25Config : createV25DefaultConfig(),
+        v2_0: isRainbowImport ? rainbowConfig : createRainbow20415DefaultConfig(),
         apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : '',
       });
       setDialogOpen(true);
@@ -467,7 +434,13 @@ function StrategiesContent() {
     const strategyKey = (s as any).strategyKey || "none";
     const state = ((s as any).martinState as Record<string, any> | null) ?? {};
     const isV25 = strategyKey === V25_STRATEGY_KEY;
-    const positionMode: 'quantity' | 'usdt' = isV25 ? "usdt" : ((s as any).positionMode || 'quantity');
+    const isRainbow = strategyKey === RAINBOW_20415_STRATEGY_KEY;
+    const rainbowConfig = isRainbow
+      ? normalizeRainbow20415Config(state.__v2_0Config ?? state.__snapshotConfig)
+      : createRainbow20415DefaultConfig();
+    const positionMode: 'quantity' | 'usdt' = isRainbow
+      ? rainbowConfig.Base_Lot_Size.mode
+      : isV25 ? "usdt" : ((s as any).positionMode || 'quantity');
     
     setForm({
       id: s.id,
@@ -476,20 +449,21 @@ function StrategiesContent() {
       apiKeyId: String(s.apiKeyId),
       symbol: s.symbol,
       positionSize: s.positionSize ?? '',
-      positionValue,
+      positionValue: isRainbow ? rainbowConfig.Base_Lot_Size.value : positionValue,
       positionMode,
       leverage: String(s.leverage),
       direction: s.direction as StrategyForm["direction"],
       orderType: s.orderType as StrategyForm["orderType"],
       maxPositionPct: s.maxPositionPct,
       stopLossPct: s.stopLossPct,
-      takeProfitPct: s.takeProfitPct,
+      takeProfitPct: isRainbow ? String(rainbowConfig.Take_Profit_Pct) : s.takeProfitPct,
       maxDailyLoss: s.maxDailyLoss,
       martinMultiplier: (s as any).martinMultiplier ?? "1",
       maxMartinLevel: String((s as any).maxMartinLevel ?? 1),
       martinSpacingPct: (s as any).martinSpacingPct ?? "0",
       strategyKey,
       v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
+      v2_0: rainbowConfig,
       // 從 martinState.__v35Config 載入 V3.7 優化參數（若存在）
       ...((): Pick<StrategyForm, "martinLayersJson" | "maxLossPct" | "callbackPct" | "kLinePeriod" | "reentryOnTrend" | "maxLossUsdt" | "Initial_Capital" | "First_Order_Pct" | "Max_Loss_Pct" | "martin_mode"> => {
         const v35 = ((s as any).martinState as Record<string, any> | null)?.__v35Config;
@@ -508,38 +482,6 @@ function StrategiesContent() {
           First_Order_Pct: String(v35.First_Order_Pct ?? 0.5),
           Max_Loss_Pct: String(v35.Max_Loss_Pct ?? 6),
           martin_mode: martinLayersJson.trim() ? "layered" : "fixed",
-        };
-      })(),
-      // V6.0：從 martinState.__v2_0Config 載入 EMA 馬丁參數
-      ...((): { v2_0?: StrategyForm["v2_0"] } => {
-        const v20 = ((s as any).martinState as Record<string, any> | null)?.__v2_0Config;
-        if (!v20 || typeof v20 !== "object") return {};
-        return {
-          v2_0: {
-            ema_killer: v20.ema_killer ?? 3,
-            ema_wave: v20.ema_wave ?? 6,
-            ema_enter: v20.ema_enter ?? 15,
-            K_Line_Period: v20.K_Line_Period ?? 30,
-            buffer_points: v20.buffer_points ?? 8000,
-            Point_Value: v20.Point_Value ?? 0.01,
-            slope_threshold: v20.slope_threshold ?? 3.0,
-            Initial_Capital: v20.Initial_Capital ?? 10000,
-            multiplier: v20.multiplier ?? 1.5,
-            max_layers: v20.max_layers ?? 12,
-            pip_step_base: v20.pip_step_base ?? 500,
-            enable_dynamic_pip: v20.enable_dynamic_pip ?? true,
-            atr_period: v20.atr_period ?? 14,
-            pipstep_atr_multiplier: v20.pipstep_atr_multiplier ?? 0.15,
-            pipstep_min: v20.pipstep_min ?? 200,
-            pipstep_max: v20.pipstep_max ?? 800,
-            tp_normal: v20.tp_normal ?? 150,
-            tp_trend: v20.tp_trend ?? 250,
-            trail_normal: v20.trail_normal ?? 25,
-            trail_trend: v20.trail_trend ?? 30,
-            trend_threshold: v20.trend_threshold ?? 50,
-            hard_stop_max: v20.hard_stop_max ?? -1200,
-            hard_stop_atr_multiplier: v20.hard_stop_atr_multiplier ?? 0.6,
-          },
         };
       })(),
       // V6.1：從 martinState.__v61Config 載入高頻掃射參數
@@ -563,14 +505,23 @@ function StrategiesContent() {
     if (!form.apiKeyId) return toast.error("請選擇 API 金鑰");
     if (!form.symbol.trim()) return toast.error("請輸入交易對");
     const isV25 = form.strategyKey === V25_STRATEGY_KEY;
+    const isRainbow = form.strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const v25Validation = isV25 ? validateV25Config(form.v2_5) : null;
+    const rainbowValidation = isRainbow ? validateRainbow20415Config(form.v2_0) : null;
     if (v25Validation && !v25Validation.valid) {
       return toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
-    const positionValue = isV25
-      ? (v25Validation?.config.Base_Lot_Size ?? 0)
-      : parseFloat(String(form.positionValue));
-    const effectivePositionMode: "quantity" | "usdt" = isV25 ? "usdt" : form.positionMode;
+    if (rainbowValidation && !rainbowValidation.valid) {
+      return toast.error(`20415 七彩虹參數設定錯誤：${rainbowValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
+    const rainbowConfig = rainbowValidation?.config;
+    const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
+    const positionValue = isRainbow
+      ? (rainbowConfig?.Base_Lot_Size.value ?? 0)
+      : isV25 ? (v25Validation?.config.Base_Lot_Size ?? 0) : parseFloat(String(form.positionValue));
+    const effectivePositionMode: "quantity" | "usdt" = isRainbow
+      ? (rainbowConfig?.Base_Lot_Size.mode ?? "quantity")
+      : isV25 ? "usdt" : form.positionMode;
     if (!Number.isFinite(positionValue) || positionValue <= 0)
       return toast.error("倉位大小需為正數");
     // 第二輪優化 3：依交易對規格驗證（數量模式檢查最小量；USDT 模式檢查預估數量）
@@ -605,7 +556,7 @@ function StrategiesContent() {
 
     // O1：Martin_Layers 提交前驗證（重疊/非法値）
     // V4.5：僅在階梯式模式下驗證 layers
-    if (form.martin_mode === "layered" && form.martinLayersJson.trim()) {
+    if (!isRainbow && form.martin_mode === "layered" && form.martinLayersJson.trim()) {
       const layersErr = validateLayersUI(parseLayersValue(form.martinLayersJson));
       if (layersErr) return toast.error(`階梯式馬丁分層設定錯誤：${layersErr}`);
     }
@@ -639,12 +590,14 @@ function StrategiesContent() {
       direction: form.direction,
       orderType: form.orderType,
       maxPositionPct: parseFloat(form.maxPositionPct) || 0,
-      stopLossPct: parseFloat(form.stopLossPct) || 0,
-      takeProfitPct: parseFloat(form.takeProfitPct) || 0,
+      stopLossPct: isRainbow ? 0 : (parseFloat(form.stopLossPct) || 0),
+      takeProfitPct: isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
       maxDailyLoss: parseFloat(form.maxDailyLoss) || 0,
-      martinMultiplier: parseFloat(form.martinMultiplier) || 1,
-      maxMartinLevel: parseInt(form.maxMartinLevel) || 1,
-      martinSpacingPct: parseFloat(form.martinSpacingPct) || 0,
+      martinMultiplier: isRainbow ? (firstRainbowRange?.multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
+      maxMartinLevel: isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : (parseInt(form.maxMartinLevel) || 1),
+      martinSpacingPct: isRainbow
+        ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct ?? 0 : firstRainbowRange?.spacingPct ?? 0)
+        : (parseFloat(form.martinSpacingPct) || 0),
       strategyKey: form.strategyKey === "none" ? null : form.strategyKey,
       positionMode: effectivePositionMode,
       v25Config: isV25 ? v25Validation?.config : undefined,
@@ -707,32 +660,8 @@ function StrategiesContent() {
         volume_ma_period: 20,
         volume_expansion_threshold: 1.5,
       } : undefined,
-      // V6.0：EMA 馬丁參數（後端存入 martinState.__v2_0Config）
-      v2_0Config: form.strategyKey === "strategy_20415" && form.v2_0 ? {
-        ema_killer: form.v2_0.ema_killer,
-        ema_wave: form.v2_0.ema_wave,
-        ema_enter: form.v2_0.ema_enter,
-        K_Line_Period: form.v2_0.K_Line_Period,
-        buffer_points: form.v2_0.buffer_points,
-        Point_Value: form.v2_0.Point_Value,
-        slope_threshold: form.v2_0.slope_threshold,
-        Initial_Capital: form.v2_0.Initial_Capital,
-        multiplier: form.v2_0.multiplier,
-        max_layers: form.v2_0.max_layers,
-        pip_step_base: form.v2_0.pip_step_base,
-        enable_dynamic_pip: form.v2_0.enable_dynamic_pip,
-        atr_period: form.v2_0.atr_period,
-        pipstep_atr_multiplier: form.v2_0.pipstep_atr_multiplier,
-        pipstep_min: form.v2_0.pipstep_min,
-        pipstep_max: form.v2_0.pipstep_max,
-        tp_normal: form.v2_0.tp_normal,
-        tp_trend: form.v2_0.tp_trend,
-        trail_normal: form.v2_0.trail_normal,
-        trail_trend: form.v2_0.trail_trend,
-        trend_threshold: form.v2_0.trend_threshold,
-        hard_stop_max: form.v2_0.hard_stop_max,
-        hard_stop_atr_multiplier: form.v2_0.hard_stop_atr_multiplier,
-      } : undefined,
+      // 20415 七彩虹：完整配置經共享校驗後原樣持久化至 __v2_0Config。
+      v2_0Config: isRainbow && rainbowConfig ? { ...rainbowConfig } : undefined,
       // V6.1：高頻掃射參數（後端存入 martinState.__v61Config）
       // 馬丁參數統一由分層表格控制：max_layers 自動從 Martin_Layers 計算
       v61Config: form.strategyKey === "KAMA_3K_HF_V61" ? (() => {
@@ -1130,6 +1059,8 @@ function StrategiesContent() {
                               let stepPct = 2.0; // 默認
                               let basePrice = lastLayerPrice; // 統一用 lastLayerPrice
                               let useLastLayer = true;
+                              let displayNextLayer = layer + 1;
+                              let isRainbowNextLayer = false;
 
                               if (strategyKey === 'KAMA_3K_ULTIMATE_V50' || strategyKey === 'KAMA_3K_HF_V61') {
                                 // V5.0/V6.1 用 lastLayerPrice
@@ -1179,14 +1110,16 @@ function StrategiesContent() {
                                     stepPct = globalStep;
                                   }
                                 }
-                              } else if (strategyKey === 'strategy_20415') {
-                                // V2.0 EMA 馬丁：用 pip_step_base（USD 絕對值），不用百分比
-                                basePrice = lastLayerPrice;
-                                useLastLayer = true;
-                                const v20Cfg = (ms as any)?.__v2_0Config;
-                                const pipStepBase = Number(v20Cfg?.pip_step_base) || 500;
-                                // 轉換為百分比：pipStepBase / basePrice * 100
-                                stepPct = basePrice > 0 ? (pipStepBase / basePrice) * 100 : 2.0;
+                              } else if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+                                // 20415 七彩虹盲人模式：以真實平均成本與下一個啟用階梯計算。
+                                const rainbowConfig = normalizeRainbow20415Config((ms as any)?.__v2_0Config);
+                                const nextLayer = getRainbow20415NextEnabledLayer(rainbowConfig.Martin_Ranges, layer);
+                                if (!nextLayer) return null;
+                                basePrice = Number((ms as any)?.avgPrice) || avgP || lastLayerPrice;
+                                useLastLayer = false;
+                                displayNextLayer = nextLayer.layer;
+                                isRainbowNextLayer = true;
+                                stepPct = getRainbow20415EffectiveSpacing(rainbowConfig, nextLayer.range);
                               } else {
                                 // 通用策略：使用頂層 martinSpacingPct
                                 stepPct = parseFloat((s as any).martinSpacingPct) || 2.0;
@@ -1222,11 +1155,16 @@ function StrategiesContent() {
                               if (livePrice <= 0) return null;
 
                               return (
-                                <div className="mt-1.5 px-2 py-1.5 rounded bg-blue-500/5 border border-blue-500/15">
+                                <div className={isRainbowNextLayer
+                                  ? "mt-1.5 rounded border border-cyan-400/20 bg-[linear-gradient(100deg,rgba(34,211,238,.06),rgba(168,85,247,.05))] px-2 py-1.5"
+                                  : "mt-1.5 rounded border border-blue-500/15 bg-blue-500/5 px-2 py-1.5"}
+                                >
                                   <div className="flex items-center justify-between">
-                                    <span className="text-[10px] text-blue-400/80">距第 {layer + 1} 層加倉</span>
+                                    <span className={isRainbowNextLayer ? "text-[10px] font-semibold text-cyan-300/90" : "text-[10px] text-blue-400/80"}>
+                                      {isRainbowNextLayer ? "七彩虹盲控" : ""} 距第 {displayNextLayer} 層加倉
+                                    </span>
                                     <span className="text-[10px] text-muted-foreground">
-                                      {useLastLayer ? '基準: 上層價' : '基準: 均價'} {basePrice.toFixed(2)}
+                                      {useLastLayer ? '基準: 上層價' : '基準: 真實均價'} {basePrice.toFixed(2)}
                                     </span>
                                   </div>
                                   <div className="flex items-center gap-2 mt-1">
@@ -1541,7 +1479,13 @@ function StrategiesContent() {
           if (!open) setSnapshotImportSource(null);
         }}
       >
-        <DialogContent className={form.strategyKey === V25_STRATEGY_KEY ? "sm:max-w-6xl max-h-[92vh] overflow-y-auto" : "sm:max-w-lg max-h-[90vh] overflow-y-auto"}>
+        <DialogContent
+          className={
+            form.strategyKey === V25_STRATEGY_KEY || form.strategyKey === RAINBOW_20415_STRATEGY_KEY
+              ? "max-h-[92dvh] overflow-x-hidden overflow-y-auto overscroll-contain p-4 sm:max-w-6xl sm:p-6"
+              : "max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain sm:max-w-lg"
+          }
+        >
           <DialogHeader>
             <DialogTitle>
               {form.id ? "編輯策略" : snapshotImportSource ? "從快照建立策略" : "新增策略"}
@@ -1740,6 +1684,14 @@ function StrategiesContent() {
                     context="snapshot"
                   />
                 )}
+                {snapshotImportSource.strategyKey === RAINBOW_20415_STRATEGY_KEY && (
+                  <Rainbow20415ConfigPanel
+                    value={normalizeRainbow20415Config(snapshotImportSource.config)}
+                    onChange={() => undefined}
+                    disabled
+                    context="snapshot"
+                  />
+                )}
                 <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -1793,67 +1745,27 @@ function StrategiesContent() {
                 }}
                 mode="editable"
               />
-            ) : form.strategyKey === "strategy_20415" ? (
-              <DynamicForm
-                schema={STRATEGIES_V20_SCHEMA}
-                values={{
-                  ema_killer: form.v2_0?.ema_killer ?? 3,
-                  ema_wave: form.v2_0?.ema_wave ?? 6,
-                  ema_enter: form.v2_0?.ema_enter ?? 15,
-                  K_Line_Period: form.v2_0?.K_Line_Period ?? 30,
-                  buffer_points: form.v2_0?.buffer_points ?? 8000,
-                  Point_Value: form.v2_0?.Point_Value ?? 0.01,
-                  slope_threshold: form.v2_0?.slope_threshold ?? 3.0,
-                  Base_Lot_Size: parseFloat(form.positionSize) || 0.01,
-                  Initial_Capital: form.v2_0?.Initial_Capital ?? 10000,
-                  multiplier: form.v2_0?.multiplier ?? 1.5,
-                  max_layers: form.v2_0?.max_layers ?? 12,
-                  pip_step_base: form.v2_0?.pip_step_base ?? 500,
-                  enable_dynamic_pip: form.v2_0?.enable_dynamic_pip ?? true,
-                  atr_period: form.v2_0?.atr_period ?? 14,
-                  pipstep_atr_multiplier: form.v2_0?.pipstep_atr_multiplier ?? 0.15,
-                  pipstep_min: form.v2_0?.pipstep_min ?? 200,
-                  pipstep_max: form.v2_0?.pipstep_max ?? 800,
-                  tp_normal: form.v2_0?.tp_normal ?? 150,
-                  tp_trend: form.v2_0?.tp_trend ?? 250,
-                  trail_normal: form.v2_0?.trail_normal ?? 25,
-                  trail_trend: form.v2_0?.trail_trend ?? 30,
-                  trend_threshold: form.v2_0?.trend_threshold ?? 50,
-                  hard_stop_max: form.v2_0?.hard_stop_max ?? -1200,
-                  hard_stop_atr_multiplier: form.v2_0?.hard_stop_atr_multiplier ?? 0.6,
-                }}
-                onChange={(vals) => {
+            ) : form.strategyKey === RAINBOW_20415_STRATEGY_KEY ? (
+              <Rainbow20415ConfigPanel
+                value={form.v2_0}
+                onChange={(nextConfig) => {
+                  const firstRange = nextConfig.Martin_Ranges.find((range) => range.enabled);
                   setForm((prev) => ({
                     ...prev,
-                    positionSize: vals.Base_Lot_Size != null ? String(vals.Base_Lot_Size) : prev.positionSize,
-                    v2_0: {
-                      ema_killer: vals.ema_killer ?? prev.v2_0?.ema_killer ?? 3,
-                      ema_wave: vals.ema_wave ?? prev.v2_0?.ema_wave ?? 6,
-                      ema_enter: vals.ema_enter ?? prev.v2_0?.ema_enter ?? 15,
-                      K_Line_Period: vals.K_Line_Period ?? prev.v2_0?.K_Line_Period ?? 30,
-                      buffer_points: vals.buffer_points ?? prev.v2_0?.buffer_points ?? 8000,
-                      Point_Value: vals.Point_Value ?? prev.v2_0?.Point_Value ?? 0.01,
-                      slope_threshold: vals.slope_threshold ?? prev.v2_0?.slope_threshold ?? 3.0,
-                      Initial_Capital: vals.Initial_Capital ?? prev.v2_0?.Initial_Capital ?? 10000,
-                      multiplier: vals.multiplier ?? prev.v2_0?.multiplier ?? 1.5,
-                      max_layers: vals.max_layers ?? prev.v2_0?.max_layers ?? 12,
-                      pip_step_base: vals.pip_step_base ?? prev.v2_0?.pip_step_base ?? 500,
-                      enable_dynamic_pip: vals.enable_dynamic_pip ?? prev.v2_0?.enable_dynamic_pip ?? true,
-                      atr_period: vals.atr_period ?? prev.v2_0?.atr_period ?? 14,
-                      pipstep_atr_multiplier: vals.pipstep_atr_multiplier ?? prev.v2_0?.pipstep_atr_multiplier ?? 0.15,
-                      pipstep_min: vals.pipstep_min ?? prev.v2_0?.pipstep_min ?? 200,
-                      pipstep_max: vals.pipstep_max ?? prev.v2_0?.pipstep_max ?? 800,
-                      tp_normal: vals.tp_normal ?? prev.v2_0?.tp_normal ?? 150,
-                      tp_trend: vals.tp_trend ?? prev.v2_0?.tp_trend ?? 250,
-                      trail_normal: vals.trail_normal ?? prev.v2_0?.trail_normal ?? 25,
-                      trail_trend: vals.trail_trend ?? prev.v2_0?.trail_trend ?? 30,
-                      trend_threshold: vals.trend_threshold ?? prev.v2_0?.trend_threshold ?? 50,
-                      hard_stop_max: vals.hard_stop_max ?? prev.v2_0?.hard_stop_max ?? -1200,
-                      hard_stop_atr_multiplier: vals.hard_stop_atr_multiplier ?? prev.v2_0?.hard_stop_atr_multiplier ?? 0.6,
-                    },
+                    v2_0: nextConfig,
+                    positionValue: nextConfig.Base_Lot_Size.value,
+                    positionMode: nextConfig.Base_Lot_Size.mode,
+                    Initial_Capital: String(nextConfig.Initial_Capital),
+                    takeProfitPct: String(nextConfig.Take_Profit_Pct),
+                    Max_Loss_Pct: String(nextConfig.Max_Account_Loss_Pct),
+                    martinMultiplier: String(firstRange?.multiplier ?? 1),
+                    maxMartinLevel: String(Math.max(1, deriveRainbow20415FinalEnabledLayer(nextConfig.Martin_Ranges))),
+                    martinSpacingPct: String(firstRange?.useGlobalSpacing ? nextConfig.Global_Spacing_Pct : firstRange?.spacingPct ?? nextConfig.Global_Spacing_Pct),
+                    kLinePeriod: String(nextConfig.Entry_Timeframe_Minutes),
+                    reentryOnTrend: nextConfig.Reentry_Enabled,
                   }));
                 }}
-                showPreview={false}
+                context="strategy"
               />
             ) : (
               <DynamicForm
@@ -1932,6 +1844,26 @@ function StrategiesContent() {
                   value={form.strategyKey}
                   onValueChange={(v) => {
                     setForm((prev) => {
+                      if (v === RAINBOW_20415_STRATEGY_KEY) {
+                        const nextConfig = prev.v2_0 ?? createRainbow20415DefaultConfig();
+                        const firstRange = nextConfig.Martin_Ranges.find((range) => range.enabled);
+                        return {
+                          ...prev,
+                          strategyKey: v,
+                          v2_0: nextConfig,
+                          positionValue: nextConfig.Base_Lot_Size.value,
+                          positionMode: nextConfig.Base_Lot_Size.mode,
+                          Initial_Capital: String(nextConfig.Initial_Capital),
+                          stopLossPct: "0",
+                          takeProfitPct: String(nextConfig.Take_Profit_Pct),
+                          Max_Loss_Pct: String(nextConfig.Max_Account_Loss_Pct),
+                          martinMultiplier: String(firstRange?.multiplier ?? 1),
+                          maxMartinLevel: String(Math.max(1, deriveRainbow20415FinalEnabledLayer(nextConfig.Martin_Ranges))),
+                          martinSpacingPct: String(firstRange?.useGlobalSpacing ? nextConfig.Global_Spacing_Pct : firstRange?.spacingPct ?? nextConfig.Global_Spacing_Pct),
+                          kLinePeriod: String(nextConfig.Entry_Timeframe_Minutes),
+                          reentryOnTrend: nextConfig.Reentry_Enabled,
+                        };
+                      }
                       if (v !== V25_STRATEGY_KEY) return { ...prev, strategyKey: v };
                       const nextConfig = prev.v2_5 ?? createV25DefaultConfig();
                       const firstRange = nextConfig.Martin_Ranges[0];

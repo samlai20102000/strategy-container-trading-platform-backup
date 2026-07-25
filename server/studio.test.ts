@@ -9,6 +9,11 @@ import {
 } from "./strategies/base";
 import { Strategy20415 } from "./strategies/builtin/strategy20415";
 import {
+  createRainbow20415DefaultConfig,
+  RAINBOW_20415_STRATEGY_KEY,
+  RAINBOW_20415_STRATEGY_NAME,
+} from "../shared/strategies/rainbow20415";
+import {
   compileAndLoadStrategy,
   getStrategy,
   initStrategyStudio,
@@ -60,21 +65,30 @@ describe("calcMartinLot 馬丁加倉計算", () => {
   });
 });
 
-/* ==================== 內建策略 Strategy20415 (EMATrendMartingale v1.0) ==================== */
+/* ==================== 內建策略 Strategy20415 七彩虹橋接 ==================== */
 
-describe("Strategy20415 內建策略決策", () => {
+describe("Strategy20415 七彩虹註冊橋接", () => {
   const engine = new Strategy20415();
+  const config = createRainbow20415DefaultConfig();
   const instance = {
     id: 1,
     symbol: "XAUUSD",
     direction: "both" as const,
     positionSize: 0.01,
     leverage: 10,
-    config: { MartinMultiplier: 1.5, MaxMartinLevels: 10, FirstLot: 0.01 },
+    config,
   };
   const freshMartin = { lossCount: 0, currentLot: 0.01, lastEntryPrice: 0 };
 
-  it("BUY 訊號產生開多動作（無 EMA 資料時信任訊號）", () => {
+  it("維持穩定 key，並公開七彩虹名稱與完整預設配置", () => {
+    expect(engine.key).toBe(RAINBOW_20415_STRATEGY_KEY);
+    expect(engine.name).toBe(RAINBOW_20415_STRATEGY_NAME);
+    expect(engine.validateConfig(engine.defaultConfig).valid).toBe(true);
+    expect(engine.defaultConfig.Config_Version).toBe("rainbow20415.v1");
+    expect(engine.defaultConfig.Lines).toHaveLength(7);
+  });
+
+  it("BUY 外部意圖在空倉時以七彩虹底倉開多", () => {
     const d = engine.generateActions(
       { action: "BUY", symbol: "XAUUSD", price: 2000 },
       instance,
@@ -85,7 +99,7 @@ describe("Strategy20415 內建策略決策", () => {
     expect(d.lotSize).toBeCloseTo(0.01);
   });
 
-  it("SELL 訊號產生開空動作（無 EMA 資料時信任訊號）", () => {
+  it("SELL 外部意圖在空倉時以七彩虹底倉開空", () => {
     const d = engine.generateActions(
       { action: "SELL", symbol: "XAUUSD", price: 2000 },
       instance,
@@ -93,6 +107,20 @@ describe("Strategy20415 內建策略決策", () => {
       freshMartin,
     );
     expect(d.action).toBe("OPEN_SHORT");
+  });
+
+  it("USDT 底倉依訊號價格換算成交易數量", () => {
+    const d = engine.generateActions(
+      { action: "BUY", symbol: "XAUUSD", price: 2000 },
+      {
+        ...instance,
+        config: { ...config, Base_Lot_Size: { value: 100, mode: "usdt" as const } },
+      },
+      null,
+      freshMartin,
+    );
+    expect(d.action).toBe("OPEN_LONG");
+    expect(d.lotSize).toBeCloseTo(0.05);
   });
 
   it("CLOSE 訊號產生全平動作", () => {
@@ -105,56 +133,31 @@ describe("Strategy20415 內建策略決策", () => {
     expect(d.action).toBe("CLOSE_ALL");
   });
 
-  it("連續虧損後馬丁加倉（MartinMultiplier=1.5, lossCount=2）", () => {
+  it("已有本策略有效持倉時由純核心盲人模式接管，不以外部訊號重複加倉", () => {
     const d = engine.generateActions(
       { action: "BUY", symbol: "XAUUSD", price: 2000 },
       instance,
       null,
-      { lossCount: 2, currentLot: 0.0225, lastEntryPrice: 2050 },
-    );
-    expect(d.action).toBe("OPEN_LONG");
-    // 0.01 * 1.5^2 = 0.0225
-    expect(d.lotSize).toBeCloseTo(0.0225);
-  });
-
-  it("SMA v3.00：信任 Webhook 訊號，SELL 產生開空（即使有 EMA 資料）", () => {
-    const d = engine.generateActions(
-      { action: "SELL", symbol: "XAUUSD", price: 2000 },
-      instance,
       {
-        lastPrice: 2000,
-        ema: { ema3: 2050, ema6: 2040, ema15: 2030, ema30: 2020, ema60: 2010 },
-      },
-      freshMartin,
-    );
-    // SMA v3.00: generateActions 信任 Webhook 訊號，不做 EMA 過濾
-    expect(d.action).toBe("OPEN_SHORT");
-  });
-
-  it("SMA v3.00：信任 Webhook 訊號，BUY 產生開多（即使有 EMA 資料）", () => {
-    const d = engine.generateActions(
-      { action: "BUY", symbol: "XAUUSD", price: 2000 },
-      instance,
-      {
-        lastPrice: 2000,
-        ema: { ema3: 1950, ema6: 1960, ema15: 1970, ema30: 1980, ema60: 1990 },
-      },
-      freshMartin,
-    );
-    // SMA v3.00: 信任 Webhook 訊號，不做 EMA 過濾
-    expect(d.action).toBe("OPEN_LONG");
-  });
-
-  it("EMA 馬丁：層數已滿時返回 HOLD", () => {
-    // 新策略 max_layers 默認 12，lossCount 必須 >= 12 才觸發
-    const d = engine.generateActions(
-      { action: "BUY", symbol: "XAUUSD", price: 2000 },
-      instance,
-      null,
-      { lossCount: 12, currentLot: 0.5, lastEntryPrice: 1900 },
+        lossCount: 0,
+        currentLot: 0.01,
+        lastEntryPrice: 2000,
+        currentLayer: 1,
+        totalSize: 0.01,
+        avgPrice: 2000,
+      } as MartinState,
     );
     expect(d.action).toBe("HOLD");
-    expect(d.reason).toContain("最大層數");
+    expect(d.reason).toContain("盲人模式");
+  });
+
+  it("拒絕不完整的七線配置", () => {
+    const result = engine.validateConfig({
+      ...config,
+      Lines: config.Lines.slice(0, 6),
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(" ")).toContain("7 條");
   });
 });
 

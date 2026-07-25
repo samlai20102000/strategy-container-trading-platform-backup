@@ -34,6 +34,18 @@ import {
   getV25MartinRangeForLayer,
   V25_STRATEGY_KEY,
 } from "../../shared/strategies/kama3kBreakoutV25";
+import {
+  RAINBOW_20415_STRATEGY_KEY,
+  validateRainbow20415Config,
+  type Rainbow20415BaseLot,
+} from "../../shared/strategies/rainbow20415";
+import {
+  applyRainbow20415CloseToState,
+  applyRainbow20415FillToState,
+  evaluateRainbow20415Management,
+  Rainbow20415CloseReason,
+  type Rainbow20415CoreAction,
+} from "../strategies/rainbow20415/core";
 import { getBoundStrategyConfig } from "./strategySnapshotConfig";
 
 /**
@@ -55,6 +67,12 @@ export interface ParsedSignal {
   v25Decision?: boolean;
   v25LayerNum?: number;
   v25CloseReason?: V25CloseReason;
+  /** 20415 內部決策封印；外部 Webhook 解析器永不映射這些欄位。 */
+  rainbow20415Decision?: boolean;
+  rainbow20415Action?: Rainbow20415CoreAction;
+  rainbow20415LayerNum?: number;
+  rainbow20415CloseReason?: Rainbow20415CloseReason;
+  rainbow20415OrderSize?: Rainbow20415BaseLot;
 }
 
 /**
@@ -264,9 +282,9 @@ export async function executeSignal(
       return executeSignalV35(strategy, signal, signalId, engine, adapter);
     }
 
-    // ===== V2.0 策略專用管線（strategy_20415）=====
-    if (strategy.strategyKey === "strategy_20415") {
-      return executeSignalV20(strategy, signal, signalId, engine, adapter);
+    // ===== 20415 七彩虹策略專用管線 =====
+    if (strategy.strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+      return executeSignalRainbow20415(strategy, signal, signalId, engine, adapter);
     }
 
     const martinState = getMartinState(strategy);
@@ -438,260 +456,201 @@ export async function executeSignal(
 }
 
 /**
- * ===== V2.0 專用執行管線（SMA v3.00 對稱統一版） =====
- * 核心邏輯：
- * 1. 入場（嚴格 AND）：Killer 上穿 Wave 且 Killer > Trend 且 price < Enter → 做多
- *    （由 TradingView Webhook 發送 BUY/SELL/CLOSE，引擎內部再次驗證）
- * 2. 階梯式網格馬丁加倉（Martin_Tiers 分層表控制乘數和 pipstep）
- * 3. 金額追蹤止盈（Dollar_Start_Buy/Sell + Dollar_Trail）
- * 4. 方向轉換已停用：EMA 交叉時不平倉、不轉向
- * 5. 硬止損（Dollar_Loss）
- * 6. 循環再入場：平倉後若 EMA 條件仍滿足，在冷卻期後自動重新入場
+ * ===== 20415 七彩虹專用執行管線 =====
+ *
+ * 自動信號只傳遞由伺服器核心產生的封印決策；Webhook／手動 BUY、SELL
+ * 只能在空倉建立底倉，或於核心以即時價格重新確認階梯條件後加倉。
+ * 所有狀態轉移都發生在交易所成功回報之後。
  */
-async function executeSignalV20(
+async function executeSignalRainbow20415(
   strategy: Strategy,
   signal: ParsedSignal,
   signalId: number,
-  engine: any,
+  _engine: any,
   adapter: ExchangeAdapter,
 ): Promise<ExecutionResult> {
   const state = loadStrategyState(strategy);
-  const cfg = (strategy as unknown as { config?: Record<string, unknown> }).config ?? {};
-  
-  // 🔥 修復：讀取 V2.0 完整配置（__v2_0Config）
-  const v20Config = (strategy.martinState && typeof strategy.martinState === 'object' 
-    ? (strategy.martinState as Record<string, unknown>).__v2_0Config 
-    : null) as Record<string, unknown> | null;
-  
-  const mergedCfg: Record<string, number | string | boolean> = {
-    ...engine.defaultConfig,
-    Base_Lot_Size: strategy.positionSizeObject || engine.defaultConfig.Base_Lot_Size,
-    Position_Mode: ((strategy as unknown as { positionMode?: string }).positionMode ?? "quantity") as string,
-    Position_Value: parseFloat(strategy.positionSize ?? '0') || (typeof engine.defaultConfig.Base_Lot_Size === 'object' ? Number((engine.defaultConfig.Base_Lot_Size as { value: number; mode: string }).value) : Number(engine.defaultConfig.Base_Lot_Size)),
-    ...(typeof cfg === "object" ? (cfg as Record<string, number | string | boolean>) : {}),
-    // 🔥 V2.0 配置優先級最高（覆蓋默認值和頂層字段）
-    ...(v20Config ? (v20Config as Record<string, number | string | boolean>) : {}),
-  };
-
-  // === 0. 命令 6：參數自動比對（啟動時驗證 UI 設定與引擎參數一致）===
-  if (engine.validateConfig) {
-    const validation = engine.validateConfig(mergedCfg as Record<string, any>);
-    if (!validation.valid) {
-      console.error(`[Executor][V2.0] 參數驗證失敗:`, validation.errors);
-      return {
-        status: "rejected",
-        message: `策略參數驗證失敗: ${validation.errors.join("; ")}`,
-      };
-    }
-    if (validation.warnings.length > 0) {
-      console.warn(`[Executor][V2.0] 參數警告:`, validation.warnings);
-    }
+  const martinState = strategy.martinState && typeof strategy.martinState === "object"
+    ? strategy.martinState as Record<string, unknown>
+    : {};
+  const rawConfig = getBoundStrategyConfig(martinState, RAINBOW_20415_STRATEGY_KEY)
+    ?? martinState.__v2_0Config
+    ?? {};
+  const validation = validateRainbow20415Config(rawConfig);
+  if (!validation.valid) {
+    return {
+      status: "rejected",
+      message: `20415 七彩虹參數校驗失敗：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`,
+    };
+  }
+  const config = validation.config;
+  const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+  const currentPrice = Number(signal.price) || 0;
+  const now = Date.now();
+  let account: Awaited<ReturnType<ExchangeAdapter["getBalance"]>> | undefined;
+  try {
+    account = await adapter.getBalance();
+  } catch (error: any) {
+    console.warn(`[Executor][20415] 真實帳戶資料取得失敗：${error.message}`);
   }
 
-  const instance = {
-    id: strategy.id,
-    symbol: strategy.symbol,
-    direction: strategy.direction as "long" | "short" | "both",
-    positionSize: parseFloat(strategy.positionSize ?? '0'),
-    leverage: strategy.leverage,
-    config: mergedCfg,
-    state,
-  };
+  let action: Rainbow20415CoreAction;
+  let orderSize: Rainbow20415BaseLot | undefined;
+  let targetLayer: number | undefined;
+  let closeReason: Rainbow20415CloseReason | undefined;
+  let decisionReason = signal.reason || "外部指令";
 
-  const engineSignal = {
-    action: (signal.action === "buy" ? "BUY" : signal.action === "sell" ? "SELL" : "CLOSE") as
-      | "BUY"
-      | "SELL"
-      | "CLOSE",
-    symbol: signal.symbol || strategy.symbol,
-    price: signal.price ?? 0,
-    barTimestamp: signal.barTimestamp,
-  };
-
-  // === 1. Bar-Lock 查詢（僅限初始開倉）===
-  // 改為「只查詢不鎖定」，下單成功後才真正鎖定
-  if (engineSignal.action !== "CLOSE" && state.currentLayer === 0 && signal.barTimestamp) {
-    const { checkBarLock: checkBarLockV20 } = await import("./barLock");
-    const isLocked = await checkBarLockV20(strategy.id, signal.barTimestamp);
-    if (isLocked) {
+  if (signal.rainbow20415Decision === true && signal.rainbow20415Action) {
+    action = signal.rainbow20415Action;
+    orderSize = signal.rainbow20415OrderSize;
+    targetLayer = signal.rainbow20415LayerNum;
+    closeReason = signal.rainbow20415CloseReason;
+  } else if (signal.action === "close") {
+    action = "close";
+    closeReason = "MANUAL";
+    decisionReason = signal.reason || "手動／Webhook 平倉";
+  } else if (!hasPosition) {
+    action = signal.action === "buy" ? "buy" : "sell";
+    orderSize = { ...config.Base_Lot_Size };
+    targetLayer = 1;
+    decisionReason = signal.reason || `手動／Webhook ${action === "buy" ? "做多" : "做空"}底倉`;
+  } else {
+    const expectedBuy = state.isLong;
+    if ((signal.action === "buy") !== expectedBuy) {
       return {
         status: "skipped",
-        message: `Bar-Lock 攔截：K 線 ${signal.barTimestamp} 已成功開倉過（重複信號防禦）`,
+        message: `20415 盲人模式拒絕反向指令：目前為${state.isLong ? "多" : "空"}倉 L${state.currentLayer}`,
       };
+    }
+    const management = evaluateRainbow20415Management(
+      {
+        currentPrice,
+        now,
+        account: account ? { equity: account.total, balance: account.total, usedMargin: account.usedMargin } : undefined,
+      },
+      state,
+      config,
+    );
+    if (management.action !== "add_long" && management.action !== "add_short") {
+      return { status: "skipped", message: `20415 盲人模式未授權加倉：${management.reason}` };
+    }
+    action = management.action;
+    orderSize = management.orderSize;
+    targetLayer = management.layerNum;
+    decisionReason = management.reason;
+  }
+
+  // 在執行瞬間重新檢查持倉風控，避免生成信號後至下單前帳戶狀態變化。
+  if (hasPosition && action !== "close") {
+    const management = evaluateRainbow20415Management(
+      {
+        currentPrice,
+        now,
+        account: account ? { equity: account.total, balance: account.total, usedMargin: account.usedMargin } : undefined,
+      },
+      state,
+      config,
+    );
+    if (management.action === "close") {
+      action = "close";
+      closeReason = management.closeReason;
+      decisionReason = management.reason;
+    } else if (management.action !== "add_long" && management.action !== "add_short") {
+      return { status: "skipped", message: `20415 執行前風控取消加倉：${management.reason}` };
+    } else {
+      action = management.action;
+      orderSize = management.orderSize;
+      targetLayer = management.layerNum;
+      decisionReason = management.reason;
     }
   }
 
-  // === 1b. 停用方向轉換：EMA 交叉時持倉不動，只有 CLOSE 信號才平倉 ===
-  // 當已有持倉且收到反向信號時，直接忽略（不平倉、不轉向）
-  const isDirectionReverse = (
-    (state.currentLayer > 0 && state.isLong && engineSignal.action === "SELL") ||
-    (state.currentLayer > 0 && !state.isLong && engineSignal.action === "BUY")
-  );
-  if (isDirectionReverse) {
+  if (action === "hold") {
+    return { status: "skipped", message: `20415 七彩虹觀望：${decisionReason}` };
+  }
+
+  if (action === "close") {
+    if (!hasPosition) return { status: "skipped", message: "20415 無本地持倉可平倉" };
+    const result = await adapter.closePositionSmart(strategy.symbol, state.isLong ? "long" : "short");
+    if (!result.success) {
+      return { status: "failed", message: result.errorMessage || "20415 平倉失敗", exchangeResponse: result.rawResponse };
+    }
+    const exitPrice = result.filledPrice || currentPrice;
+    const pnl = exitPrice > 0
+      ? (exitPrice - state.avgPrice) * state.totalSize * (state.isLong ? 1 : -1)
+      : undefined;
+    await createTrade({
+      strategyId: strategy.id,
+      userId: strategy.userId,
+      signalId,
+      exchange: strategy.exchange,
+      symbol: strategy.symbol,
+      side: state.isLong ? "sell" : "buy",
+      orderType: "market",
+      orderId: result.orderId,
+      size: String(state.totalSize),
+      price: exitPrice > 0 ? String(exitPrice) : undefined,
+      realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
+      reduceOnly: true,
+      status: "filled",
+      triggerSource: "webhook",
+    });
+    const resolvedCloseReason = closeReason ?? "MANUAL";
+    const nextState = applyRainbow20415CloseToState(state, resolvedCloseReason, config, now);
+    await saveStrategyState(strategy.id, nextState);
+    try {
+      const { releaseAllLocks } = await import("./barLock");
+      await releaseAllLocks(strategy.id);
+    } catch (error: any) {
+      console.warn(`[Executor][20415] 清除 Bar-Lock 失敗：${error.message}`);
+    }
     return {
-      status: "skipped",
-      message: `已停用方向轉換：當前持倉 ${state.isLong ? "多" : "空"} 第 ${state.currentLayer} 層，收到反向信號但不執行，等待 DollarAmount 止盈或止損觸發`,
+      status: "executed",
+      message: `[20415 七彩虹平倉] ${decisionReason}${config.Reentry_Enabled ? `；${config.Reentry_Cooldown_Minutes} 分鐘後重判七線` : ""}`,
+      orderId: result.orderId,
+      exchangeResponse: result.rawResponse,
     };
   }
 
-  // === 2. 策略決策（v2.0 generateActions）===
-  const marketData = {
-    lastPrice: signal.price ?? 0,
-  };
-  const decision = engine.generateActions(
-    engineSignal,
-    instance,
-    marketData,
-    state,
-  );
-
-  if (decision.action === "HOLD") {
-    return { status: "skipped", message: `V2.0 覺望：${decision.reason || "HOLD"}` };
+  const isInitial = action === "buy" || action === "sell";
+  const isLong = action === "buy" || action === "add_long";
+  if (isInitial && hasPosition) return { status: "skipped", message: "20415 已有持倉，禁止重複底倉" };
+  if (!isInitial && !hasPosition) return { status: "skipped", message: "20415 無底倉，禁止直接加倉" };
+  if (isLong && strategy.direction === "short") return { status: "skipped", message: "策略僅允許做空" };
+  if (!isLong && strategy.direction === "long") return { status: "skipped", message: "策略僅允許做多" };
+  if (!orderSize || !(orderSize.value > 0) || !(currentPrice > 0)) {
+    return { status: "rejected", message: "20415 下單價格或倉位配置無效" };
   }
 
-  // === 3. 平倉 ===
-  if (decision.action === "CLOSE_ALL") {
-    const closePosSideV20 = state.isLong ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSideV20);
-    if (result.success) {
-      // 計算 realizedPnl
-      const exitPriceV20 = result.filledPrice || 0;
-      const dirMultV20 = state.isLong ? 1 : -1;
-      const pnlV20 = (exitPriceV20 > 0 && state.avgPrice > 0 && state.totalSize > 0)
-        ? (exitPriceV20 - state.avgPrice) * state.totalSize * dirMultV20
-        : undefined;
-      await createTrade({
-        strategyId: strategy.id,
-        userId: strategy.userId,
-        signalId,
-        exchange: strategy.exchange,
-        symbol: strategy.symbol,
-        side: state.isLong ? "sell" : "buy",
-        orderType: "market",
-        orderId: result.orderId,
-        size: String(state.totalSize || 0),
-        price: exitPriceV20 > 0 ? String(exitPriceV20) : undefined,
-        realizedPnl: pnlV20 !== undefined ? String(pnlV20.toFixed(6)) : undefined,
-        reduceOnly: true,
-        status: "filled",
-        triggerSource: "webhook",
-      });
-      // 平倉後：分流判斷
-      // 優先級：循環再入場 > 馬丁解套冷卻
-      const wasMartin = state.currentLayer > 1;
-      const kLinePeriod = Number(mergedCfg.K_Line_Period) || 30;
-      const reentryEnabled = mergedCfg.Reentry_Enabled === true || mergedCfg.Reentry_Enabled === "true";
-      const reentryCooldownBars = Number(mergedCfg.Reentry_Cooldown_Bars) || 1;
-      const newState = createInitialStrategyState();
-
-      if (reentryEnabled) {
-        // 循環再入場：設定冷卻期，在下一次信號時檢查是否滿足入場條件
-        if (reentryCooldownBars > 0) {
-          newState.isCooldown = true;
-          newState.cooldownUntil = Date.now() + reentryCooldownBars * kLinePeriod * 60 * 1000;
-        }
-        // 如果冷卻為 0，不設置冷卻期，下一次信號即可重入
-      } else if (wasMartin) {
-        // 馬丁解套冷卻（未啟用循環再入場時）
-        newState.isCooldown = true;
-        newState.cooldownUntil = Date.now() + kLinePeriod * 2 * 60 * 1000;
-      }
-      // 不再保留 lockedBarTimestamp，平倉後應允許重新開倉
-      await saveStrategyState(strategy.id, newState);
-      // 清除 Bar-Lock 記錄，允許下次輪詢重新開倉
-      try {
-        const { releaseAllLocks: releaseAllLocksV20 } = await import("./barLock");
-        await releaseAllLocksV20(strategy.id);
-      } catch (e: any) {
-        console.warn(`[Executor][V2.0] 清除 Bar-Lock 失敗：${e.message}`);
-      }
-      return {
-        status: "executed",
-        message: `V2.0 平倉完成${reentryEnabled ? `（循環再入場已啟用，冷卻 ${reentryCooldownBars} 根 K 線）` : wasMartin ? `（馬丁解套，進入冷卻期 ${kLinePeriod * 2} 分鐘）` : ""}`,
-        orderId: result.orderId,
-        exchangeResponse: result.rawResponse,
-      };
-    }
-    return { status: "failed", message: result.errorMessage || "V2.0 平倉失敗", exchangeResponse: result.rawResponse };
-  }
-
-  // === 4. 開倉/加倉（OPEN_LONG / OPEN_SHORT）===
-  const isLong = decision.action === "OPEN_LONG";
-  const entryPrice = signal.price ?? 0;
-
-  // 方向限制檢查
-  if (isLong && strategy.direction === "short") {
-    return { status: "skipped", message: "策略僅允許做空，忽略做多訊號" };
-  }
-  if (!isLong && strategy.direction === "long") {
-    return { status: "skipped", message: "策略僅允許做多，忽略做空訊號" };
-  }
-
-  // === 4a. 動態風控：持倉比例 + 權益回撤檢查 ===
-  const maxPosRatio = Number(mergedCfg.Max_Position_Ratio) || 0;
-  const maxEquityDD = Number(mergedCfg.Max_Equity_Drawdown) || 0;
-  if ((maxPosRatio > 0 || maxEquityDD > 0) && entryPrice > 0) {
-    try {
-      const balance = await adapter.getBalance();
-      const currentEquity = balance.total;
-      // 持倉比例檢查：名義持倉總值 ≤ 權益 × maxPosRatio
-      if (maxPosRatio > 0) {
-        const orderNotional = decision.lotSize * entryPrice;
-        const existingNotional = (state.currentLayer > 0 && state.avgPrice > 0)
-          ? state.totalSize * entryPrice
-          : 0;
-        const maxAllowed = currentEquity * maxPosRatio;
-        if ((existingNotional + orderNotional) > maxAllowed && maxAllowed > 0) {
-          return {
-            status: "rejected",
-            message: `持倉比例超限：現有 $${existingNotional.toFixed(0)} + 新單 $${orderNotional.toFixed(0)} > 上限 $${maxAllowed.toFixed(0)}（${(maxPosRatio * 100).toFixed(0)}%）`,
-          };
-        }
-      }
-      // 權益回撤檢查：從峰值回撤超過 maxEquityDD 時拒絕開倉
-      if (maxEquityDD > 0) {
-        const peakEquity = Number(state.peakEquity) || currentEquity;
-        // 更新峰值
-        if (currentEquity > peakEquity) {
-          state.peakEquity = currentEquity;
-        }
-        const drawdown = peakEquity > 0 ? (peakEquity - currentEquity) / peakEquity : 0;
-        if (drawdown >= maxEquityDD) {
-          return {
-            status: "rejected",
-            message: `權益回撤止損觸發：回撤 ${(drawdown * 100).toFixed(2)}% ≥ ${(maxEquityDD * 100).toFixed(0)}%（峰值 $${peakEquity.toFixed(0)}，當前 $${currentEquity.toFixed(0)}）`,
-          };
-        }
-      }
-    } catch (e: any) {
-      console.warn(`[Executor][V2.0] 動態風控檢查失敗（保守放行）: ${e.message}`);
+  if (isInitial && signal.barTimestamp) {
+    const { checkBarLock } = await import("./barLock");
+    if (await checkBarLock(strategy.id, signal.barTimestamp)) {
+      return { status: "skipped", message: `20415 Bar-Lock 攔截：M30 K 線 ${signal.barTimestamp} 已成交` };
     }
   }
+  if (!isInitial && account?.usedMargin == null) {
+    return { status: "rejected", message: "20415 缺少交易所真實已用保證金，安全封鎖加倉" };
+  }
 
-  // 數量正規化
-  let v20Size = decision.lotSize;
+  let quantity = orderSize.mode === "usdt" ? orderSize.value / currentPrice : orderSize.value;
   try {
-    const norm = await normalizeQtyForSymbol(strategy.exchange, strategy.symbol, v20Size, "linear");
-    if (norm.rejected) {
-      return { status: "rejected", message: `下單數量不符交易所規格：${norm.reason}` };
+    const normalized = await normalizeQtyForSymbol(strategy.exchange, strategy.symbol, quantity, "linear");
+    if (normalized.rejected) {
+      return { status: "rejected", message: `20415 下單數量不符交易所規格：${normalized.reason}` };
     }
-    if (norm.adjusted) {
-      console.log(`[Executor][V2.0] 數量已依規格校正：${norm.reason}`);
-      v20Size = norm.qty;
-    }
-  } catch (e: any) {
-    console.warn(`[Executor][V2.0] 規格正規化跳過：${e.message}`);
+    quantity = normalized.qty;
+    if (normalized.adjusted) console.log(`[Executor][20415] 數量校正：${normalized.reason}`);
+  } catch (error: any) {
+    console.warn(`[Executor][20415] 交易所規格查詢失敗，沿用原量：${error.message}`);
   }
-  decision.lotSize = v20Size;
 
   const orderResult = await adapter.placeOrder({
     symbol: strategy.symbol,
     side: isLong ? "buy" : "sell",
     orderType: "market",
-    size: decision.lotSize,
+    size: quantity,
     leverage: strategy.leverage,
   });
-
   await createTrade({
     strategyId: strategy.id,
     userId: strategy.userId,
@@ -701,84 +660,38 @@ async function executeSignalV20(
     side: isLong ? "buy" : "sell",
     orderType: "market",
     orderId: orderResult.orderId,
-    size: String(decision.lotSize),
-    price: entryPrice > 0 ? String(entryPrice) : undefined,
+    size: String(quantity),
+    price: String(currentPrice),
     status: orderResult.success ? "filled" : "failed",
     triggerSource: "webhook",
   });
-
   if (!orderResult.success) {
-    console.log(`[Executor][V2.0] 下單失敗，Bar-Lock 未鎖定，下次可重試: ${orderResult.errorMessage}`);
     return {
       status: "failed",
-      message: orderResult.errorMessage || "V2.0 下單失敗",
+      message: orderResult.errorMessage || "20415 下單失敗；狀態與 Bar-Lock 未推進",
       exchangeResponse: orderResult.rawResponse,
     };
   }
 
-  // 下單成功後才鎖定 Bar-Lock（確保只有真正成功的交易才會被鎖）
-  if (signal.barTimestamp && state.currentLayer === 0) {
-    const kLinePeriodForLock = Number(mergedCfg.K_Line_Period) || 30;
-    await acquireBarLock(strategy.id, signal.barTimestamp, kLinePeriodForLock);
-    console.log(`[Executor][V2.0] 下單成功，Bar-Lock 已鎖定 K 線 ${signal.barTimestamp}`);
+  const fillPrice = orderResult.filledPrice ?? currentPrice;
+  const fillQuantity = orderResult.filledSize ?? quantity;
+  const fillAction = action as "buy" | "sell" | "add_long" | "add_short";
+  const nextState = applyRainbow20415FillToState(state, {
+    action: fillAction,
+    fillPrice,
+    fillQuantity,
+    timestamp: now,
+    barTimestamp: signal.barTimestamp,
+    targetLayer,
+    accountEquity: account?.total,
+  });
+  await saveStrategyState(strategy.id, nextState);
+  if (isInitial && signal.barTimestamp) {
+    await acquireBarLock(strategy.id, signal.barTimestamp, config.Entry_Timeframe_Minutes);
   }
-
-  // === 5. 馬丁引擎狀態更新（EMA 均線回歸馬丁格爾）===
-  // 使用新 EMA 馬丁參數：multiplier / max_layers
-  const emaMultiplier = Number(mergedCfg.multiplier) || 1.5;
-  const emaMaxLayers = Number(mergedCfg.max_layers) || 12;
-  // 計算 baseLot（支持 USDT/quantity 雙模式）
-  let emaBaseLot: number;
-  const baseLotRaw = mergedCfg.Base_Lot_Size;
-  if (baseLotRaw && typeof baseLotRaw === 'object' && 'value' in (baseLotRaw as any)) {
-    const obj = baseLotRaw as unknown as { value: number; mode: string };
-    if (obj.mode === 'usdt' && entryPrice > 0) {
-      emaBaseLot = obj.value / entryPrice;
-    } else {
-      emaBaseLot = obj.value;
-    }
-  } else if (String(mergedCfg.Position_Mode) === 'usdt' && entryPrice > 0) {
-    emaBaseLot = (Number(mergedCfg.Position_Value) || Number(baseLotRaw) || 0.01) / entryPrice;
-  } else {
-    emaBaseLot = Number(baseLotRaw) || 0.01;
-  }
-  const martinEngine = new MartingaleEngine(
-    {
-      baseLot: emaBaseLot,
-      multiplier: emaMultiplier,
-      stepPct: 0, // 實盤中加倉由信號觸發，不用 stepPct
-      maxLayers: emaMaxLayers,
-      martinLayers: null,
-    },
-    state,
-  );
-  // 使用實際成交數據（若有）替代理論值，確保與交易所數據一致
-  const actualExecutedSizeV20 = decision.lotSize;
-  const realSizeV20 = orderResult.filledSize ?? actualExecutedSizeV20;
-  const realPriceV20 = orderResult.filledPrice ?? (entryPrice || 0);
-  const { newState } = martinEngine.addLayer(realPriceV20, isLong);
-  // 雙重保障：確保 totalSize 用實際成交數量累加
-  newState.totalSize = parseFloat((state.totalSize + realSizeV20).toPrecision(12));
-  newState.totalCost = state.totalCost + (realSizeV20 * realPriceV20);
-  if (newState.totalSize > 0) {
-    newState.avgPrice = newState.totalCost / newState.totalSize;
-  }
-  if (orderResult.filledPrice) {
-    console.log(`[Executor][V2.0] 使用實際成交數據: 價=${realPriceV20}, 量=${realSizeV20}`);
-  }
-  if (signal.barTimestamp) {
-    newState.lockedBarTimestamp = signal.barTimestamp;
-  }
-  // 記錄加倉時間（供日誌追蹤）
-  if (newState.currentLayer > 1) {
-    newState.lastAddLayerTime = Date.now();
-  }
-  await saveStrategyState(strategy.id, newState);
-
-  const actionLabelV20 = newState.currentLayer === 1 ? "首單開倉" : `加倉第${newState.currentLayer}層`;
   return {
     status: "executed",
-    message: `[${actionLabelV20}] V2.0 ${isLong ? "買入" : "賣出"} ${decision.lotSize} ${strategy.symbol} 成功（第 ${newState.currentLayer} 層，均價 ${newState.avgPrice.toFixed(2)}）${decision.reason ? ` - ${decision.reason}` : ""}`,
+    message: `[20415 七彩虹${isInitial ? "底倉" : `加倉 L${nextState.currentLayer}`}] ${isLong ? "買入" : "賣出"} ${fillQuantity} ${strategy.symbol} @ ${fillPrice}；均價 ${nextState.avgPrice.toFixed(4)}；${decisionReason}`,
     orderId: orderResult.orderId,
     exchangeResponse: orderResult.rawResponse,
   };

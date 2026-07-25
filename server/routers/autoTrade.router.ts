@@ -389,6 +389,7 @@ export const autoTradeRouter = router({
         // Execute trade (same logic as Heartbeat endpoint)
         const { executeSignal } = await import("../services/executor");
         const parsedSignal = {
+          ...signal,
           action: signal.action as "buy" | "sell" | "close",
           symbol: strategy.symbol,
           price: signal.price,

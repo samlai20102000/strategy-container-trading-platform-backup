@@ -36,11 +36,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Star, Trash2, Play, Eye, Database, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
+import {
+  RAINBOW_20415_STRATEGY_KEY,
+  normalizeRainbow20415Config,
+} from "@shared/strategies/rainbow20415";
 
 export default function ParameterSnapshots() {
   const [sortBy, setSortBy] = useState<"totalReturn" | "winRate" | "sharpeRatio" | "createdAt">("createdAt");
   const [filterStrategy, setFilterStrategy] = useState<string>("all");
   const [viewConfig, setViewConfig] = useState<Record<string, unknown> | null>(null);
+  const [viewStrategyKey, setViewStrategyKey] = useState<string | null>(null);
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [targetStrategyId, setTargetStrategyId] = useState<string>("");
@@ -286,7 +292,10 @@ export default function ParameterSnapshots() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => setViewConfig(s.config)}
+                              onClick={() => {
+                                setViewConfig(s.config);
+                                setViewStrategyKey(s.strategyKey);
+                              }}
                               title="查看參數"
                             >
                               <Eye className="w-4 h-4" />
@@ -312,11 +321,15 @@ export default function ParameterSnapshots() {
                         setSelectedSnapshotId(s.id);
                         const bs = s.backtestSettings as any | null;
                         const cfg = s.config as Record<string, any> || {};
+                        const rainbowConfig = s.strategyKey === RAINBOW_20415_STRATEGY_KEY
+                          ? normalizeRainbow20415Config(cfg)
+                          : null;
                         setImportForm(prev => ({
                           ...prev,
                           name: `${s.snapshotName || '快照'}_副本`,
                           symbol: (bs?.symbol || cfg.symbol || cfg.Symbol || prev.symbol).replace(/-/g, '').toUpperCase(),
-                          positionSize: String(bs?.baseLotSize || bs?.tradeAmount || cfg.Base_Lot_Size || prev.positionSize),
+                          positionSize: String(bs?.baseLotSize ?? bs?.tradeAmount ?? rainbowConfig?.Base_Lot_Size.value ?? cfg.Base_Lot_Size ?? prev.positionSize),
+                          positionMode: rainbowConfig?.Base_Lot_Size.mode ?? prev.positionMode,
                           leverage: String(cfg.leverage || prev.leverage),
                         }));
                         setImportDialogOpen(true);
@@ -347,14 +360,23 @@ export default function ParameterSnapshots() {
         </Card>
 
         {/* 查看參數 Dialog */}
-        <Dialog open={!!viewConfig} onOpenChange={() => setViewConfig(null)}>
-          <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+        <Dialog open={!!viewConfig} onOpenChange={(open) => {
+          if (!open) {
+            setViewConfig(null);
+            setViewStrategyKey(null);
+          }
+        }}>
+          <DialogContent className="max-h-[86vh] max-w-[calc(100vw-1rem)] overflow-y-auto sm:max-w-5xl">
             <DialogHeader>
               <DialogTitle>參數詳情</DialogTitle>
             </DialogHeader>
-            <pre className="bg-muted p-4 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
-              {viewConfig ? JSON.stringify(viewConfig, null, 2) : ""}
-            </pre>
+            {viewConfig && viewStrategyKey === RAINBOW_20415_STRATEGY_KEY ? (
+              <Rainbow20415ConfigPanel value={viewConfig} onChange={() => undefined} disabled context="snapshot" />
+            ) : (
+              <pre className="bg-muted p-4 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+                {viewConfig ? JSON.stringify(viewConfig, null, 2) : ""}
+              </pre>
+            )}
           </DialogContent>
         </Dialog>
 

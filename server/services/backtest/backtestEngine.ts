@@ -31,6 +31,7 @@ import { validateAndProcessMartinConfig } from "../parameterValidator";
 import { decideCloseSplit } from "../kamaReversalGuard";
 import type { BaseStrategy, MartinState, StrategyInstanceConfig } from "../../strategies/base";
 import { StrategyKama3kBreakoutV25 } from "../../strategies/v25/strategy_kama_3k_breakout_v25";
+import { Strategy20415 } from "../../strategies/builtin/strategy20415";
 import {
   applyV25CloseToState,
   applyV25FillToState,
@@ -39,6 +40,19 @@ import {
   type V25RuntimeState,
 } from "../../strategies/v25/core";
 import { V25_STRATEGY_KEY } from "../../../shared/strategies/kama3kBreakoutV25";
+import {
+  applyRainbow20415CloseToState,
+  applyRainbow20415FillToState,
+  createRainbow20415RuntimeState,
+  evaluateRainbow20415Decision,
+  evaluateRainbow20415Management,
+  type Rainbow20415CoreDecision,
+  type Rainbow20415RuntimeState,
+} from "../../strategies/rainbow20415/core";
+import {
+  assertValidRainbow20415Config,
+  RAINBOW_20415_STRATEGY_KEY,
+} from "../../../shared/strategies/rainbow20415";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -152,6 +166,7 @@ export class BacktestEngine {
     const isV61 = request.strategyKey === "KAMA_3K_HF_V61";
     const isV70 = request.strategyKey === "KAMA_3K_TORNADO_V70";
     const isV25 = request.strategyKey === V25_STRATEGY_KEY;
+    const isRainbow20415 = request.strategyKey === RAINBOW_20415_STRATEGY_KEY;
 
     // 合併策略默認配置（與實盤 resolveConfig 邏輯一致，依選中策略的 defaultConfig）
     const config: Record<string, unknown> = {
@@ -189,6 +204,24 @@ export class BacktestEngine {
     if (candles.length < 120) {
       throw new Error(
         `歷史數據不足（僅 ${candles.length} 根 K 線），至少需要 120 根。請縮短時間框架或調整日期區間。`,
+      );
+    }
+
+    // 20415 七彩虹：M1 管理 + 已收盤 M30 七線掃描，逐步調用與實盤相同的純核心。
+    if (isRainbow20415) {
+      if (!(strategy instanceof Strategy20415)) {
+        throw new Error("20415 七彩虹回測引擎類型不一致");
+      }
+      return this.runRainbow20415Backtest(
+        request,
+        strategy,
+        config,
+        candles,
+        startMs,
+        endMs,
+        commission,
+        slippage,
+        onProgress,
       );
     }
 
@@ -783,6 +816,357 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment: envSnapshotV35,
+    };
+  }
+
+  /**
+   * 20415 七彩虹專用同源回測。
+   *
+   * 輸入資料必須是管理週期（預設 M1）；引擎只在 M30 完整收盤後把聚合 Bar
+   * 交給七線核心，持倉期間則每根 M1 以模擬權益與已用保證金執行盲人管理。
+   */
+  private runRainbow20415Backtest(
+    request: BacktestRequest,
+    strategy: Strategy20415,
+    rawConfig: Record<string, unknown>,
+    candles: OHLCVRow[],
+    startMs: number,
+    endMs: number,
+    commission: number,
+    slippage: number,
+    onProgress?: (pct: number, message: string) => void,
+  ): BacktestResult {
+    const config = assertValidRainbow20415Config(rawConfig);
+    const expectedTimeframe = config.Management_Interval_Minutes % 60 === 0
+      ? `${config.Management_Interval_Minutes / 60}h`
+      : `${config.Management_Interval_Minutes}m`;
+    const entryTimeframeLabel = config.Entry_Timeframe_Minutes % 60 === 0
+      ? `${config.Entry_Timeframe_Minutes / 60}h`
+      : `${config.Entry_Timeframe_Minutes}m`;
+    if (request.timeframe.toLowerCase() !== expectedTimeframe.toLowerCase()) {
+      throw new Error(
+        `20415 七彩虹回測必須使用 ${expectedTimeframe} 管理週期，才能逐段模擬止盈、階梯與三道風控；${entryTimeframeLabel} 入場由引擎內部聚合。`,
+      );
+    }
+
+    type EntryCandle = {
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+      timestamp: number;
+    };
+
+    const trades: TradeRecord[] = [];
+    const equityCurve: EquityPoint[] = [];
+    let equity = request.initialCapital;
+    let tradeId = 0;
+    let state: Rainbow20415RuntimeState = createRainbow20415RuntimeState({
+      capital: request.initialCapital,
+    });
+    let positionMeta: {
+      side: "long" | "short";
+      entryTime: number;
+      layers: PositionLayer[];
+    } | null = null;
+
+    const entryFrameMs = config.Entry_Timeframe_Minutes * 60_000;
+    const requiredEntryBars = Math.max(...config.Lines.map((line) => line.period)) + 1;
+    const closedEntryCandles: EntryCandle[] = [];
+    let activeBucketStart = -1;
+    let activeBucket: EntryCandle | null = null;
+    let latestEntryBarClosed = false;
+
+    const directionValue = String(
+      rawConfig.Trade_Direction ?? rawConfig.Direction_Mode ?? rawConfig.directionMode ?? "both",
+    ).toLowerCase();
+    const allowedDirection: "long" | "short" | "both" =
+      directionValue === "long" || directionValue === "short" ? directionValue : "both";
+
+    const simulatedAccount = (price: number) => {
+      const active = positionMeta as {
+        side: "long" | "short";
+        entryTime: number;
+        layers: PositionLayer[];
+      } | null;
+      const unrealizedPnl = active && state.totalSize > 0
+        ? active.side === "long"
+          ? (price - state.avgPrice) * state.totalSize
+          : (state.avgPrice - price) * state.totalSize
+        : 0;
+      const markEquity = Math.max(0.00000001, equity + unrealizedPnl);
+      const usedMargin = state.totalCost > 0 ? state.totalCost : 0;
+      return {
+        equity: markEquity,
+        balance: equity,
+        usedMargin,
+        marginUsagePct: (usedMargin / markEquity) * 100,
+      };
+    };
+
+    const updateEntryAggregation = (candle: OHLCVRow): void => {
+      latestEntryBarClosed = false;
+      const bucketStart = Math.floor(candle.timestamp / entryFrameMs) * entryFrameMs;
+      if (!activeBucket || bucketStart !== activeBucketStart) {
+        if (activeBucket) {
+          closedEntryCandles.push(activeBucket);
+          latestEntryBarClosed = true;
+        }
+        activeBucketStart = bucketStart;
+        activeBucket = {
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          volume: candle.volume,
+          timestamp: bucketStart,
+        };
+        return;
+      }
+      activeBucket.high = Math.max(activeBucket.high, candle.high);
+      activeBucket.low = Math.min(activeBucket.low, candle.low);
+      activeBucket.close = candle.close;
+      activeBucket.volume += candle.volume;
+    };
+
+    const quantityForDecision = (
+      decision: Rainbow20415CoreDecision,
+      fillPrice: number,
+    ): number => {
+      const orderSize = decision.orderSize ?? config.Base_Lot_Size;
+      return orderSize.mode === "usdt" ? orderSize.value / fillPrice : orderSize.value;
+    };
+
+    const applyEntryOrAdd = (
+      decision: Rainbow20415CoreDecision,
+      timestamp: number,
+    ): void => {
+      if (!["buy", "sell", "add_long", "add_short"].includes(decision.action)) return;
+      const isLong = decision.action === "buy" || decision.action === "add_long";
+      const isInitial = decision.action === "buy" || decision.action === "sell";
+      const fillPrice = isLong
+        ? decision.price * (1 + slippage)
+        : decision.price * (1 - slippage);
+      const quantity = quantityForDecision(decision, fillPrice);
+      if (!(fillPrice > 0) || !(quantity > 0) || !Number.isFinite(quantity)) return;
+      const account = simulatedAccount(fillPrice);
+      const barTimestamp = decision.metrics.mode === "SCAN"
+        ? decision.metrics.lines.barTimestamp
+        : undefined;
+      state = applyRainbow20415FillToState(decision.nextState, {
+        action: decision.action as "buy" | "sell" | "add_long" | "add_short",
+        fillPrice,
+        fillQuantity: quantity,
+        timestamp,
+        barTimestamp,
+        targetLayer: decision.layerNum,
+        accountEquity: account.equity,
+      });
+      if (isInitial || !positionMeta) {
+        positionMeta = {
+          side: isLong ? "long" : "short",
+          entryTime: timestamp,
+          layers: [{ price: fillPrice, size: quantity, time: timestamp }],
+        };
+      } else {
+        positionMeta.layers.push({ price: fillPrice, size: quantity, time: timestamp });
+      }
+    };
+
+    const applyClose = (
+      decision: Rainbow20415CoreDecision,
+      timestamp: number,
+      forcedReason?: string,
+    ): void => {
+      const meta = positionMeta;
+      if (!meta || state.totalSize <= 0 || state.avgPrice <= 0) return;
+      const effectiveExitPrice = meta.side === "long"
+        ? decision.price * (1 - slippage)
+        : decision.price * (1 + slippage);
+      const grossPnl = meta.side === "long"
+        ? (effectiveExitPrice - state.avgPrice) * state.totalSize
+        : (state.avgPrice - effectiveExitPrice) * state.totalSize;
+      const entryNotional = meta.layers.reduce(
+        (sum, layer) => sum + layer.price * layer.size,
+        0,
+      );
+      const fees = (entryNotional + effectiveExitPrice * state.totalSize) * commission;
+      const pnl = grossPnl - fees;
+      const pnlPct = state.avgPrice > 0
+        ? (grossPnl / (state.avgPrice * state.totalSize)) * 100
+        : 0;
+      equity += pnl;
+      trades.push({
+        id: ++tradeId,
+        entryTime: meta.entryTime,
+        exitTime: timestamp,
+        side: meta.side,
+        entryPrice: Math.round(state.avgPrice * 100) / 100,
+        exitPrice: Math.round(effectiveExitPrice * 100) / 100,
+        size: state.totalSize,
+        pnl: Math.round(pnl * 100) / 100,
+        pnlPct: Math.round(pnlPct * 100) / 100,
+        exitReason: forcedReason ?? decision.reason,
+        martinLayer: Math.max(0, state.currentLayer - 1),
+      });
+      state = applyRainbow20415CloseToState(
+        decision.nextState,
+        decision.closeReason ?? "OTHER",
+        config,
+        timestamp,
+      );
+      positionMeta = null;
+    };
+
+    onProgress?.(
+      35,
+      `數據就緒（${candles.length} 根 ${expectedTimeframe}），啟動 20415 七彩虹 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
+    );
+    const first = candles[0];
+    equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
+
+    for (let index = 0; index < candles.length; index += 1) {
+      const candle = candles[index];
+      updateEntryAggregation(candle);
+      const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+      let decision: Rainbow20415CoreDecision | null = null;
+
+      if (hasPosition) {
+        decision = evaluateRainbow20415Decision(closedEntryCandles, state, config, {
+          allowedDirection,
+          now: candle.timestamp,
+          currentPrice: candle.close,
+          account: simulatedAccount(candle.close),
+        });
+      } else if (latestEntryBarClosed) {
+        decision = evaluateRainbow20415Decision(closedEntryCandles, state, config, {
+          allowedDirection,
+          now: candle.timestamp,
+          currentPrice: candle.close,
+          account: simulatedAccount(candle.close),
+        });
+      }
+
+      if (decision) {
+        if (decision.action === "hold") {
+          state = decision.nextState;
+        } else if (decision.action === "close") {
+          applyClose(decision, candle.timestamp);
+          if (state.rainbow20415Runtime?.pendingReentry && closedEntryCandles.length >= requiredEntryBars) {
+            const reentry = evaluateRainbow20415Decision(closedEntryCandles, state, config, {
+              allowedDirection,
+              now: candle.timestamp,
+              currentPrice: candle.close,
+              account: simulatedAccount(candle.close),
+            });
+            if (reentry.action === "buy" || reentry.action === "sell") {
+              applyEntryOrAdd(reentry, candle.timestamp);
+            } else {
+              state = reentry.nextState;
+            }
+          }
+        } else {
+          applyEntryOrAdd(decision, candle.timestamp);
+        }
+      }
+
+      const active = positionMeta as {
+        side: "long" | "short";
+        entryTime: number;
+        layers: PositionLayer[];
+      } | null;
+      const unrealizedPnl = active && state.totalSize > 0
+        ? active.side === "long"
+          ? (candle.close - state.avgPrice) * state.totalSize
+          : (state.avgPrice - candle.close) * state.totalSize
+        : 0;
+      equityCurve.push({
+        timestamp: candle.timestamp,
+        equity: Math.round((equity + unrealizedPnl) * 100) / 100,
+        price: candle.close,
+      });
+
+      if (index > 0 && index % 2000 === 0) {
+        const progress = 35 + Math.floor((index / candles.length) * 60);
+        onProgress?.(
+          progress,
+          `20415 七彩虹同源回測 ${index}/${candles.length}（${entryTimeframeLabel} 已收盤 ${closedEntryCandles.length} 根）...`,
+        );
+      }
+    }
+
+    if (positionMeta) {
+      const last = candles[candles.length - 1];
+      const forcedDecision = evaluateRainbow20415Management(
+        { currentPrice: last.close, now: last.timestamp, account: simulatedAccount(last.close) },
+        state,
+        config,
+      );
+      applyClose(
+        { ...forcedDecision, action: "close", reason: "回測結束強制平倉", closeReason: "OTHER" },
+        last.timestamp,
+        "回測結束強制平倉",
+      );
+      equityCurve.push({
+        timestamp: last.timestamp,
+        equity: Math.round(equity * 100) / 100,
+        price: last.close,
+      });
+    }
+
+    onProgress?.(95, "計算 20415 七彩虹績效指標...");
+    const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
+    const runId = makeRunId(request.strategyKey, request.symbol);
+    const summary = `20415 七彩虹回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根管理 K 線、${closedEntryCandles.length} 根已收盤 ${entryTimeframeLabel}、${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
+
+    try {
+      const db = getBacktestDatabase();
+      db.saveBacktestResult(
+        {
+          run_id: runId,
+          strategy_key: request.strategyKey,
+          symbol: request.symbol,
+          timeframe: request.timeframe,
+          start_date: startMs,
+          end_date: endMs,
+          initial_capital: request.initialCapital,
+          config: JSON.stringify(config),
+          status: "completed",
+          created_at: Date.now(),
+        },
+        trades,
+      );
+      db.savePerformanceMetrics(runId, metrics, downsample(equityCurve, 2000));
+    } catch (error) {
+      console.warn("[Backtest 20415 七彩虹] 結果持久化失敗（不影響回傳）:", error);
+    }
+
+    const environment = buildEnvironmentSnapshot(
+      request.symbol,
+      request.timeframe,
+      startMs,
+      endMs,
+      candles.length,
+      request.initialCapital,
+      commission,
+      slippage,
+      1,
+      candles[0]?.close,
+      candles[candles.length - 1]?.close,
+    );
+    onProgress?.(100, summary);
+    return {
+      runId,
+      strategyKey: request.strategyKey,
+      strategyName: strategy.name,
+      trades,
+      metrics,
+      equityCurve: downsample(equityCurve, 2000),
+      config: { ...config },
+      summary,
+      candleCount: candles.length,
+      environment,
     };
   }
 

@@ -49,11 +49,19 @@ import DynamicForm from "@/components/DynamicForm";
 import type { SchemaConfig } from "@/components/DynamicForm";
 import { useBacktestWs } from "@/hooks/useBacktestWs";
 import { V25ConfigPanel } from "@/components/V25ConfigPanel";
+import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import {
   V25_STRATEGY_KEY,
   normalizeV25Config,
   validateV25Config,
 } from "@shared/strategies/kama3kBreakoutV25";
+import {
+  deriveRainbow20415FinalEnabledLayer,
+  formatRainbow20415Timeframe,
+  RAINBOW_20415_STRATEGY_KEY,
+  normalizeRainbow20415Config,
+  validateRainbow20415Config,
+} from "@shared/strategies/rainbow20415";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -144,8 +152,8 @@ export default function Backtest() {
     if (!strategyKey) return false;
     // KAMA V3.5 策略使用深度定制面板
     if (strategyKey === '20415_KAMA_MARTIN_V35') return false;
-    // strategy_20415 (EMATrendMartingale) 也使用深度定制面板
-    if (strategyKey === 'strategy_20415') return false;
+    // 20415 七彩虹使用共享契約驅動的專用軍規面板
+    if (strategyKey === RAINBOW_20415_STRATEGY_KEY) return false;
     // V6.1 高頻掃射策略使用深度定制面板（需要 V4.0 風格馬丁分層 UI）
     if (strategyKey === 'KAMA_3K_HF_V61') return false;
     // V2.5 使用共享參數契約驅動的專用面板
@@ -159,7 +167,9 @@ export default function Backtest() {
     if (selectedStrategy?.defaultConfig) {
       const nextConfig: Record<string, unknown> = strategyKey === V25_STRATEGY_KEY
         ? { ...normalizeV25Config(selectedStrategy.defaultConfig) }
-        : { ...selectedStrategy.defaultConfig };
+        : strategyKey === RAINBOW_20415_STRATEGY_KEY
+          ? { ...normalizeRainbow20415Config(selectedStrategy.defaultConfig) }
+          : { ...selectedStrategy.defaultConfig };
       setConfigJson(nextConfig);
       // 🔥 同步 initialCapital 與 configJson.Initial_Capital，避免參數衝突
       const ic = selectedStrategy.defaultConfig.Initial_Capital;
@@ -172,6 +182,11 @@ export default function Backtest() {
         setTradeAmount(String(bls));
       } else if (typeof bls === 'object' && bls !== null && (bls as any).value) {
         setTradeAmount(String((bls as any).value));
+      }
+      if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+        const rainbow = normalizeRainbow20415Config(nextConfig);
+        setTfValue(String(rainbow.Management_Interval_Minutes));
+        setTfUnit("m");
       }
     }
   }, [selectedStrategy, strategyKey]);
@@ -227,6 +242,10 @@ export default function Backtest() {
     if (v25Validation && !v25Validation.valid) {
       return toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
+    const rainbowValidation = strategyKey === RAINBOW_20415_STRATEGY_KEY ? validateRainbow20415Config(configJson) : null;
+    if (rainbowValidation && !rainbowValidation.valid) {
+      return toast.error(`20415 七彩虹參數設定錯誤：${rainbowValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
     // O1：Martin_Layers 提交前驗證（與後端 validateMartinLayers 一致）
     if ("Martin_Layers" in configJson) {
       const layersErr = validateLayersUI(parseLayersValue(configJson.Martin_Layers));
@@ -240,18 +259,22 @@ export default function Backtest() {
       const { jobId: id } = await runMutation.mutateAsync({
         strategyKey,
         symbol: symbol.trim(),
-        timeframe,
+        timeframe: rainbowValidation ? `${rainbowValidation.config.Management_Interval_Minutes}m` : timeframe,
         startDate: startMs,
         endDate: endMs,
         initialCapital: capital,
         config: strategyKey === V25_STRATEGY_KEY
           ? { ...(v25Validation?.config ?? normalizeV25Config(configJson)) }
-          : configJson,
+          : rainbowValidation
+            ? { ...rainbowValidation.config }
+            : configJson,
         exchange,
         strategyName: selectedStrategy?.name,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
-          : Number(tradeAmount) || undefined,
+          : rainbowValidation
+            ? rainbowValidation.config.Base_Lot_Size.value
+            : Number(tradeAmount) || undefined,
       });
       setJobId(id);
       utils.backtest.getQueueStatus.invalidate();
@@ -510,11 +533,18 @@ export default function Backtest() {
 
   const handleImportSnapshot = () => {
     if (!previewConfig) return;
-    // V2.5 以完整共享契約替換，避免合併時遺失合法 0／false；舊策略維持相容合併。
+    // 共享契約策略以完整配置替換，避免合併時遺失合法 0／false；舊策略維持相容合併。
     if (strategyKey === V25_STRATEGY_KEY) {
       const nextConfig = normalizeV25Config(previewConfig);
       setConfigJson({ ...nextConfig });
       setTradeAmount(String(nextConfig.Base_Lot_Size));
+    } else if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+      const nextConfig = normalizeRainbow20415Config(previewConfig);
+      setConfigJson({ ...nextConfig });
+      setTradeAmount(String(nextConfig.Base_Lot_Size.value));
+      setInitialCapital(String(nextConfig.Initial_Capital));
+      setTfValue(String(nextConfig.Management_Interval_Minutes));
+      setTfUnit("m");
     } else {
       setConfigJson((prev) => ({ ...prev, ...previewConfig }));
     }
@@ -577,8 +607,15 @@ export default function Backtest() {
       toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
       return;
     }
+    const rainbowValidation = strategyKey === RAINBOW_20415_STRATEGY_KEY ? validateRainbow20415Config(configJson) : null;
+    if (rainbowValidation && !rainbowValidation.valid) {
+      toast.error(`20415 七彩虹參數設定錯誤：${rainbowValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+      return;
+    }
     const cfg = {
-      ...(strategyKey === V25_STRATEGY_KEY ? v25Validation?.config ?? configJson : configJson),
+      ...(strategyKey === V25_STRATEGY_KEY
+        ? v25Validation?.config ?? configJson
+        : rainbowValidation?.config ?? configJson),
       Initial_Capital: Number(initialCapital) || 10000,
     };
     // ✅ 從回測結果中提取完整績效指標（如果已有結果）
@@ -611,18 +648,22 @@ export default function Backtest() {
       backtestSettings: {
         exchange,
         symbol: symbol.trim(),
-        timeframe: `${tfValue}${tfUnit}`,
+        timeframe: rainbowValidation ? `${rainbowValidation.config.Management_Interval_Minutes}m` : `${tfValue}${tfUnit}`,
         startDate,
         endDate,
         initialCapital: Number(initialCapital) || 10000,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
-          : Number(tradeAmount) || undefined,
+          : rainbowValidation
+            ? rainbowValidation.config.Base_Lot_Size.value
+            : Number(tradeAmount) || undefined,
         configJson: cfg,
         baseLotSize: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
-          : Number(tradeAmount) || undefined,
-        baseLotSizeMode: "usdt",
+          : rainbowValidation
+            ? rainbowValidation.config.Base_Lot_Size.value
+            : Number(tradeAmount) || undefined,
+        baseLotSizeMode: rainbowValidation ? rainbowValidation.config.Base_Lot_Size.mode : "usdt",
       },
     });
   };
@@ -726,7 +767,7 @@ export default function Backtest() {
                 />
               </div>
               <div className="space-y-2">
-                <Label className="text-xs">每次交易金額（USDT）</Label>
+                <Label className="text-xs">{strategyKey === RAINBOW_20415_STRATEGY_KEY ? "20415 底倉數值" : "每次交易金額（USDT）"}</Label>
                 <Input
                   type="number"
                   min="1"
@@ -734,7 +775,7 @@ export default function Backtest() {
                   lang="en"
                   inputMode="decimal"
                   value={tradeAmount}
-                  disabled={strategyKey === V25_STRATEGY_KEY}
+                  disabled={strategyKey === V25_STRATEGY_KEY || strategyKey === RAINBOW_20415_STRATEGY_KEY}
                   onChange={(e) => {
                     setTradeAmount(e.target.value);
                     const num = Number(e.target.value);
@@ -751,6 +792,8 @@ export default function Backtest() {
                 <p className="text-[10px] text-muted-foreground">
                   {strategyKey === V25_STRATEGY_KEY
                     ? "由下方 V2.5 Base_Lot_Size 單一參數契約控制"
+                    : strategyKey === RAINBOW_20415_STRATEGY_KEY
+                      ? `由下方七彩虹 Base_Lot_Size 控制；數據鎖定 ${normalizeRainbow20415Config(configJson).Management_Interval_Minutes}m 管理週期`
                     : "首單固定金額，加倉按馬丁倍率遞增"}
                 </p>
               </div>
@@ -782,8 +825,22 @@ export default function Backtest() {
               />
             )}
 
+            {strategyKey === RAINBOW_20415_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
+              <Rainbow20415ConfigPanel
+                value={configJson}
+                onChange={(nextConfig) => {
+                  setConfigJson({ ...nextConfig });
+                  setInitialCapital(String(nextConfig.Initial_Capital));
+                  setTradeAmount(String(nextConfig.Base_Lot_Size.value));
+                  setTfValue(String(nextConfig.Management_Interval_Minutes));
+                  setTfUnit("m");
+                }}
+                context="backtest"
+              />
+            )}
+
             {/* 動態策略參數（UI-3：三大模組化區塊分類）- 內建策略深度定制面板 */}
-            {strategyKey !== V25_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
+            {strategyKey !== V25_STRATEGY_KEY && strategyKey !== RAINBOW_20415_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
               /** 單一參數渲染（含 UI-1/UI-2/UI-4 特殊規則） */
               const renderParam = (key: string, value: unknown) => {
                 // 任務 B2：Base_Lot_Size 雙模式（數量 / USDT）
@@ -1300,7 +1357,7 @@ export default function Backtest() {
         setShowSnapshotModal(open);
         if (!open) { setSelectedSnapshotId(null); setImportMessage(""); }
       }}>
-        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-h-[86vh] max-w-[calc(100vw-1rem)] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>從快照導入參數</DialogTitle>
           </DialogHeader>
@@ -1313,7 +1370,7 @@ export default function Backtest() {
             <div className="text-center py-8 text-muted-foreground">載入中...</div>
           ) : !snapshotsQuery.data?.length ? (
             <div className="text-center py-8 text-muted-foreground">
-              <div className="text-4xl mb-2">📭</div>
+              <Save className="mx-auto mb-3 h-9 w-9 text-muted-foreground/60" />
               <p>尚無此策略的參數快照</p>
               <p className="text-sm">請先執行回測並儲存快照</p>
             </div>
@@ -1345,21 +1402,51 @@ export default function Backtest() {
                       </div>
                     </div>
                   </div>
-                  <div className="mt-2 text-xs text-muted-foreground truncate">
-                    {Object.entries(snap.config || {}).slice(0, 6).map(([k, v]) => (
-                      <span key={k} className="mr-3">{k}: {String(v)}</span>
-                    ))}
-                    {Object.keys(snap.config || {}).length > 6 && <span>...</span>}
-                  </div>
+                  {strategyKey === RAINBOW_20415_STRATEGY_KEY ? (() => {
+                    const cfg = normalizeRainbow20415Config(snap.config);
+                    const finalLayer = deriveRainbow20415FinalEnabledLayer(cfg.Martin_Ranges);
+                    return (
+                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                        {[
+                          ["雙節奏", `${formatRainbow20415Timeframe(cfg.Entry_Timeframe_Minutes)} / ${formatRainbow20415Timeframe(cfg.Management_Interval_Minutes)}`],
+                          ["七線", cfg.Lines.map((line) => line.period).join("·")],
+                          ["底倉", `${cfg.Base_Lot_Size.value} ${cfg.Base_Lot_Size.mode.toUpperCase()}`],
+                          ["最終戰層", `L${finalLayer}`],
+                          ["成本止盈", `${cfg.Take_Profit_Pct}%`],
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-md border border-cyan-400/15 bg-cyan-400/[0.04] px-2.5 py-2">
+                            <p className="text-[9px] uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
+                            <p className="mt-1 truncate font-mono text-[10px] font-semibold text-cyan-700 dark:text-cyan-200">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })() : (
+                    <div className="mt-2 truncate text-xs text-muted-foreground">
+                      {Object.entries(snap.config || {}).slice(0, 6).map(([k, v]) => (
+                        <span key={k} className="mr-3">{k}: {typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
+                      ))}
+                      {Object.keys(snap.config || {}).length > 6 && <span>...</span>}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           )}
 
           {/* 參數預覽 */}
-          {previewConfig && (
+          {previewConfig && strategyKey === RAINBOW_20415_STRATEGY_KEY && (
+            <div className="mt-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">七彩虹契約覆核</p>
+                <p className="mt-1 text-xs text-muted-foreground">下列配置將完整填入回測表單；合法的 0、false 與停用區間均原樣保留。</p>
+              </div>
+              <Rainbow20415ConfigPanel value={previewConfig} onChange={() => undefined} disabled context="snapshot" />
+            </div>
+          )}
+          {previewConfig && strategyKey !== RAINBOW_20415_STRATEGY_KEY && (
             <div className="mt-4 p-4 bg-muted/50 rounded-lg">
-              <div className="text-sm font-medium mb-2">📋 參數預覽（將自動填入）</div>
+              <div className="text-sm font-medium mb-2">參數預覽（將自動填入）</div>
               <div className="grid grid-cols-3 gap-2 text-xs">
                 {Object.entries(previewConfig).slice(0, 12).map(([k, v]) => (
                   <div key={k}>
@@ -1380,7 +1467,7 @@ export default function Backtest() {
               disabled={!selectedSnapshotId || !previewConfig}
               className="bg-purple-600 hover:bg-purple-700 text-white"
             >
-              ✅ 確認導入
+              確認導入
             </Button>
             <Button variant="outline" onClick={() => {
               setShowSnapshotModal(false);

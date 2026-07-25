@@ -28,9 +28,11 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { InstanceSelector } from "@/components/InstanceSelector";
+import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import EquityChart from "./EquityChart";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
+import { RAINBOW_20415_STRATEGY_KEY } from "@shared/strategies/rainbow20415";
 
 export interface ReportTrade {
   id: number;
@@ -257,16 +259,20 @@ export default function BacktestReport({
             <CardTitle className="text-sm">本次回測參數快照</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-              {Object.entries(config).map(([k, v]) => (
-                <div key={k} className="flex justify-between gap-2 border rounded px-2 py-1">
-                  <span className="text-muted-foreground truncate" title={k}>{k}</span>
-                  <span className="font-mono">
-                    {typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}
-                  </span>
-                </div>
-              ))}
-            </div>
+            {strategyKey === RAINBOW_20415_STRATEGY_KEY ? (
+              <Rainbow20415ConfigPanel value={config} onChange={() => undefined} disabled context="snapshot" />
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {Object.entries(config).map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-2 border rounded px-2 py-1">
+                    <span className="text-muted-foreground truncate" title={k}>{k}</span>
+                    <span className="font-mono">
+                      {typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

@@ -31,6 +31,11 @@ import {
   deriveV25MaxMartinLayer,
   V25_STRATEGY_KEY,
 } from "../../shared/strategies/kama3kBreakoutV25";
+import {
+  assertValidRainbow20415Config,
+  deriveRainbow20415FinalEnabledLayer,
+  RAINBOW_20415_STRATEGY_KEY,
+} from "../../shared/strategies/rainbow20415";
 
 function assertRegisteredStrategy(strategyKey: string): void {
   const isRegistered = listRegisteredStrategies().some((strategy) => strategy.key === strategyKey);
@@ -45,14 +50,24 @@ function normalizeSnapshotConfigForStrategy(
   strategyKey: string,
   rawConfig: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (strategyKey !== V25_STRATEGY_KEY) return { ...rawConfig };
   try {
-    return { ...assertValidV25Config(rawConfig) };
+    if (strategyKey === V25_STRATEGY_KEY) return { ...assertValidV25Config(rawConfig) };
+    if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+      return { ...assertValidRainbow20415Config(rawConfig) };
+    }
+    return { ...rawConfig };
   } catch (error) {
+    const label = strategyKey === RAINBOW_20415_STRATEGY_KEY ? "20415 七彩虹" : "V2.5";
     throw new Error(
-      `V2.5 快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
+      `${label}快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+function timeframeForMinutes(minutes: number): string {
+  if (minutes % 1440 === 0) return `${minutes / 1440}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
 }
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -102,10 +117,19 @@ function validateRequest(input: z.infer<typeof backtestRequestSchema>): Backtest
   const spanDays = (endMs - startMs) / 86400000;
   if (spanDays > 1830) throw new Error("回測區間最長支持 5 年，請縮短日期範圍");
   if (input.config && typeof input.config === "object") {
-    if (input.strategyKey === V25_STRATEGY_KEY) {
+    if (input.strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+      const config = assertValidRainbow20415Config(input.config);
+      const expectedTimeframe = timeframeForMinutes(config.Management_Interval_Minutes);
+      if (input.timeframe.toLowerCase() !== expectedTimeframe) {
+        throw new Error(
+          `20415 七彩虹回測資料週期必須為 ${expectedTimeframe}；${timeframeForMinutes(config.Entry_Timeframe_Minutes)} 入場 K 線由同源引擎內部聚合。`,
+        );
+      }
+      input.config = { ...config };
+    } else if (input.strategyKey === V25_STRATEGY_KEY) {
       input.config = { ...assertValidV25Config(input.config) };
     } else {
-      // EMA 均線回歸馬丁格爾：確保 max_layers 參數存在
+      // 舊通用策略：保留歷史 max_layers → Max_Layers 相容橋接。
       if (input.config.max_layers && !input.config.Max_Layers) {
         input.config = { ...input.config, Max_Layers: input.config.max_layers };
       }
@@ -358,7 +382,14 @@ export const backtestRouter = router({
                   baseLotSizeMode: "usdt",
                   configJson: storedConfig,
                 }
-              : {}),
+              : input.strategyKey === RAINBOW_20415_STRATEGY_KEY
+                ? {
+                    tradeAmount: Number((storedConfig.Base_Lot_Size as { value?: unknown })?.value),
+                    baseLotSize: Number((storedConfig.Base_Lot_Size as { value?: unknown })?.value),
+                    baseLotSizeMode: String((storedConfig.Base_Lot_Size as { mode?: unknown })?.mode ?? "quantity"),
+                    configJson: storedConfig,
+                  }
+                : {}),
           }
         : null;
 
@@ -507,15 +538,25 @@ export const backtestRouter = router({
         ? assertValidV25Config(config)
         : undefined;
       const firstV25Range = v25Config?.Martin_Ranges[0];
+      const rainbowConfig = snapshotKey === RAINBOW_20415_STRATEGY_KEY
+        ? assertValidRainbow20415Config(config)
+        : undefined;
+      const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
+          martinMultiplier: String(firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
           maxMartinLevel: v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
-            : config.Max_Layers ?? (strategy as any).maxMartinLevel,
-          martinSpacingPct: String(firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct),
+            : rainbowConfig
+              ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
+              : config.Max_Layers ?? (strategy as any).maxMartinLevel,
+          martinSpacingPct: String(
+            firstRainbowRange
+              ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
+              : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct,
+          ),
           ...(v25Config ? {
             positionSize: String(v25Config.Base_Lot_Size),
             positionMode: "usdt" as const,
@@ -524,6 +565,15 @@ export const backtestRouter = router({
             takeProfitPct: String(v25Config.Take_Profit_Pct),
             kLinePeriod: v25Config.K_Line_Period,
             reentryEnabled: v25Config.Reentry_On_Trend,
+          } : rainbowConfig ? {
+            positionSize: String(rainbowConfig.Base_Lot_Size.value),
+            positionMode: rainbowConfig.Base_Lot_Size.mode,
+            positionSizeObject: { ...rainbowConfig.Base_Lot_Size },
+            stopLossPct: "0",
+            takeProfitPct: String(rainbowConfig.Take_Profit_Pct),
+            maxLossPct: String(rainbowConfig.Max_Account_Loss_Pct),
+            kLinePeriod: rainbowConfig.Entry_Timeframe_Minutes,
+            reentryEnabled: rainbowConfig.Reentry_Enabled,
           } : {}),
         })
         .where(eq(strategies.id, input.targetStrategyId));
@@ -576,6 +626,10 @@ export const backtestRouter = router({
         ? assertValidV25Config(config)
         : undefined;
       const firstV25Range = v25Config?.Martin_Ranges[0];
+      const rainbowConfig = snapshotKey === RAINBOW_20415_STRATEGY_KEY
+        ? assertValidRainbow20415Config(config)
+        : undefined;
+      const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
       const backtestSettings =
         snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
           ? (snapshot.backtestSettings as Record<string, unknown>)
@@ -586,6 +640,11 @@ export const backtestRouter = router({
       );
       if (v25Config && positionMode !== "usdt") {
         throw new Error("V2.5 的 Base_Lot_Size 固定為 USDT 金額，倉位單位必須為 usdt");
+      }
+      if (rainbowConfig && positionMode !== rainbowConfig.Base_Lot_Size.mode) {
+        throw new Error(
+          `20415 七彩虹快照的底倉單位為 ${rainbowConfig.Base_Lot_Size.mode}，導入單位必須一致。`,
+        );
       }
 
       // 生成 webhookSecret
@@ -601,25 +660,31 @@ export const backtestRouter = router({
         apiKeyId: input.apiKeyId,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
-        positionSize: String(v25Config?.Base_Lot_Size ?? input.positionSize),
+        positionSize: String(rainbowConfig?.Base_Lot_Size.value ?? v25Config?.Base_Lot_Size ?? input.positionSize),
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
         enabled: true,
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
-        stopLossPct: String(v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0)),
-        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
+        stopLossPct: String(rainbowConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
+        takeProfitPct: String(rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
         maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
-        martinMultiplier: String(firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
+        martinMultiplier: String(firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
         maxMartinLevel: v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
-          : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
-        martinSpacingPct: String(firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0),
+          : rainbowConfig
+            ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
+            : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
+        martinSpacingPct: String(
+          firstRainbowRange
+            ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
+            : firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0,
+        ),
         martinState: attachSnapshotConfig(
           {
             lossCount: 0,
-            currentLot: v25Config?.Base_Lot_Size ?? input.positionSize,
+            currentLot: rainbowConfig?.Base_Lot_Size.value ?? v25Config?.Base_Lot_Size ?? input.positionSize,
             lastEntryPrice: 0,
           },
           snapshotKey,
@@ -631,10 +696,10 @@ export const backtestRouter = router({
         ),
         strategyKey: snapshotKey,
         positionMode,
-        positionSizeObject: { value: v25Config?.Base_Lot_Size ?? input.positionSize, mode: positionMode },
+        positionSizeObject: { value: rainbowConfig?.Base_Lot_Size.value ?? v25Config?.Base_Lot_Size ?? input.positionSize, mode: positionMode },
         tradeMode: 'webhook',
-        kLinePeriod: resolveKLineMinutes(config, backtestSettings.timeframe),
-        reentryEnabled: config.Reentry_On_Trend !== false,
+        kLinePeriod: rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
+        reentryEnabled: rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
       });
 
       const newId = insertResult?.[0]?.insertId;
@@ -698,15 +763,25 @@ export const backtestRouter = router({
         ? assertValidV25Config(config)
         : undefined;
       const firstV25Range = v25Config?.Martin_Ranges[0];
+      const rainbowConfig = snapshotKey === RAINBOW_20415_STRATEGY_KEY
+        ? assertValidRainbow20415Config(config)
+        : undefined;
+      const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
+          martinMultiplier: String(firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
           maxMartinLevel: v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
-            : config.Max_Layers ?? (instance as any).maxMartinLevel,
-          martinSpacingPct: String(firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct),
+            : rainbowConfig
+              ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
+              : config.Max_Layers ?? (instance as any).maxMartinLevel,
+          martinSpacingPct: String(
+            firstRainbowRange
+              ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
+              : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct,
+          ),
           ...(v25Config ? {
             positionSize: String(v25Config.Base_Lot_Size),
             positionMode: "usdt" as const,
@@ -715,6 +790,15 @@ export const backtestRouter = router({
             takeProfitPct: String(v25Config.Take_Profit_Pct),
             kLinePeriod: v25Config.K_Line_Period,
             reentryEnabled: v25Config.Reentry_On_Trend,
+          } : rainbowConfig ? {
+            positionSize: String(rainbowConfig.Base_Lot_Size.value),
+            positionMode: rainbowConfig.Base_Lot_Size.mode,
+            positionSizeObject: { ...rainbowConfig.Base_Lot_Size },
+            stopLossPct: "0",
+            takeProfitPct: String(rainbowConfig.Take_Profit_Pct),
+            maxLossPct: String(rainbowConfig.Max_Account_Loss_Pct),
+            kLinePeriod: rainbowConfig.Entry_Timeframe_Minutes,
+            reentryEnabled: rainbowConfig.Reentry_Enabled,
           } : {}),
         })
         .where(eq(strategies.id, input.targetInstanceId));

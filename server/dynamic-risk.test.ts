@@ -1,52 +1,47 @@
 /**
- * EMA 均線回歸馬丁格爾策略 — 動態風控整合測試
+ * 20415 七彩虹馬丁策略 — 動態風控與基礎設施整合測試
  * 驗證：
  * 1. 參數一致性（schema/defaultConfig/backtest/executor 參數名稱一致）
  * 2. 回測引擎中動態風控邏輯的靜態掃描
- * 3. 止盈參數正確（tp_normal/tp_trend/trail_normal/trail_trend）
- * 4. 動態硬止損和加倉間距參數存在且正確
+ * 3. 百分比止盈與三道鐵幕參數正確
+ * 4. 七線與動態連續階梯契約存在且正確
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { initStrategyStudio, getStrategy } from "./services/strategyStudio";
 import * as fs from "fs";
 import * as path from "path";
 
-describe("EMA 馬丁動態風控整合測試", () => {
+describe("20415 七彩虹馬丁動態風控整合測試", () => {
   beforeAll(() => {
     initStrategyStudio();
   });
 
-  it("命令 6：參數一致性 — defaultConfig 包含所有動態風控參數", () => {
+  it("命令 6：參數一致性 — defaultConfig 包含完整七彩虹與三道鐵幕參數", () => {
     const eng = getStrategy("strategy_20415");
     expect(eng).toBeDefined();
     const cfg = eng!.defaultConfig;
 
-    // 核心 EMA 參數
-    expect(cfg.ema_killer).toBe(3);
-    expect(cfg.ema_wave).toBe(6);
-    expect(cfg.ema_enter).toBe(15);
-    expect(cfg.Point_Value).toBe(0.01);
+    expect(cfg.Config_Version).toBe("rainbow20415.v1");
+    expect(cfg.Entry_Timeframe_Minutes).toBe(30);
+    expect(cfg.Management_Interval_Minutes).toBe(1);
+    expect(cfg.Lines).toHaveLength(7);
+    expect(cfg.Lines.map((line: { period: number }) => line.period)).toEqual([
+      5, 8, 13, 21, 34, 55, 89,
+    ]);
     expect(cfg.Base_Lot_Size).toEqual({ value: 0.01, mode: "quantity" });
 
-    // 馬丁加倉參數
-    expect(cfg.multiplier).toBe(1.5);
-    expect(cfg.max_layers).toBe(12);
-    expect(cfg.pip_step_base).toBe(500.0);
-    expect(cfg.enable_dynamic_pip).toBe(true);
-    expect(cfg.pipstep_atr_multiplier).toBeDefined();
-    expect(cfg.pipstep_min).toBeDefined();
-    expect(cfg.pipstep_max).toBeDefined();
+    expect(cfg.Martin_Ranges.length).toBeGreaterThan(0);
+    expect(cfg.Martin_Ranges[0].startLayer).toBe(1);
+    for (let index = 1; index < cfg.Martin_Ranges.length; index += 1) {
+      expect(cfg.Martin_Ranges[index].startLayer).toBe(
+        cfg.Martin_Ranges[index - 1].endLayer + 1,
+      );
+    }
 
-    // 止盈參數
-    expect(cfg.tp_normal).toBeDefined();
-    expect(cfg.tp_trend).toBeDefined();
-    expect(cfg.trail_normal).toBeDefined();
-    expect(cfg.trail_trend).toBeDefined();
-    expect(cfg.trend_threshold).toBeDefined();
-
-    // 硬止損參數
-    expect(cfg.hard_stop_max).toBeDefined();
-    expect(cfg.hard_stop_atr_multiplier).toBeDefined();
+    expect(cfg.Take_Profit_Pct).toBe(0.2);
+    expect(cfg.Max_Hold_Hours).toBe(48);
+    expect(cfg.Max_Margin_Usage_Pct).toBe(70);
+    expect(cfg.Max_Account_Loss_Pct).toBe(5);
   });
 
   it("命令 1：起始手數 EntryLot = 0.01", () => {
@@ -107,40 +102,37 @@ describe("EMA 馬丁動態風控整合測試", () => {
     expect(genericSrc).toContain("atr");
   });
 
-  it("命令 7：止盈參數正確 — tp_normal/tp_trend/trail_normal/trail_trend", () => {
+  it("命令 7：止盈與三道鐵幕參數使用百分比／小時單位", () => {
     const eng = getStrategy("strategy_20415");
     const cfg = eng!.defaultConfig;
-    expect(cfg.tp_normal).toBeDefined();
-    expect(cfg.tp_trend).toBeDefined();
-    expect(cfg.trail_normal).toBeDefined();
-    expect(cfg.trail_trend).toBeDefined();
-    // trail 必須小於 tp
-    expect(Number(cfg.trail_normal)).toBeLessThan(Number(cfg.tp_normal));
-    expect(Number(cfg.trail_trend)).toBeLessThan(Number(cfg.tp_trend));
+    expect(cfg.Take_Profit_Pct).toBeGreaterThan(0);
+    expect(cfg.Max_Hold_Hours).toBeGreaterThan(0);
+    expect(cfg.Max_Margin_Usage_Pct).toBeGreaterThan(0);
+    expect(cfg.Max_Margin_Usage_Pct).toBeLessThanOrEqual(100);
+    expect(cfg.Max_Account_Loss_Pct).toBeGreaterThan(0);
+    expect(cfg.Max_Account_Loss_Pct).toBeLessThanOrEqual(100);
   });
 
-  it("命令 4（executor）：實盤執行器中有動態風控檢查", () => {
+  it("命令 4（executor）：七彩虹實盤執行器在下單前使用同源風控與真實保證金", () => {
     const executorPath = path.resolve(__dirname, "services/executor.ts");
     const src = fs.readFileSync(executorPath, "utf-8");
 
-    // 必須有持倉比例超限的拒絕邏輯
-    expect(src).toContain("持倉比例超限");
-    // 必須有權益回撤止損的拒絕邏輯
-    expect(src).toContain("權益回撤止損觸發");
-    // 必須追踪 peakEquity
-    expect(src).toContain("peakEquity");
+    expect(src).toContain("evaluateRainbow20415Management");
+    expect(src).toContain("20415 執行前風控取消加倉");
+    expect(src).toContain("20415 缺少交易所真實已用保證金，安全封鎖加倉");
+    expect(src).toContain("所有狀態轉移都發生在交易所成功回報之後");
   });
 
-  it("命令 6（schema）：strategySchemas.ts 包含新 EMA 馬丁欄位", () => {
+  it("命令 6（schema）：strategySchemas.ts 只公開真實七彩虹標量欄位", () => {
     const schemaPath = path.resolve(__dirname, "config/strategySchemas.ts");
     const src = fs.readFileSync(schemaPath, "utf-8");
 
-    // 必須有新 EMA 馬丁參數欄位
-    expect(src).toContain("max_layers");
-    expect(src).toContain("multiplier");
-    expect(src).toContain("pip_step_base");
-    expect(src).toContain("tp_normal");
-    expect(src).toContain("tp_trend");
-    expect(src).toContain("hard_stop_max");
+    expect(src).toContain("Entry_Timeframe_Minutes");
+    expect(src).toContain("Management_Interval_Minutes");
+    expect(src).toContain("Take_Profit_Pct");
+    expect(src).toContain("Max_Hold_Hours");
+    expect(src).toContain("Max_Margin_Usage_Pct");
+    expect(src).toContain("Max_Account_Loss_Pct");
+    expect(src).toContain("Reentry_Cooldown_Minutes");
   });
 });

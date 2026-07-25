@@ -27,6 +27,12 @@ import {
   deriveV25MaxMartinLayer,
   V25_STRATEGY_KEY,
 } from "../shared/strategies/kama3kBreakoutV25";
+import {
+  assertValidRainbow20415Config,
+  deriveRainbow20415FinalEnabledLayer,
+  getRainbow20415RangeForLayer,
+  RAINBOW_20415_STRATEGY_KEY,
+} from "../shared/strategies/rainbow20415";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -367,40 +373,8 @@ const strategyInputSchema = z.object({
       volume_expansion_threshold: z.number().min(1.0).max(5.0).default(1.5).optional(),
     })
     .optional(),
-  // V5.5：v2.0 參數配置（EvoMartingale_EMA v2.0）
-  v2_0Config: z
-    .object({
-      // EMA 指標
-      ema_killer: z.number().min(1).max(50).default(3).optional(),
-      ema_wave: z.number().min(2).max(100).default(6).optional(),
-      ema_enter: z.number().min(3).max(200).default(15).optional(),
-      K_Line_Period: z.number().min(1).max(1440).default(30).optional(),
-      buffer_points: z.number().min(0).max(100000).default(8000).optional(),
-      Point_Value: z.number().min(0.0001).max(100).default(0.01).optional(),
-      slope_threshold: z.number().min(0).max(100).default(3.0).optional(),
-      // 資金管理
-      Base_Lot_Size: z.number().min(0.001).max(100000).default(0.01).optional(),
-      Initial_Capital: z.number().min(100).max(10000000).default(10000).optional(),
-      multiplier: z.number().min(1.0).max(5.0).default(1.5).optional(),
-      max_layers: z.number().int().min(1).default(12).optional(),
-      // 動態 Pipstep
-      pip_step_base: z.number().min(10).max(100000).default(500).optional(),
-      enable_dynamic_pip: z.boolean().default(true).optional(),
-      atr_period: z.number().min(5).max(100).default(14).optional(),
-      pipstep_atr_multiplier: z.number().min(0.01).max(5.0).default(0.15).optional(),
-      pipstep_min: z.number().min(10).max(50000).default(200).optional(),
-      pipstep_max: z.number().min(50).max(200000).default(800).optional(),
-      // 止盈系統
-      tp_normal: z.number().min(10).max(10000).default(150).optional(),
-      tp_trend: z.number().min(10).max(20000).default(250).optional(),
-      trail_normal: z.number().min(5).max(5000).default(25).optional(),
-      trail_trend: z.number().min(5).max(5000).default(30).optional(),
-      trend_threshold: z.number().min(0).max(10000).default(50).optional(),
-      // 硬止損
-      hard_stop_max: z.number().min(-100000).max(0).default(-1200).optional(),
-      hard_stop_atr_multiplier: z.number().min(0.1).max(5.0).default(0.6).optional(),
-    })
-    .optional(),
+  // 20415 七彩虹：結構由 shared/strategies/rainbow20415.ts 單一契約正規化與嚴格校驗。
+  v2_0Config: z.record(z.string(), z.unknown()).optional(),
   // V6.1：KAMA 3K 高頻掃射極致版參數
   v61Config: z
     .object({
@@ -548,9 +522,24 @@ const strategiesRouter = router({
           });
         }
       }
+      let rainbow20415Config: ReturnType<typeof assertValidRainbow20415Config> | undefined;
+      if (input.strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+        try {
+          rainbow20415Config = assertValidRainbow20415Config(input.v2_0Config);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `20415 七彩虹參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
       const firstV25Range = v25Config?.Martin_Ranges[0];
-      const resolvedPositionSize = v25Config?.Base_Lot_Size ?? input.positionSize;
-      // V5.5：v2.0 參數驗證（新 EMA 馬丁策略無需 Martin_Layers 驗證）
+      const firstRainbowRange = rainbow20415Config
+        ? getRainbow20415RangeForLayer(rainbow20415Config.Martin_Ranges, 1)
+        : undefined;
+      const resolvedPositionSize = v25Config?.Base_Lot_Size
+        ?? rainbow20415Config?.Base_Lot_Size.value
+        ?? input.positionSize;
       const webhookSecret = generateWebhookSecret();
       const insertResult: any = await db.createStrategy({
         userId: ctx.user.id,
@@ -567,30 +556,39 @@ const strategiesRouter = router({
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
         stopLossPct: String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
-        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? input.takeProfitPct),
+        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: String(firstV25Range?.multiplier ?? input.martinMultiplier),
+        martinMultiplier: String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? input.martinMultiplier),
         maxMartinLevel: v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
-          : input.maxMartinLevel,
-        martinSpacingPct: String(firstV25Range?.gap ?? input.martinSpacingPct),
+          : rainbow20415Config
+            ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges))
+            : input.maxMartinLevel,
+        martinSpacingPct: String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? input.martinSpacingPct),
         martinState: {
           lossCount: 0,
-          currentLot: input.positionSize,
+          currentLot: resolvedPositionSize,
           lastEntryPrice: 0,
           ...(input.v35Config ? { __v35Config: input.v35Config } : {}),
           ...(input.v50Config ? { __v50Config: input.v50Config } : {}),
           ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
-          ...(input.v2_0Config ? { __v2_0Config: input.v2_0Config } : {}),
+          ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
           ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
           ...(v25Config ? { __v25Config: v25Config } : {}),
         },
         strategyKey: input.strategyKey || null,
-        positionMode: v25Config ? "usdt" : input.positionMode,
+        positionMode: v25Config
+          ? "usdt"
+          : rainbow20415Config?.Base_Lot_Size.mode ?? input.positionMode,
         ...(v25Config ? {
           positionSizeObject: { value: resolvedPositionSize, mode: "usdt" as const },
           kLinePeriod: v25Config.K_Line_Period,
           reentryEnabled: v25Config.Reentry_On_Trend,
+        } : {}),
+        ...(rainbow20415Config ? {
+          positionSizeObject: { ...rainbow20415Config.Base_Lot_Size },
+          kLinePeriod: rainbow20415Config.Entry_Timeframe_Minutes,
+          reentryEnabled: rainbow20415Config.Reentry_Enabled,
         } : {}),
       });
       // T3：回傳新建策略的 Webhook URL，供前端顯示成功引導彈窗
@@ -674,13 +672,38 @@ const strategiesRouter = router({
             : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
         data.martinState = { ...prevState, __v50Config: input.v50Config };
       }
-      // V5.5：更新 __v2_0Config（EMA 均線回歸馬丁格爾）
+      // 20415 七彩虹：沿用穩定 __v2_0Config 儲存鍵，但內容必須經共享契約校驗。
       if (input.v2_0Config !== undefined) {
+        const targetStrategyKey = input.strategyKey ?? existing.strategyKey;
+        if (targetStrategyKey !== RAINBOW_20415_STRATEGY_KEY) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "v2_0Config 僅可用於 20415 七彩虹馬丁策略" });
+        }
+        let rainbow20415Config: ReturnType<typeof assertValidRainbow20415Config>;
+        try {
+          rainbow20415Config = assertValidRainbow20415Config(input.v2_0Config);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `20415 七彩虹參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
         const prevState =
-          existing.martinState && typeof existing.martinState === "object"
+          data.martinState && typeof data.martinState === "object"
+            ? (data.martinState as Record<string, unknown>)
+            : existing.martinState && typeof existing.martinState === "object"
             ? (existing.martinState as Record<string, unknown>)
             : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
-        data.martinState = { ...prevState, __v2_0Config: input.v2_0Config };
+        const firstRange = getRainbow20415RangeForLayer(rainbow20415Config.Martin_Ranges, 1);
+        data.martinState = { ...prevState, __v2_0Config: rainbow20415Config };
+        data.positionSize = String(rainbow20415Config.Base_Lot_Size.value);
+        data.positionSizeObject = { ...rainbow20415Config.Base_Lot_Size };
+        data.positionMode = rainbow20415Config.Base_Lot_Size.mode;
+        data.takeProfitPct = String(rainbow20415Config.Take_Profit_Pct);
+        data.martinMultiplier = String(firstRange?.multiplier ?? 1);
+        data.maxMartinLevel = Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges));
+        data.martinSpacingPct = String(rainbow20415Config.Global_Spacing_Pct);
+        data.kLinePeriod = rainbow20415Config.Entry_Timeframe_Minutes;
+        data.reentryEnabled = rainbow20415Config.Reentry_Enabled;
       }
       // V6.1：更新 __v61Config（KAMA 3K 高頻掃射極致版）
       if (input.v61Config !== undefined) {

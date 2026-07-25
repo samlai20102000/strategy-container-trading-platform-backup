@@ -14,6 +14,8 @@ import type { OHLCVRow } from "./services/backtest/backtestDatabase";
 
 const TEST_SYMBOL = "FIXTEST-USDT";
 const TEST_TF = "1h";
+const RAINBOW_SYMBOL = "RAINBOWFIX-USDT";
+const RAINBOW_TF = "1m";
 
 /** 生成確定性合成 K 線（趨勢+震盪混合，確保兩種策略都會產生交易） */
 function generateSyntheticCandles(count: number): OHLCVRow[] {
@@ -46,16 +48,47 @@ function generateSyntheticCandles(count: number): OHLCVRow[] {
   return candles;
 }
 
+/** 生成可完成 89 期 M30 暖機的確定性 1m 趨勢資料，供七彩虹同源回測使用。 */
+function generateRainbowCandles(count: number): OHLCVRow[] {
+  const candles: OHLCVRow[] = [];
+  const start = Date.UTC(2025, 0, 1);
+  let previousClose = 1000;
+  for (let index = 0; index < count; index += 1) {
+    const turningPoint = Math.floor(count * 0.62);
+    const trend =
+      index < turningPoint
+        ? index * 0.08
+        : turningPoint * 0.08 - (index - turningPoint) * 0.1;
+    const close = 1000 + trend + Math.sin(index / 17) * 0.2;
+    const open = previousClose;
+    candles.push({
+      symbol: RAINBOW_SYMBOL,
+      timeframe: RAINBOW_TF,
+      timestamp: start + index * 60_000,
+      open,
+      high: Math.max(open, close) + 0.15,
+      low: Math.min(open, close) - 0.15,
+      close,
+      volume: 100 + Math.abs(Math.sin(index / 11)) * 20,
+    });
+    previousClose = close;
+  }
+  return candles;
+}
+
 describe("Pasted_content_20 修復驗證", () => {
   const startDate = Date.UTC(2025, 0, 1);
   const candleCount = 2000;
   const endDate = startDate + candleCount * 3600_000;
+  const rainbowCandleCount = 6200;
+  const rainbowEndDate = startDate + rainbowCandleCount * 60_000;
 
   beforeAll(async () => {
     await initStrategyStudio();
     const db = getBacktestDatabase();
     const candles = generateSyntheticCandles(candleCount);
     db.insertOHLCV(candles);
+    db.insertOHLCV(generateRainbowCandles(rainbowCandleCount));
   });
 
   it("策略註冊中心至少有 2 個策略（V3.5 + 20415）", () => {
@@ -97,35 +130,35 @@ describe("Pasted_content_20 修復驗證", () => {
     const engine = new BacktestEngine();
     const result = await engine.runBacktest({
       strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
+      symbol: RAINBOW_SYMBOL,
+      timeframe: RAINBOW_TF,
       startDate,
-      endDate,
+      endDate: rainbowEndDate,
       initialCapital: 10000,
       config: {},
     });
     expect(result.strategyKey).toBe("strategy_20415");
     expect(result.strategyName).toBeTruthy();
-    expect(result.strategyName).toContain("EMA");
+    expect(result.strategyName).toBe("20415七彩虹馬丁策略");
   }, 60_000);
 
   it("D1：不同策略在相同數據上產生不同結果（動態載入生效）", async () => {
     const engine = new BacktestEngine();
     const resultV35 = await engine.runBacktest({
       strategyKey: "20415_KAMA_MARTIN_V35",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
+      symbol: RAINBOW_SYMBOL,
+      timeframe: RAINBOW_TF,
       startDate,
-      endDate,
+      endDate: rainbowEndDate,
       initialCapital: 10000,
       config: {},
     });
     const result20415 = await engine.runBacktest({
       strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
+      symbol: RAINBOW_SYMBOL,
+      timeframe: RAINBOW_TF,
       startDate,
-      endDate,
+      endDate: rainbowEndDate,
       initialCapital: 10000,
       config: {},
     });
@@ -146,27 +179,25 @@ describe("Pasted_content_20 修復驗證", () => {
 
   it("D4：generic 路徑支持 Base_Lot_Size USDT 模式（換算為幣數量）", async () => {
     const engine = new BacktestEngine();
-    // V5.2: 降低 EMA 五線共振門檻以確保合成數據能觸發交易
-    const baseConfig = { MinEMADistancePips: 0 };
     // quantity 模式：固定 0.5 幣
     const resultQty = await engine.runBacktest({
-      strategyKey: "strategy_20415",
+      strategyKey: "20415_KAMA_MARTIN_V35",
       symbol: TEST_SYMBOL,
       timeframe: TEST_TF,
       startDate,
       endDate,
       initialCapital: 100000,
-      config: { ...baseConfig, Base_Lot_Size: { mode: "quantity", value: 0.5 } },
+      config: { Base_Lot_Size: { mode: "quantity", value: 0.5 } },
     });
     // usdt 模式：每次 5000 USDT（價格 ~50000 → 約 0.1 幣）
     const resultUsdt = await engine.runBacktest({
-      strategyKey: "strategy_20415",
+      strategyKey: "20415_KAMA_MARTIN_V35",
       symbol: TEST_SYMBOL,
       timeframe: TEST_TF,
       startDate,
       endDate,
       initialCapital: 100000,
-      config: { ...baseConfig, Base_Lot_Size: { mode: "usdt", value: 5000 } },
+      config: { Base_Lot_Size: { mode: "usdt", value: 5000 } },
     });
 
     if (resultQty.trades.length > 0 && resultUsdt.trades.length > 0) {
@@ -180,7 +211,7 @@ describe("Pasted_content_20 修復驗證", () => {
       // 兩種模式總倉位應不同（首單基礎不同，加倉後差距更大）
       expect(Math.abs(qtySize - usdtSize)).toBeGreaterThan(0.1);
     } else {
-      // V5.2: EMA 五線共振入場條件嚴格，合成數據可能無法觸發交易，此時僅驗證引擎不拋錯
+      // 合成資料可能不滿足 V3.5 入場條件，此時至少驗證通用路徑不拋錯。
       expect(resultQty.trades.length + resultUsdt.trades.length).toBeGreaterThanOrEqual(0);
     }
   }, 120_000);
@@ -298,32 +329,32 @@ describe("V5.7 環境快照生成", () => {
 });
 
 describe("V5.7 風控敏感性測試", () => {
-  it("Dollar_Loss=10 vs Dollar_Loss=100000 產生不同交易結果（SMA v3.00 金額止損）", async () => {
+  it("七彩虹 Max_Account_Loss_Pct 嚴格與寬鬆配置均可確定性執行", async () => {
     const engine = new BacktestEngine();
     const startDate = Date.UTC(2025, 0, 1);
-    const candleCount = 2000;
-    const endDate = startDate + candleCount * 3600_000;
+    const rainbowCandleCount = 6200;
+    const endDate = startDate + rainbowCandleCount * 60_000;
 
-    // 嚴格風控：$10 止損
+    // 嚴格風控：帳戶虧損達 0.1% 即觸發最終層鐵幕。
     const resultStrict = await engine.runBacktest({
       strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
+      symbol: RAINBOW_SYMBOL,
+      timeframe: RAINBOW_TF,
       startDate,
       endDate,
       initialCapital: 10000,
-      config: { Dollar_Loss: 10 },
+      config: { Max_Account_Loss_Pct: 0.1 },
     });
 
-    // 寬鬆風控：$100000 止損（幾乎不會觸發）
+    // 寬鬆風控：帳戶虧損達 90% 才觸發。
     const resultLoose = await engine.runBacktest({
       strategyKey: "strategy_20415",
-      symbol: TEST_SYMBOL,
-      timeframe: TEST_TF,
+      symbol: RAINBOW_SYMBOL,
+      timeframe: RAINBOW_TF,
       startDate,
       endDate,
       initialCapital: 10000,
-      config: { Dollar_Loss: 100000 },
+      config: { Max_Account_Loss_Pct: 90 },
     });
 
     // 核心驗證：風控參數確實被讀取且引擎正常運作
@@ -332,8 +363,8 @@ describe("V5.7 風控敏感性測試", () => {
     expect(resultStrict.metrics).toBeDefined();
     expect(resultLoose.metrics).toBeDefined();
     // 如果有足夠多交易且其中有止損觸發，兩者應該不同
-    const strictStopLoss = resultStrict.trades.filter((t: any) => t.exitReason?.includes("止損")).length;
-    const looseStopLoss = resultLoose.trades.filter((t: any) => t.exitReason?.includes("止損")).length;
+    const strictStopLoss = resultStrict.trades.filter((t: any) => t.exitReason?.includes("帳戶虧損")).length;
+    const looseStopLoss = resultLoose.trades.filter((t: any) => t.exitReason?.includes("帳戶虧損")).length;
     // 如果嚴格風控有止損觸發，寬鬆風控不應該有（或更少）
     if (strictStopLoss > 0) {
       expect(strictStopLoss).toBeGreaterThanOrEqual(looseStopLoss);
@@ -349,13 +380,13 @@ describe("V5.7 環境快照完整性", () => {
     const endDate = startDate + candleCount * 3600_000;
 
     const result = await engine.runBacktest({
-      strategyKey: "strategy_20415",
+      strategyKey: "20415_KAMA_MARTIN_V35",
       symbol: TEST_SYMBOL,
       timeframe: TEST_TF,
       startDate,
       endDate,
       initialCapital: 10000,
-      config: { MinEMADistancePips: 0 },
+      config: {},
     });
 
     expect(result.environment).toBeDefined();
