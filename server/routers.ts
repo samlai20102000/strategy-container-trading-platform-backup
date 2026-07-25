@@ -19,6 +19,7 @@ import {
 import { exchangeRouter } from "./routers/exchange.router";
 import { backtestRouter } from "./routers/backtest.router";
 import { autoTradeRouter } from "./routers/autoTrade.router";
+import { rainbowTrendLadderAiRouter } from "./routers/rainbowTrendLadderAi.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
 import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
@@ -34,6 +35,11 @@ import {
   getRainbow20415RangeForLayer,
   RAINBOW_20415_STRATEGY_KEY,
 } from "../shared/strategies/rainbow20415";
+import {
+  assertValidRainbowTrendLadderConfig,
+  deriveRainbowTrendLadderFinalEnabledLayer,
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+} from "../shared/strategies/rainbowTrendLadder";
 import {
   createDeploymentPosition,
   deploymentPositionColumns,
@@ -382,6 +388,8 @@ const strategyInputSchema = z.object({
     .optional(),
   // 20415 七彩虹：結構由 shared/strategies/rainbow20415.ts 單一契約正規化與嚴格校驗。
   v2_0Config: z.record(z.string(), z.unknown()).optional(),
+  // 全新七彩虹線趨勢跟蹤階梯馬丁：獨立契約，不共用 20415 設定鍵。
+  rainbowTrendLadderConfig: z.record(z.string(), z.unknown()).optional(),
   // V6.1：KAMA 3K 高頻掃射極致版參數
   v61Config: z
     .object({
@@ -540,13 +548,27 @@ const strategiesRouter = router({
           });
         }
       }
+      let rainbowTrendLadderConfig: ReturnType<typeof assertValidRainbowTrendLadderConfig> | undefined;
+      if (input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+        try {
+          rainbowTrendLadderConfig = assertValidRainbowTrendLadderConfig(input.rainbowTrendLadderConfig);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `七彩虹線階梯策略參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
       const firstV25Range = v25Config?.Martin_Ranges[0];
       const firstRainbowRange = rainbow20415Config
         ? getRainbow20415RangeForLayer(rainbow20415Config.Martin_Ranges, 1)
         : undefined;
+      const firstRainbowTrendAddLayer = rainbowTrendLadderConfig?.Martin_Layers.find(
+        (layer) => layer.enabled && layer.layer > 1,
+      );
       const deploymentPosition = createDeploymentPosition(
-        input.positionSize,
-        input.positionMode,
+        rainbowTrendLadderConfig?.Base_Lot_Size.value ?? input.positionSize,
+        rainbowTrendLadderConfig?.Base_Lot_Size.mode ?? input.positionMode,
       );
       const resolvedPositionSize = deploymentPosition.value;
       const webhookSecret = generateWebhookSecret();
@@ -561,19 +583,21 @@ const strategiesRouter = router({
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
-        enabled: true,
+        enabled: input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY ? false : true,
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
         stopLossPct: String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
-        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? input.takeProfitPct),
+        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? input.martinMultiplier),
+        martinMultiplier: String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
         maxMartinLevel: v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbow20415Config
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges))
-            : input.maxMartinLevel,
-        martinSpacingPct: String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? input.martinSpacingPct),
+            : rainbowTrendLadderConfig
+              ? deriveRainbowTrendLadderFinalEnabledLayer(rainbowTrendLadderConfig.Martin_Layers)
+              : input.maxMartinLevel,
+        martinSpacingPct: String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
         martinState: {
           lossCount: 0,
           currentLot: resolvedPositionSize,
@@ -582,6 +606,7 @@ const strategiesRouter = router({
           ...(input.v50Config ? { __v50Config: input.v50Config } : {}),
           ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
           ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
+          ...(rainbowTrendLadderConfig ? { __rainbowTrendLadderConfig: rainbowTrendLadderConfig } : {}),
           ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
           ...(v25Config ? { __v25Config: v25Config } : {}),
         },
@@ -593,6 +618,10 @@ const strategiesRouter = router({
         ...(rainbow20415Config ? {
           kLinePeriod: rainbow20415Config.Entry_Timeframe_Minutes,
           reentryEnabled: rainbow20415Config.Reentry_Enabled,
+        } : {}),
+        ...(rainbowTrendLadderConfig ? {
+          kLinePeriod: rainbowTrendLadderConfig.Entry_Timeframe_Minutes,
+          reentryEnabled: rainbowTrendLadderConfig.Reentry_Wait_Next_M30_Close,
         } : {}),
       });
       // T3：回傳新建策略的 Webhook URL，供前端顯示成功引導彈窗
@@ -712,6 +741,45 @@ const strategiesRouter = router({
         data.martinSpacingPct = String(rainbow20415Config.Global_Spacing_Pct);
         data.kLinePeriod = rainbow20415Config.Entry_Timeframe_Minutes;
         data.reentryEnabled = rainbow20415Config.Reentry_Enabled;
+      }
+      // 全新七彩虹線階梯：使用獨立設定鍵並保留自身 runtime，不讀寫 20415 的 __v2_0Config。
+      if (input.rainbowTrendLadderConfig !== undefined) {
+        const targetStrategyKey = input.strategyKey ?? existing.strategyKey;
+        if (targetStrategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "rainbowTrendLadderConfig 僅可用於七彩虹線趨勢跟蹤階梯馬丁策略" });
+        }
+        let rainbowTrendLadderConfig: ReturnType<typeof assertValidRainbowTrendLadderConfig>;
+        try {
+          rainbowTrendLadderConfig = assertValidRainbowTrendLadderConfig(input.rainbowTrendLadderConfig);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `七彩虹線階梯策略參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        const prevState =
+          data.martinState && typeof data.martinState === "object"
+            ? (data.martinState as Record<string, unknown>)
+            : existing.martinState && typeof existing.martinState === "object"
+              ? (existing.martinState as Record<string, unknown>)
+              : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
+        const firstAddLayer = rainbowTrendLadderConfig.Martin_Layers.find(
+          (layer) => layer.enabled && layer.layer > 1,
+        );
+        data.martinState = { ...prevState, __rainbowTrendLadderConfig: rainbowTrendLadderConfig };
+        data.takeProfitPct = String(rainbowTrendLadderConfig.Trailing_Activation_Pct);
+        data.martinMultiplier = String(firstAddLayer?.lotMultiplier ?? 1);
+        data.maxMartinLevel = deriveRainbowTrendLadderFinalEnabledLayer(rainbowTrendLadderConfig.Martin_Layers);
+        data.martinSpacingPct = String(firstAddLayer?.triggerSpacingPct ?? 0);
+        data.kLinePeriod = rainbowTrendLadderConfig.Entry_Timeframe_Minutes;
+        data.reentryEnabled = rainbowTrendLadderConfig.Reentry_Wait_Next_M30_Close;
+        Object.assign(
+          data,
+          deploymentPositionColumns(createDeploymentPosition(
+            rainbowTrendLadderConfig.Base_Lot_Size.value,
+            rainbowTrendLadderConfig.Base_Lot_Size.mode,
+          )),
+        );
       }
       // V6.1：更新 __v61Config（KAMA 3K 高頻掃射極致版）
       if (input.v61Config !== undefined) {
@@ -2140,6 +2208,7 @@ export const appRouter = router({
   exchange: exchangeRouter,
   backtest: backtestRouter,
   autoTrade: autoTradeRouter,
+  rainbowTrendLadderAi: rainbowTrendLadderAiRouter,
   registry: registryRouter,
 });
 

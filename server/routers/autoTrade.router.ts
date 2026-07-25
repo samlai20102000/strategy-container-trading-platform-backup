@@ -29,6 +29,16 @@ import {
 // Import apiKeys from schema
 import { apiKeys } from "../../drizzle/schema";
 import { eq } from "drizzle-orm";
+import {
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+  validateRainbowTrendLadderConfig,
+} from "../../shared/strategies/rainbowTrendLadder";
+import { getBoundStrategyConfig } from "../services/strategySnapshotConfig";
+import { loadStrategyState, saveStrategyState } from "../services/strategyStateManager";
+import {
+  releaseRainbowTrendLadderKill,
+  requestRainbowTrendLadderKill,
+} from "../strategies/rainbowTrendLadder/management";
 
 /**
  * Helper function to get API key by ID
@@ -437,6 +447,129 @@ export const autoTradeRouter = router({
       } catch (err: any) {
         return { success: false, message: err.message || "Unknown error" };
       }
+    }),
+
+  /**
+   * 新七彩虹階梯策略專屬安全狀態。
+   * 僅讀取本策略本地狀態、配置與同 API Key 啟用策略數，不執行任何交易。
+   */
+  rainbowTrendLadderSafetyStatus: protectedProcedure
+    .input(z.object({ strategyId: z.number() }))
+    .query(async ({ input, ctx }) => {
+      const strategy = await db.getStrategyById(input.strategyId, ctx.user!.id);
+      if (!strategy || strategy.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+        throw new Error("找不到指定的新七彩虹階梯策略");
+      }
+      const state = loadStrategyState(strategy);
+      const martinState = strategy.martinState && typeof strategy.martinState === "object"
+        ? strategy.martinState as Record<string, unknown>
+        : {};
+      const rawConfig = getBoundStrategyConfig(martinState, RAINBOW_TREND_LADDER_STRATEGY_KEY)
+        ?? martinState.__rainbowTrendLadderConfig
+        ?? {};
+      const validation = validateRainbowTrendLadderConfig(rawConfig);
+      const siblings = (await db.listStrategies(ctx.user!.id)).filter(
+        (candidate) => candidate.id !== strategy.id && candidate.apiKeyId === strategy.apiKeyId && candidate.enabled,
+      );
+      const runtime = (state as any).rainbowTrendLadderRuntime ?? {};
+      const apiKey = await getApiKeyByIdHelper(strategy.apiKeyId);
+      return {
+        strategyId: strategy.id,
+        strategyEnabled: strategy.enabled,
+        tradeMode: (strategy as any).tradeMode || "webhook",
+        heartbeatTaskUid: (strategy as any).heartbeatTaskUid || null,
+        configValid: validation.valid,
+        configIssues: validation.issues,
+        liveTradingArmed: validation.config.Live_Trading_Armed,
+        requireDedicatedAccount: validation.config.Require_Dedicated_Account,
+        dedicatedAccountReady: siblings.length === 0,
+        conflictingStrategies: siblings.map((candidate) => ({ id: candidate.id, name: candidate.name })),
+        environment: apiKey?.isTestnet ? "demo" : "live",
+        killed: runtime.killed === true,
+        killRequestedAt: Number(runtime.killRequestedAt || 0),
+        blindMode: runtime.blindMode === true,
+        hasLocalPosition: state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0,
+        currentLayer: state.currentLayer,
+        totalSize: state.totalSize,
+        avgPrice: state.avgPrice,
+        lastDecisionReason: String(runtime.lastDecisionReason || "尚未執行"),
+      };
+    }),
+
+  /**
+   * KILL：先停排程與策略，再永久鎖定狀態；只有專屬執行器能在完整所有權證據下平倉。
+   * literal 二次確認防止一般按鈕、AI 設定或外部 webhook 誤觸。
+   */
+  killRainbowTrendLadder: protectedProcedure
+    .input(z.object({ strategyId: z.number(), confirmation: z.literal("KILL") }))
+    .mutation(async ({ input, ctx }) => {
+      const strategy = await db.getStrategyById(input.strategyId, ctx.user!.id);
+      if (!strategy || strategy.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+        throw new Error("找不到指定的新七彩虹階梯策略");
+      }
+      await db.updateStrategy(strategy.id, ctx.user!.id, { enabled: false });
+      const taskUid = (strategy as any).heartbeatTaskUid as string | null | undefined;
+      let heartbeatWarning: string | null = null;
+      if (taskUid) {
+        try {
+          await disableHeartbeatForStrategy(taskUid, ctx.sessionToken);
+        } catch (error: any) {
+          heartbeatWarning = `排程遠端停用失敗，但資料庫策略已停用：${error.message}`;
+        }
+      }
+      const lockedState = requestRainbowTrendLadderKill(loadStrategyState(strategy), Date.now());
+      await saveStrategyState(strategy.id, lockedState);
+      const signalId = await db.createSignal({
+        userId: strategy.userId,
+        strategyId: strategy.id,
+        rawPayload: JSON.stringify({ action: "close", command: "KILL", strategyKey: strategy.strategyKey }),
+        parsedAction: "close",
+        parsedSymbol: strategy.symbol,
+        status: "received",
+        source: "manual",
+        message: "新七彩虹階梯策略 KILL：已先停用並鎖定，等待只平自有持倉",
+      });
+      const result = await executeSignal(
+        { ...strategy, enabled: false },
+        {
+          action: "close",
+          symbol: strategy.symbol,
+          reason: "受保護 KILL 程序",
+          rainbowTrendLadderKill: true,
+        },
+        signalId,
+      );
+      const signalStatus = result.status === "executed" ? "executed" : result.status === "failed" ? "failed" : "skipped";
+      await db.updateSignal(signalId, {
+        status: signalStatus,
+        message: `[KILL] ${result.message}`,
+        orderId: result.orderId,
+      });
+      return {
+        success: result.status === "executed",
+        locked: true,
+        strategyEnabled: false,
+        heartbeatWarning,
+        execution: result,
+      };
+    }),
+
+  /** 人工解除 KILL 只移除本地鎖；不重新啟用策略、不建立排程、不武裝實盤。 */
+  releaseRainbowTrendLadderKill: protectedProcedure
+    .input(z.object({ strategyId: z.number(), confirmation: z.literal("RELEASE KILL") }))
+    .mutation(async ({ input, ctx }) => {
+      const strategy = await db.getStrategyById(input.strategyId, ctx.user!.id);
+      if (!strategy || strategy.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+        throw new Error("找不到指定的新七彩虹階梯策略");
+      }
+      const released = releaseRainbowTrendLadderKill(loadStrategyState(strategy), Date.now());
+      await saveStrategyState(strategy.id, released);
+      return {
+        success: true,
+        killed: false,
+        strategyEnabled: false,
+        message: "KILL 鎖定已解除；策略仍保持停用，須另行完成模擬盤驗收及人工啟用",
+      };
     }),
 
   /**

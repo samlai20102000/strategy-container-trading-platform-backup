@@ -4,6 +4,7 @@ import {
   createTrade,
   disableStrategySystem,
   getApiKeyById,
+  listEnabledStrategies,
   getStrategyById,
   getTodayRealizedPnl,
   updateSignal,
@@ -47,9 +48,25 @@ import {
   Rainbow20415CloseReason,
   type Rainbow20415CoreAction,
 } from "../strategies/rainbow20415/core";
+import {
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+  validateRainbowTrendLadderConfig,
+  type RainbowTrendLadderBaseLot,
+} from "../../shared/strategies/rainbowTrendLadder";
+import {
+  type RainbowTrendLadderCloseReason,
+  type RainbowTrendLadderCoreAction,
+} from "../strategies/rainbowTrendLadder/core";
+import {
+  applyRainbowTrendLadderCloseToState,
+  applyRainbowTrendLadderFillToState,
+  evaluateRainbowTrendLadderManagement,
+  requestRainbowTrendLadderKill,
+} from "../strategies/rainbowTrendLadder/management";
 import { getBoundStrategyConfig } from "./strategySnapshotConfig";
 import { resolveDeploymentPosition } from "./deploymentPosition";
 import { tradeFillRecordFields } from "./tradeFillTruth";
+import { fetchRainbowTrendLadderMarketQuote } from "./rainbowTrendLadderMarketQuote";
 
 /**
  * 策略執行引擎
@@ -76,6 +93,14 @@ export interface ParsedSignal {
   rainbow20415LayerNum?: number;
   rainbow20415CloseReason?: Rainbow20415CloseReason;
   rainbow20415OrderSize?: Rainbow20415BaseLot;
+  /** 新七彩虹階梯策略內部決策封印；外部 webhook 解析器永不映射。 */
+  rainbowTrendLadderDecision?: boolean;
+  rainbowTrendLadderAction?: RainbowTrendLadderCoreAction;
+  rainbowTrendLadderLayerNum?: number;
+  rainbowTrendLadderCloseReason?: RainbowTrendLadderCloseReason;
+  rainbowTrendLadderOrderSize?: RainbowTrendLadderBaseLot;
+  /** KILL 只可由受保護的伺服器程序注入；收到後先永久鎖定，再驗證持倉所有權。 */
+  rainbowTrendLadderKill?: boolean;
 }
 
 /**
@@ -205,6 +230,11 @@ export async function executeSignal(
       adapter,
       apiKeyRecord,
     );
+  }
+
+  // 新七彩虹階梯策略必須先於通用 close 分派，避免繞過專用帳戶及持倉所有權檢查。
+  if (strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+    return executeSignalRainbowTrendLadder(strategy, signal, signalId, adapter);
   }
 
   // 4. 平倉訊號
@@ -480,6 +510,256 @@ export async function executeSignal(
   return {
     status: "failed",
     message: orderResult.errorMessage || "下單失敗",
+    exchangeResponse: orderResult.rawResponse,
+  };
+}
+
+function nearlyEqualOwnedSize(exchangeSize: number, localSize: number): boolean {
+  const tolerance = Math.max(1e-10, Math.abs(localSize) * 0.001);
+  return Math.abs(exchangeSize - localSize) <= tolerance;
+}
+
+/**
+ * ===== 新七彩虹線趨勢跟蹤階梯馬丁專用執行管線 =====
+ *
+ * 此函式不引用 20415 的設定、runtime 或決策函式。所有 BUY/SELL/ADD 必須帶有
+ * 伺服器內部封印；外部 webhook 只可請求一般平倉，KILL 由受保護程序注入。
+ * 任一隔離、帳戶、報價或持倉所有權證據缺失均 fail-closed。
+ */
+async function executeSignalRainbowTrendLadder(
+  strategy: Strategy,
+  signal: ParsedSignal,
+  signalId: number,
+  adapter: ExchangeAdapter,
+): Promise<ExecutionResult> {
+  let state = loadStrategyState(strategy);
+  const martinState = strategy.martinState && typeof strategy.martinState === "object"
+    ? strategy.martinState as Record<string, unknown>
+    : {};
+  const rawConfig = getBoundStrategyConfig(martinState, RAINBOW_TREND_LADDER_STRATEGY_KEY)
+    ?? martinState.__rainbowTrendLadderConfig
+    ?? {};
+  const validation = validateRainbowTrendLadderConfig(rawConfig);
+  if (!validation.valid) {
+    return {
+      status: "rejected",
+      message: `新七彩虹階梯策略參數校驗失敗：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`,
+    };
+  }
+  const config = validation.config;
+  const now = Date.now();
+  const localHasPosition = () => state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+
+  if (signal.rainbowTrendLadderKill === true) {
+    state = requestRainbowTrendLadderKill(state, now);
+    await saveStrategyState(strategy.id, state);
+    if (!localHasPosition()) {
+      return { status: "executed", message: "新七彩虹階梯策略 KILL 已鎖定；本地無可證明自有持倉，未送出任何交易指令" };
+    }
+  }
+
+  const enabledStrategies = await listEnabledStrategies();
+  const accountConflicts = enabledStrategies.filter(
+    (candidate) => candidate.id !== strategy.id && candidate.apiKeyId === strategy.apiKeyId,
+  );
+  if (config.Require_Dedicated_Account && accountConflicts.length > 0) {
+    return {
+      status: "rejected",
+      message: `新七彩虹階梯策略要求專用交易帳戶，但同一 API Key 尚有 ${accountConflicts.length} 條啟用策略；已安全封鎖所有下單與聚合平倉`,
+    };
+  }
+
+  let positions: Awaited<ReturnType<ExchangeAdapter["getPositions"]>>;
+  try {
+    positions = await adapter.getPositions(strategy.symbol);
+  } catch (error: any) {
+    return { status: "rejected", message: `新七彩虹階梯策略無法驗證交易所持倉所有權：${error.message}` };
+  }
+  const expectedSide = state.isLong ? "long" : "short";
+  const sameSidePosition = positions.find((position) => position.side === expectedSide && position.size > 0);
+  const hasAnyExchangePosition = positions.some((position) => position.size > 0);
+  const ownedPositionVerified = localHasPosition() && !!sameSidePosition && nearlyEqualOwnedSize(sameSidePosition.size, state.totalSize);
+
+  let action: RainbowTrendLadderCoreAction;
+  let orderSize: RainbowTrendLadderBaseLot | undefined;
+  let targetLayer: number | undefined;
+  let closeReason: RainbowTrendLadderCloseReason | undefined;
+  let decisionReason = signal.reason || "外部指令";
+
+  if (signal.rainbowTrendLadderKill === true) {
+    action = "close";
+    closeReason = "KILL";
+    decisionReason = "KILL 已先鎖定，準備只平本策略可證明擁有的持倉";
+  } else if (signal.rainbowTrendLadderDecision === true && signal.rainbowTrendLadderAction) {
+    action = signal.rainbowTrendLadderAction;
+    orderSize = action === "buy" || action === "sell"
+      ? { ...config.Base_Lot_Size }
+      : signal.rainbowTrendLadderOrderSize;
+    targetLayer = signal.rainbowTrendLadderLayerNum;
+    closeReason = signal.rainbowTrendLadderCloseReason;
+  } else if (signal.action === "close") {
+    action = "close";
+    closeReason = "MANUAL";
+    decisionReason = signal.reason || "人工平倉";
+  } else {
+    return {
+      status: "rejected",
+      message: "新七彩虹階梯策略拒絕未封印 BUY/SELL：入場與加倉只能由伺服器七線核心產生",
+    };
+  }
+
+  if (action === "hold") return { status: "skipped", message: `新七彩虹階梯策略觀望：${decisionReason}` };
+
+  if (action === "close") {
+    if (!localHasPosition()) return { status: "skipped", message: "新七彩虹階梯策略無本地自有持倉可平倉" };
+    if (!ownedPositionVerified) {
+      return {
+        status: "rejected",
+        message: `新七彩虹階梯策略無法證明交易所${expectedSide === "long" ? "多" : "空"}倉 ${sameSidePosition?.size ?? 0} 完全屬於本策略本地數量 ${state.totalSize}；已保持 KILL 鎖定但不送出聚合平倉`,
+      };
+    }
+    const result = await adapter.closePositionSmart(strategy.symbol, expectedSide);
+    if (!result.success) {
+      return { status: "failed", message: result.errorMessage || "新七彩虹階梯策略平倉失敗；KILL 鎖定與本地狀態均保留", exchangeResponse: result.rawResponse };
+    }
+    const exitPrice = result.filledPrice || sameSidePosition?.markPrice || Number(signal.price) || 0;
+    const pnl = exitPrice > 0
+      ? (exitPrice - state.avgPrice) * state.totalSize * (state.isLong ? 1 : -1)
+      : undefined;
+    await createTrade({
+      strategyId: strategy.id,
+      userId: strategy.userId,
+      signalId,
+      exchange: strategy.exchange,
+      symbol: strategy.symbol,
+      side: state.isLong ? "sell" : "buy",
+      orderType: "market",
+      orderId: result.orderId,
+      ...tradeFillRecordFields(result, exitPrice || undefined, state.totalSize),
+      realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
+      reduceOnly: true,
+      status: "filled",
+      triggerSource: closeReason === "KILL" ? "manual" : "webhook",
+    });
+    const resolvedCloseReason = closeReason ?? "MANUAL";
+    const nextState = applyRainbowTrendLadderCloseToState(state, resolvedCloseReason, config, now);
+    await saveStrategyState(strategy.id, nextState);
+    try {
+      const { releaseAllLocks } = await import("./barLock");
+      await releaseAllLocks(strategy.id);
+    } catch (error: any) {
+      console.warn(`[Executor][RainbowTrendLadder] 清除 Bar-Lock 失敗：${error.message}`);
+    }
+    return {
+      status: "executed",
+      message: `[新七彩虹階梯策略平倉] ${decisionReason}${resolvedCloseReason === "KILL" ? "；策略維持 KILL 永久鎖定" : "；等待下一根 M30 收盤"}`,
+      orderId: result.orderId,
+      exchangeResponse: result.rawResponse,
+    };
+  }
+
+  const isInitial = action === "buy" || action === "sell";
+  const isLong = action === "buy" || action === "add_long";
+  if (!config.Live_Trading_Armed) {
+    return { status: "rejected", message: "新七彩虹階梯策略尚未武裝實盤；信號已記錄但不送單" };
+  }
+  if (isInitial && localHasPosition()) return { status: "skipped", message: "新七彩虹階梯策略已有持倉，禁止重複底倉" };
+  if (!isInitial && !localHasPosition()) return { status: "skipped", message: "新七彩虹階梯策略無底倉，禁止直接加倉" };
+  if (isInitial && hasAnyExchangePosition) {
+    return { status: "rejected", message: "專用帳戶仍有交易所持倉，禁止新七彩虹階梯策略建立底倉" };
+  }
+  if (!isInitial && !ownedPositionVerified) {
+    return { status: "rejected", message: "交易所持倉數量與本策略成交帳不一致，安全封鎖階梯加倉" };
+  }
+  if (isLong && strategy.direction === "short") return { status: "skipped", message: "策略僅允許做空" };
+  if (!isLong && strategy.direction === "long") return { status: "skipped", message: "策略僅允許做多" };
+  if (!orderSize || !(orderSize.value > 0)) return { status: "rejected", message: "新七彩虹階梯策略下單手數無效" };
+
+  let balance: Awaited<ReturnType<ExchangeAdapter["getBalance"]>>;
+  try {
+    balance = await adapter.getBalance();
+  } catch (error: any) {
+    return { status: "rejected", message: `無法取得真實保證金資料，安全封鎖新七彩虹階梯策略下單：${error.message}` };
+  }
+  const marginUsagePct = balance.total > 0 && balance.usedMargin != null
+    ? (balance.usedMargin / balance.total) * 100
+    : null;
+  if (marginUsagePct == null) return { status: "rejected", message: "交易所未提供已用保證金，安全封鎖新七彩虹階梯策略下單" };
+  if (marginUsagePct >= config.Max_Margin_Usage_Pct) {
+    return { status: "rejected", message: `保證金鐵幕：${marginUsagePct.toFixed(2)}% ≥ ${config.Max_Margin_Usage_Pct}%，禁止下單` };
+  }
+
+  let quote;
+  try {
+    quote = await fetchRainbowTrendLadderMarketQuote(strategy.exchange as "okx" | "bybit", strategy.symbol, config.Point_Value);
+  } catch (error: any) {
+    return { status: "rejected", message: `缺少交易所即時 bid/ask，安全封鎖新七彩虹階梯策略下單：${error.message}` };
+  }
+  if (quote.spreadPoints >= config.Max_Spread_Points) {
+    return { status: "rejected", message: `點差 ${quote.spreadPoints.toFixed(2)} 點未低於上限 ${config.Max_Spread_Points} 點，禁止下單` };
+  }
+  const executionReference = isLong ? quote.ask : quote.bid;
+  const decisionPrice = Number(signal.price) || executionReference;
+  const slippagePoints = Math.abs(executionReference - decisionPrice) / config.Point_Value;
+  if (slippagePoints > config.Max_Slippage_Points) {
+    return { status: "rejected", message: `執行前滑點 ${slippagePoints.toFixed(2)} 點超過上限 ${config.Max_Slippage_Points} 點，禁止下單` };
+  }
+
+  if (isInitial && signal.barTimestamp) {
+    const { checkBarLock } = await import("./barLock");
+    if (await checkBarLock(strategy.id, signal.barTimestamp)) {
+      return { status: "skipped", message: `新七彩虹階梯策略 Bar-Lock 攔截：M30 K 線 ${signal.barTimestamp} 已處理` };
+    }
+  }
+
+  let quantity = orderSize.mode === "usdt" ? orderSize.value / executionReference : orderSize.value;
+  const normalized = await normalizeQtyForSymbol(strategy.exchange, strategy.symbol, quantity, "linear");
+  if (normalized.rejected) return { status: "rejected", message: `新七彩虹階梯策略下單數量不符交易所規格：${normalized.reason}` };
+  quantity = normalized.qty;
+
+  const orderResult = await adapter.placeOrder({
+    symbol: strategy.symbol,
+    side: isLong ? "buy" : "sell",
+    orderType: "market",
+    size: quantity,
+    leverage: strategy.leverage,
+  });
+  await createTrade({
+    strategyId: strategy.id,
+    userId: strategy.userId,
+    signalId,
+    exchange: strategy.exchange,
+    symbol: strategy.symbol,
+    side: isLong ? "buy" : "sell",
+    orderType: "market",
+    orderId: orderResult.orderId,
+    ...tradeFillRecordFields(orderResult, executionReference, quantity),
+    status: orderResult.success ? "filled" : "failed",
+    triggerSource: "webhook",
+  });
+  if (!orderResult.success) {
+    return { status: "failed", message: orderResult.errorMessage || "新七彩虹階梯策略下單失敗；狀態與 Bar-Lock 未推進", exchangeResponse: orderResult.rawResponse };
+  }
+
+  const fillPrice = orderResult.filledPrice ?? executionReference;
+  const fillQuantity = orderResult.filledSize ?? quantity;
+  const nextState = applyRainbowTrendLadderFillToState(state, {
+    action: action as "buy" | "sell" | "add_long" | "add_short",
+    fillPrice,
+    fillQuantity,
+    timestamp: now,
+    barTimestamp: signal.barTimestamp,
+    targetLayer,
+    accountEquity: balance.total,
+  });
+  await saveStrategyState(strategy.id, nextState);
+  if (isInitial && signal.barTimestamp) {
+    await acquireBarLock(strategy.id, signal.barTimestamp, config.Entry_Timeframe_Minutes);
+  }
+  return {
+    status: "executed",
+    message: `[新七彩虹階梯策略${isInitial ? "底倉" : `加倉 L${nextState.currentLayer}`}] ${isLong ? "買入" : "賣出"} ${fillQuantity} ${strategy.symbol} @ ${fillPrice}；均價 ${nextState.avgPrice.toFixed(4)}；${decisionReason}`,
+    orderId: orderResult.orderId,
     exchangeResponse: orderResult.rawResponse,
   };
 }

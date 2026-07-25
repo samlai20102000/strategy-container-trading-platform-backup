@@ -32,6 +32,17 @@ import {
   withNumericDeploymentBaseLot,
   withObjectDeploymentBaseLot,
 } from "./deploymentPosition";
+import {
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+  validateRainbowTrendLadderConfig,
+} from "../../shared/strategies/rainbowTrendLadder";
+import {
+  calculateRainbowTrendLadderLineSnapshot,
+  evaluateRainbowTrendLadderEntry,
+  type RainbowTrendLadderAccountMetrics,
+} from "../strategies/rainbowTrendLadder/core";
+import { evaluateRainbowTrendLadderManagement } from "../strategies/rainbowTrendLadder/management";
+import { fetchRainbowTrendLadderMarketQuote } from "./rainbowTrendLadderMarketQuote";
 
 
 
@@ -172,6 +183,141 @@ export async function generateTradingSignal(
 
     // 建立交易所轉接器。20415 會在抓 K 線前先對賬，避免本地狀態剛被重置時仍錯用 M1 進場。
     const adapter = createAdapter(apiKeyRecord);
+
+    if (strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+      const { getStrategyById } = await import("../db");
+      const freshStrategy = await getStrategyById(strategy.id);
+      const effectiveStrategy = freshStrategy || strategy;
+      const state = loadStrategyState(effectiveStrategy);
+      const effectiveMartinState = effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
+        ? effectiveStrategy.martinState as Record<string, unknown>
+        : {};
+      const rawConfig = getBoundStrategyConfig(effectiveMartinState, RAINBOW_TREND_LADDER_STRATEGY_KEY)
+        ?? effectiveMartinState.__rainbowTrendLadderConfig
+        ?? initialSnapshotConfig
+        ?? {};
+      const validation = validateRainbowTrendLadderConfig(rawConfig);
+      if (!validation.valid) {
+        const detail = `新七彩虹階梯策略配置無效：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`;
+        if (withReason) return { signal: null, holdReason: { type: "validation_failed", detail } };
+        return null;
+      }
+      const config = validation.config;
+      const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+      let quote: Awaited<ReturnType<typeof fetchRainbowTrendLadderMarketQuote>> | null = null;
+      try {
+        quote = await fetchRainbowTrendLadderMarketQuote(
+          effectiveStrategy.exchange as "okx" | "bybit",
+          effectiveStrategy.symbol,
+          config.Point_Value,
+        );
+      } catch (error: any) {
+        console.warn(`[AutoTradeSignalGenerator][RainbowTrendLadder] 即時 bid/ask 取得失敗，所有新單將 fail-closed：${error.message}`);
+      }
+
+      let decision;
+      let barTimestamp: number | undefined;
+      if (!hasPosition) {
+        const maxLinePeriod = Math.max(...config.Lines.map((line) => line.period));
+        const klines = await fetchKLineData(
+          adapter,
+          effectiveStrategy.symbol,
+          config.Entry_Timeframe_Minutes,
+          Math.min(300, Math.max(100, maxLinePeriod + 2)),
+          true,
+        );
+        if (klines.length === 0) {
+          const detail = `新七彩虹階梯策略無法取得 ${effectiveStrategy.symbol} M${config.Entry_Timeframe_Minutes} 已收盤 K 線`;
+          if (withReason) return { signal: null, holdReason: { type: "no_data", detail } };
+          return null;
+        }
+        barTimestamp = klines.at(-1)?.timestamp;
+        decision = evaluateRainbowTrendLadderEntry({
+          candles: klines,
+          state,
+          rawConfig: config,
+          allowedDirection: effectiveStrategy.direction as "long" | "short" | "both",
+          spreadPoints: quote?.spreadPoints ?? null,
+        });
+      } else {
+        const [managementKlines, trendKlines, balanceResult, positionsResult] = await Promise.all([
+          fetchKLineData(adapter, effectiveStrategy.symbol, config.Management_Interval_Minutes, 5, false),
+          fetchKLineData(adapter, effectiveStrategy.symbol, config.Entry_Timeframe_Minutes, 100, true),
+          adapter.getBalance().catch((error) => {
+            console.warn(`[AutoTradeSignalGenerator][RainbowTrendLadder] 帳戶真值取得失敗：${error.message}`);
+            return null;
+          }),
+          adapter.getPositions(effectiveStrategy.symbol).catch((error) => {
+            console.warn(`[AutoTradeSignalGenerator][RainbowTrendLadder] 持倉真值取得失敗：${error.message}`);
+            return null;
+          }),
+        ]);
+        const expectedSide = state.isLong ? "long" : "short";
+        const exchangePosition = positionsResult?.find((position) => position.side === expectedSide && position.size > 0);
+        const currentPrice = exchangePosition?.markPrice
+          || quote?.mid
+          || managementKlines.at(-1)?.close
+          || 0;
+        const account: RainbowTrendLadderAccountMetrics | undefined = balanceResult
+          ? {
+              equity: balanceResult.total,
+              balance: balanceResult.total,
+              usedMargin: balanceResult.usedMargin,
+            }
+          : undefined;
+        const trendSnapshot = trendKlines.length > 0
+          ? calculateRainbowTrendLadderLineSnapshot(trendKlines, config)
+          : undefined;
+        barTimestamp = managementKlines.at(-1)?.timestamp ?? trendKlines.at(-1)?.timestamp;
+        decision = evaluateRainbowTrendLadderManagement(
+          {
+            currentPrice,
+            now: Date.now(),
+            account,
+            trendSnapshot,
+            spreadPoints: quote?.spreadPoints ?? null,
+          },
+          state,
+          config,
+        );
+      }
+
+      const currentRuntime = (state as any).rainbowTrendLadderRuntime ?? {};
+      const nextRuntime = (decision.nextState as any).rainbowTrendLadderRuntime ?? {};
+      if (JSON.stringify(currentRuntime) !== JSON.stringify(nextRuntime)) {
+        await saveStrategyState(effectiveStrategy.id, decision.nextState);
+      }
+      console.log(
+        `[AutoTradeSignalGenerator][RainbowTrendLadder] mode=${hasPosition ? "M1-BLIND" : "M30-SCAN"} armed=${config.Live_Trading_Armed} action=${decision.action} reason=${decision.reason}`,
+      );
+      if (decision.action === "hold" || !config.Live_Trading_Armed) {
+        const detail = decision.action === "hold"
+          ? `新七彩虹階梯策略觀望：${decision.reason}`
+          : `新七彩虹階梯策略尚未武裝實盤；本輪模擬決策 ${decision.action}：${decision.reason}`;
+        if (withReason) return { signal: null, holdReason: { type: "strategy_hold", detail } };
+        return null;
+      }
+
+      const sealedSignal: ParsedSignal = {
+        action: decision.action === "close"
+          ? "close"
+          : decision.action === "buy" || decision.action === "add_long"
+            ? "buy"
+            : "sell",
+        symbol: effectiveStrategy.symbol,
+        price: decision.price,
+        barTimestamp,
+        reason: decision.reason,
+        confidence: 1,
+        rainbowTrendLadderDecision: true,
+        rainbowTrendLadderAction: decision.action,
+        rainbowTrendLadderLayerNum: decision.layerNum,
+        rainbowTrendLadderCloseReason: decision.closeReason,
+        rainbowTrendLadderOrderSize: decision.orderSize,
+      };
+      if (withReason) return { signal: sealedSignal, holdReason: null };
+      return sealedSignal;
+    }
 
     if (strategy.strategyKey === "strategy_20415") {
       try {

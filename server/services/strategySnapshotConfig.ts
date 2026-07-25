@@ -14,6 +14,7 @@ const LEGACY_CONFIG_KEY_BY_STRATEGY: Readonly<Record<string, string>> = {
   KAMA_3K_HF_V61: "__v61Config",
   KAMA_3K_TORNADO_V70: "__v70Config",
   strategy_20415: "__v2_0Config",
+  RAINBOW_TREND_LADDER_V1: "__rainbowTrendLadderConfig",
 };
 
 export type SnapshotSourceMetadata = {

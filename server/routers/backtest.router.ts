@@ -37,6 +37,11 @@ import {
   deriveRainbow20415FinalEnabledLayer,
   RAINBOW_20415_STRATEGY_KEY,
 } from "../../shared/strategies/rainbow20415";
+import {
+  assertValidRainbowTrendLadderConfig,
+  deriveRainbowTrendLadderFinalEnabledLayer,
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+} from "../../shared/strategies/rainbowTrendLadder";
 
 function assertRegisteredStrategy(strategyKey: string): void {
   const isRegistered = listRegisteredStrategies().some((strategy) => strategy.key === strategyKey);
@@ -56,9 +61,16 @@ function normalizeSnapshotConfigForStrategy(
     if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
       return { ...assertValidRainbow20415Config(rawConfig) };
     }
+    if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+      return { ...assertValidRainbowTrendLadderConfig(rawConfig) };
+    }
     return { ...rawConfig };
   } catch (error) {
-    const label = strategyKey === RAINBOW_20415_STRATEGY_KEY ? "20415 七彩虹" : "V2.5";
+    const label = strategyKey === RAINBOW_20415_STRATEGY_KEY
+      ? "20415 七彩虹"
+      : strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+        ? "七彩虹線趨勢跟蹤階梯馬丁"
+        : "V2.5";
     throw new Error(
       `${label}快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
     );
@@ -124,6 +136,15 @@ function validateRequest(input: z.infer<typeof backtestRequestSchema>): Backtest
       if (input.timeframe.toLowerCase() !== expectedTimeframe) {
         throw new Error(
           `20415 七彩虹回測資料週期必須為 ${expectedTimeframe}；${timeframeForMinutes(config.Entry_Timeframe_Minutes)} 入場 K 線由同源引擎內部聚合。`,
+        );
+      }
+      input.config = { ...config };
+    } else if (input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+      const config = assertValidRainbowTrendLadderConfig(input.config);
+      const expectedTimeframe = timeframeForMinutes(config.Management_Interval_Minutes);
+      if (input.timeframe.toLowerCase() !== expectedTimeframe) {
+        throw new Error(
+          `七彩虹線階梯回測資料週期必須為 ${expectedTimeframe}；${timeframeForMinutes(config.Entry_Timeframe_Minutes)} 入場 K 線由同源引擎內部聚合。`,
         );
       }
       input.config = { ...config };
@@ -390,6 +411,13 @@ export const backtestRouter = router({
                     baseLotSizeMode: String((storedConfig.Base_Lot_Size as { mode?: unknown })?.mode ?? "quantity"),
                     configJson: storedConfig,
                   }
+                : input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+                  ? {
+                      tradeAmount: Number((storedConfig.Base_Lot_Size as { value?: unknown })?.value),
+                      baseLotSize: Number((storedConfig.Base_Lot_Size as { value?: unknown })?.value),
+                      baseLotSizeMode: String((storedConfig.Base_Lot_Size as { mode?: unknown })?.mode ?? "quantity"),
+                      configJson: storedConfig,
+                    }
                 : {}),
           }
         : null;
@@ -543,20 +571,28 @@ export const backtestRouter = router({
         ? assertValidRainbow20415Config(config)
         : undefined;
       const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
+      const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+        ? assertValidRainbowTrendLadderConfig(config)
+        : undefined;
+      const firstLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled);
+      const nextLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled && range.layer > 1);
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
+          martinMultiplier: String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
           maxMartinLevel: v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
-              : config.Max_Layers ?? (strategy as any).maxMartinLevel,
+              : ladderConfig
+                ? Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(ladderConfig.Martin_Layers))
+                : config.Max_Layers ?? (strategy as any).maxMartinLevel,
           martinSpacingPct: String(
-            firstRainbowRange
-              ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
-              : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct,
+            nextLadderRange?.triggerSpacingPct
+              ?? (firstRainbowRange
+                ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
+                : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct),
           ),
           ...(v25Config ? {
             stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
@@ -569,6 +605,11 @@ export const backtestRouter = router({
             maxLossPct: String(rainbowConfig.Max_Account_Loss_Pct),
             kLinePeriod: rainbowConfig.Entry_Timeframe_Minutes,
             reentryEnabled: rainbowConfig.Reentry_Enabled,
+          } : ladderConfig ? {
+            stopLossPct: "0",
+            takeProfitPct: String(ladderConfig.Trailing_Activation_Pct),
+            kLinePeriod: ladderConfig.Entry_Timeframe_Minutes,
+            reentryEnabled: ladderConfig.Reentry_Wait_Next_M30_Close,
           } : {}),
         })
         .where(eq(strategies.id, input.targetStrategyId));
@@ -625,13 +666,18 @@ export const backtestRouter = router({
         ? assertValidRainbow20415Config(config)
         : undefined;
       const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
+      const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+        ? assertValidRainbowTrendLadderConfig(config)
+        : undefined;
+      const firstLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled);
+      const nextLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled && range.layer > 1);
       const backtestSettings =
         snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
           ? (snapshot.backtestSettings as Record<string, unknown>)
           : {};
       const deploymentPosition = createDeploymentPosition(
-        input.positionSize,
-        input.positionMode,
+        ladderConfig?.Base_Lot_Size.value ?? input.positionSize,
+        ladderConfig?.Base_Lot_Size.mode ?? input.positionMode,
       );
 
       // 生成 webhookSecret
@@ -655,19 +701,22 @@ export const backtestRouter = router({
         enabled: false,
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
-        stopLossPct: String(rainbowConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
-        takeProfitPct: String(rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
+        stopLossPct: String(rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
+        takeProfitPct: String(ladderConfig?.Trailing_Activation_Pct ?? rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
         maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
-        martinMultiplier: String(firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
+        martinMultiplier: String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
         maxMartinLevel: v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbowConfig
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
-            : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
+            : ladderConfig
+              ? Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(ladderConfig.Martin_Layers))
+              : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
         martinSpacingPct: String(
-          firstRainbowRange
-            ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
-            : firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0,
+          nextLadderRange?.triggerSpacingPct
+            ?? (firstRainbowRange
+              ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
+              : firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0),
         ),
         martinState: attachSnapshotConfig(
           {
@@ -684,8 +733,8 @@ export const backtestRouter = router({
         ),
         strategyKey: snapshotKey,
         tradeMode: 'webhook',
-        kLinePeriod: rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
-        reentryEnabled: rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
+        kLinePeriod: ladderConfig?.Entry_Timeframe_Minutes ?? rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
+        reentryEnabled: ladderConfig?.Reentry_Wait_Next_M30_Close ?? rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
       });
 
       const newId = insertResult?.[0]?.insertId;

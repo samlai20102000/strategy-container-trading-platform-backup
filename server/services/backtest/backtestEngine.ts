@@ -32,6 +32,7 @@ import { decideCloseSplit } from "../kamaReversalGuard";
 import type { BaseStrategy, MartinState, StrategyInstanceConfig } from "../../strategies/base";
 import { StrategyKama3kBreakoutV25 } from "../../strategies/v25/strategy_kama_3k_breakout_v25";
 import { Strategy20415 } from "../../strategies/builtin/strategy20415";
+import { StrategyRainbowTrendLadder } from "../../strategies/builtin/strategyRainbowTrendLadder";
 import {
   applyV25CloseToState,
   applyV25FillToState,
@@ -53,6 +54,8 @@ import {
   assertValidRainbow20415Config,
   RAINBOW_20415_STRATEGY_KEY,
 } from "../../../shared/strategies/rainbow20415";
+import { RAINBOW_TREND_LADDER_STRATEGY_KEY } from "../../../shared/strategies/rainbowTrendLadder";
+import { runRainbowTrendLadderBacktest } from "./rainbowTrendLadderBacktest";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -167,6 +170,7 @@ export class BacktestEngine {
     const isV70 = request.strategyKey === "KAMA_3K_TORNADO_V70";
     const isV25 = request.strategyKey === V25_STRATEGY_KEY;
     const isRainbow20415 = request.strategyKey === RAINBOW_20415_STRATEGY_KEY;
+    const isRainbowTrendLadder = request.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
 
     // 合併策略默認配置（與實盤 resolveConfig 邏輯一致，依選中策略的 defaultConfig）
     const config: Record<string, unknown> = {
@@ -213,6 +217,24 @@ export class BacktestEngine {
         throw new Error("20415 七彩虹回測引擎類型不一致");
       }
       return this.runRainbow20415Backtest(
+        request,
+        strategy,
+        config,
+        candles,
+        startMs,
+        endMs,
+        commission,
+        slippage,
+        onProgress,
+      );
+    }
+
+    // 全新七彩虹線階梯：獨立純核心回測，禁止落入通用策略近似器。
+    if (isRainbowTrendLadder) {
+      if (!(strategy instanceof StrategyRainbowTrendLadder)) {
+        throw new Error("七彩虹線階梯回測引擎類型不一致");
+      }
+      return runRainbowTrendLadderBacktest(
         request,
         strategy,
         config,
