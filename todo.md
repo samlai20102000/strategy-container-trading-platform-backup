@@ -1943,19 +1943,20 @@
 
 ### V4.0 KAMA 動態馬丁 — 總盈虧 0.00% 問題
 
-- [ ] 診斷：確認平倉交易是否正確寫入 realizedPnl
-- [ ] 修復：executor.ts V3.5 管線平倉邏輯，確保 realizedPnl 計算正確
-- [ ] 修復：martinState 初始化邏輯，確保新建策略時 martinState 被正確初始化
-- [ ] 驗證：performance.byStrategy 能正確計算 totalPnl（非 0.00%）
-- [ ] 測試：回歸測試 V4.0 KAMA 的開倉、加倉、平倉全流程
+- [x] 診斷：確認平倉交易是否正確寫入 realizedPnl
+- [x] 修復：executor.ts V3.5 管線平倉邏輯，確保 realizedPnl 計算正確
+- [x] 修復：martinState 初始化邏輯，確保新建策略時 martinState 被正確初始化
+- [x] 驗證：performance.byStrategy 能正確計算 totalPnl（非 0.00%）
+- [x] 測試：回歸測試 V4.0 KAMA 的開倉、加倉、平倉全流程（程式級生命週期，不執行未授權真實交易）
+- [x] 修正 `PnlValue` 對小於 0.01 USDT 的非零盈虧固定兩位小數顯示，採自適應精度並補格式化回歸測試
 
 ### V6.1 高頻掃射 — 帳戶模式不匹配問題
 
-- [ ] 診斷：檢查帳戶模式檢測邏輯是否正確識別模擬子帳號
-- [ ] 修復：OKX adapter 帳戶模式檢測，支持模擬子帳號
-- [ ] 修復：V6.1 策略引擎的 posMode 判斷邏輯
+- [x] 診斷：檢查帳戶模式檢測邏輯是否正確識別模擬子帳號
+- [x] 修復：OKX adapter 帳戶模式檢測，支持模擬子帳號
+- [x] 修復：V6.1 策略引擎的 posMode 判斷邏輯
 - [ ] 驗證：V6.1 在模擬子帳號上能正常下單
-- [ ] 測試：回歸測試 V6.1 的完整交易流程
+- [x] 測試：回歸測試 V6.1 的完整交易流程（程式級 OKX payload／策略分流，不執行未授權真實訂單）
 
 
 
@@ -1964,17 +1965,17 @@
 ### V4.0 KAMA 總浮虧 0.00% ≥ 0 停用問題
 - [x] 診斷根本原因：Max_Loss_Pct ≤ 0 時誤觸發硬止損（shouldTriggerLimitStop 缺少邊界檢查）
 - [x] 修復 shouldTriggerLimitStop 邏輯：添加 Max_Loss_Pct > 0 檢查（martingaleEngine.ts 第 585-588 行）
-- [ ] 驗證 V4.0 KAMA 策略配置：確保 Max_Loss_Pct 設置為正值（例如 6%）
+- [x] 驗證 V4.0 KAMA 策略配置：確保 Max_Loss_Pct 設置為正值（實際安全值 5%）
 - [ ] 手動觸發完整開倉→平倉週期進行回歸測試
-- [ ] 確認 performance.byStrategy 正確計算 totalPnl
+- [x] 確認 performance.byStrategy 正確計算 totalPnl
 
 ### V6.1 高頻掃射帳戶模式不匹配問題
 - [ ] 驗證 OKX 模擬子帳號帳戶設置：確認為「雙向持倉」+「跨幣種保證金」
 - [ ] 確認模擬子帳號已啟用「永續」合約模式（非現貨/杠桿）
 - [ ] 測試連線驗證帳戶模式檢測
-- [ ] 如需修復 OKX adapter：添加模擬子帳號特殊處理邏輯
+- [x] 如需修復 OKX adapter：添加模擬子帳號特殊處理邏輯
 - [ ] 執行 V6.1 完整交易週期回歸測試
-- [ ] 保存檢查點並交付修復結果
+- [x] 保存檢查點並交付修復結果
 
 ## 阻斷性二次修復：V4.0 開倉成功後仍被 0% 硬止損停用（2026-07-25）
 
@@ -1986,7 +1987,7 @@
 - [x] 為 0、`"0"`、null、undefined、NaN、負值、有效正值及有／無持倉情境新增單元與整合回歸測試
 - [x] 核對並安全清理該 V4.0 實例的舊停用原因；不得自動下單、平倉或變更其他策略
 - [x] 執行 TypeScript、完整 Vitest、生產建置與實際 UI／日誌唯讀驗收
-- [ ] 更新根因紀錄、核對待辦並保存自動發布檢查點
+- [x] 更新根因紀錄、核對待辦並保存自動發布檢查點
 
 ## V4.0 跨實例競態與 V6.1 OKX 持倉模式底層修復（2026-07-25）
 
@@ -2003,6 +2004,6 @@
 - [x] 將 auto-trade 的 V35 判定由過寬 `includes("KAMA")` 收斂為精確 `20415_KAMA_MARTIN_V35`，並回歸驗證 V5／V6.1／V7 各自走專屬監控
 - [x] 將直接呼叫 OKX 公網的交易對整合測試改為明確 opt-in，避免 sandbox／CI 連線逾時使預設 Vitest 偽失敗；保留環境變數開關供 live 驗證
 - [x] 修正 V4 移動止盈平倉失敗後仍可能順勢重入的危險路徑；只有交易所確認平倉成功時才能重置、通知成功或開新一輪
-- [ ] 發布後建立每分鐘單一 `/api/scheduled/riskCheck` Heartbeat，驅動泛用、V50、V61 風控；V35 必須由端點內明確跳過並維持個別 auto-trade 單一路徑
+- [x] 發布後建立每分鐘單一 `/api/scheduled/riskCheck` Heartbeat，驅動泛用、V50、V61 風控；V35 必須由端點內明確跳過並維持個別 auto-trade 單一路徑（task_uid=`2UkhZjFe7SGf4BdnzqeunS`，首次執行 HTTP 200）
 - [x] 執行 TypeScript、完整 Vitest、生產建置與唯讀狀態驗收，確認未影響 20415、V5.0、V6.1 及其他策略
-- [ ] 更新技術紀錄並保存自動發布檢查點
+- [x] 更新技術紀錄並保存自動發布檢查點（version `fe636217`）

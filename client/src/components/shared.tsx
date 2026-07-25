@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { formatPnlAmount } from "@shared/pnl";
 
 /** 盈虧數值顯示，正綠負紅 */
 export function PnlValue({
@@ -23,7 +24,7 @@ export function PnlValue({
       )}
     >
       {positive ? "+" : ""}
-      {value.toFixed(2)}
+      {formatPnlAmount(value)}
       {suffix}
     </span>
   );

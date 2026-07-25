@@ -22,6 +22,7 @@ import { autoTradeRouter } from "./routers/autoTrade.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
 import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
+import { summarizeStrategyPerformance } from "./services/performanceSummary";
 import {
   assertValidV25Config,
   deriveV25MaxMartinLayer,
@@ -1672,27 +1673,7 @@ const performanceRouter = router({
 
       return userStrategies.map((s) => {
         const strategyTrades = allTrades.filter((t) => t.strategyId === s.id);
-        const closedTrades = strategyTrades.filter(
-          (t) => t.realizedPnl !== null && t.realizedPnl !== undefined,
-        );
-        const pnls = closedTrades.map((t) => parseFloat(t.realizedPnl!));
-        const wins = pnls.filter((p) => p > 0).length;
-        const totalPnl = pnls.reduce((a, b) => a + b, 0);
-
-        // 最大回撤（基於累計盈虧曲線）
-        let peak = 0;
-        let cumulative = 0;
-        let maxDrawdown = 0;
-        // 依時間正序計算
-        const sorted = [...closedTrades].sort(
-          (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-        );
-        for (const t of sorted) {
-          cumulative += parseFloat(t.realizedPnl!);
-          if (cumulative > peak) peak = cumulative;
-          const dd = peak - cumulative;
-          if (dd > maxDrawdown) maxDrawdown = dd;
-        }
+        const summary = summarizeStrategyPerformance(strategyTrades);
 
         return {
           strategyId: s.id,
@@ -1701,10 +1682,12 @@ const performanceRouter = router({
           exchange: s.exchange,
           enabled: s.enabled,
           tradeCount: strategyTrades.length,
-          closedTradeCount: closedTrades.length,
-          winRate: closedTrades.length > 0 ? (wins / closedTrades.length) * 100 : 0,
-          totalPnl,
-          maxDrawdown,
+          closedTradeCount: summary.closedTradeCount,
+          winRate: summary.closedTradeCount > 0
+            ? (summary.wins / summary.closedTradeCount) * 100
+            : 0,
+          totalPnl: summary.totalPnl,
+          maxDrawdown: summary.maxDrawdown,
         };
       });
     }),

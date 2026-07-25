@@ -22,6 +22,7 @@ import { loadStrategyState, saveStrategyState } from "./strategyStateManager";
 import { normalizeQtyForSymbol } from "./symbolSpecs";
 import { TradingPairManager } from "./tradingPairManager";
 import { StrategySymbolAdapter, StrategyAdapters } from "./strategySymbolAdapter";
+import { calculateV35RealizedPnl } from "./v35Accounting";
 import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
 import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
 import {
@@ -796,10 +797,12 @@ async function executeSignalV35(
     if (result.success) {
       // 計算 realizedPnl
       const exitPriceV35 = result.filledPrice || 0;
-      const dirMultV35 = state.isLong ? 1 : -1;
-      const pnlV35 = (exitPriceV35 > 0 && state.avgPrice > 0 && state.totalSize > 0)
-        ? (exitPriceV35 - state.avgPrice) * state.totalSize * dirMultV35
-        : undefined;
+      const pnlV35 = calculateV35RealizedPnl({
+        exitPrice: exitPriceV35,
+        avgPrice: state.avgPrice,
+        totalSize: state.totalSize,
+        isLong: state.isLong,
+      });
       await createTrade({
         strategyId: strategy.id,
         userId: strategy.userId,
