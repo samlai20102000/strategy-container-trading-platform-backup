@@ -2070,3 +2070,14 @@
 - [x] 完成隔離審核、開發文件、啟用前檢查清單與回滾方案，核對 todo 後保存自動發布檢查點
 - [x] 修正測試設計發現的進場規格偏差：多空排列納入 L2、空頭 L5 下穿 L1、波動區間改驗證 M30 收盤價並加入價格相對 L1 確認
 - [x] 修正新策略 V1 設定面板在 375px 行動版抽屜中的橫向溢位，確保七線、八層矩陣、安全開關與底部操作可在抽屜內閱讀及捲動
+
+## 策略容器化自動交易平台優化
+
+- [x] 擴展階梯馬丁策略至 20 層。
+- [x] 允許配置進場週期和持倉管理週期。
+- [x] 更新 `RainbowTrendLadderConfigPanel.tsx` 以支援新的馬丁層數和時間週期選擇。
+- [x] 更新 `shared/strategies/rainbowTrendLadder.ts` 中的 `DEFAULT_LAYERS` 以支援 20 層。
+- [x] 更新 `rainbowTrendLadderBacktest.ts` 以移除硬編碼的時間週期驗證。
+- [x] 更新 `rainbow-trend-ladder-backtest.test.ts` 以移除硬編碼的時間週期測試。
+- [x] 更新 `Strategies.tsx` 中的 `K_LINE_PERIODS` 以包含更多時間週期選項。
+- [x] 更新 `RainbowTrendLadderConfigPanel.tsx` 中的策略描述和 Sector 01 副標題。

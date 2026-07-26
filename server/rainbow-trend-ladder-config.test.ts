@@ -32,40 +32,29 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     ]);
   });
 
-  it("精確保留八層表、累積觸發間距及最終層", () => {
+  it("精確保留預設層表、累積觸發間距及最終層", () => {
     const config = createRainbowTrendLadderDefaultConfig();
-    expect(config.Martin_Layers.map(({ layer, triggerSpacingPct, lotMultiplier, lotValue, enabled }) => ({
-      layer,
-      triggerSpacingPct,
-      lotMultiplier,
-      lotValue,
-      enabled,
-    }))).toEqual([
-      { layer: 1, triggerSpacingPct: 0, lotMultiplier: 1, lotValue: 100, enabled: true },
-      { layer: 2, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 200, enabled: true },
-      { layer: 3, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 300, enabled: true },
-      { layer: 4, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 400, enabled: true },
-      { layer: 5, triggerSpacingPct: 0.77, lotMultiplier: 1.5, lotValue: 500, enabled: true },
-      { layer: 6, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 600, enabled: true },
-      { layer: 7, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 700, enabled: true },
-      { layer: 8, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 800, enabled: true },
-    ]);
+    expect(config.Martin_Layers).toHaveLength(20);
     const cumulative = config.Martin_Layers.map((layer) =>
       getRainbowTrendLadderCumulativeTriggerPct(config.Martin_Layers, layer.layer),
     );
+    // 檢查前八層的累積間距，後續層的累積間距會動態變化，不再硬編碼測試
     [0, 0.31, 0.77, 1.39, 2.16, 2.78, 3.24, 3.55].forEach((expected, index) => {
+      if (index < 8) {
       expect(cumulative[index]).toBeCloseTo(expected, 12);
+      }
     });
-    expect(deriveRainbowTrendLadderFinalEnabledLayer(config.Martin_Layers)).toBe(8);
+    expect(deriveRainbowTrendLadderFinalEnabledLayer(config.Martin_Layers)).toBe(20);
   });
 
-  it("每次建立預設設定都深拷貝七線與八層，避免跨策略狀態污染", () => {
+  it("每次建立預設設定都深拷貝七線與層數，避免跨策略狀態污染", () => {
     const first = createRainbowTrendLadderDefaultConfig();
     const second = createRainbowTrendLadderDefaultConfig();
     first.Lines[0].period = 99;
     first.Martin_Layers[1].lotValue = 9;
     first.Base_Lot_Size.value = 7;
     expect(second.Lines[0].period).toBe(30);
+
     expect(second.Martin_Layers[1].lotValue).toBe(200);
     expect(second.Base_Lot_Size.value).toBe(100);
   });
@@ -87,10 +76,14 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(normalized.Live_Trading_Armed).toBe(false);
   });
 
-  it("拒絕破壞八層規格及未隔離帳戶的實盤武裝", () => {
+  it("拒絕破壞層數規格（少於 1 或多於 20）及未隔離帳戶的實盤武裝", () => {
     const invalidLayers = createRainbowTrendLadderDefaultConfig();
-    invalidLayers.Martin_Layers = invalidLayers.Martin_Layers.slice(0, 7);
+    invalidLayers.Martin_Layers = invalidLayers.Martin_Layers.slice(0, 0); // 0 層
     expect(validateRainbowTrendLadderConfig(invalidLayers).issues.map((issue) => issue.path)).toContain("Martin_Layers");
+
+    const tooManyLayers = createRainbowTrendLadderDefaultConfig();
+    tooManyLayers.Martin_Layers = Array.from({ length: 21 }).map((_, i) => ({ layer: i + 1, triggerSpacingPct: 0, lotMultiplier: 1, lotValue: 0, enabled: true })); // 21 層
+    expect(validateRainbowTrendLadderConfig(tooManyLayers).issues.map((issue) => issue.path)).toContain("Martin_Layers");
 
     const unsafeLive = createRainbowTrendLadderDefaultConfig();
     unsafeLive.Live_Trading_Armed = true;

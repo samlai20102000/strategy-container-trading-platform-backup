@@ -72,21 +72,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     savePerformanceMetrics.mockClear();
   });
 
-  it("拒絕非 M1 管理週期，避免把 M30 入場週期誤當成持倉管理週期", () => {
-    const candles = makeLongEntryManagementCandles();
-    const request = { ...makeRequest(candles), timeframe: "30m" };
 
-    expect(() => runRainbowTrendLadderBacktest(
-      request,
-      new StrategyRainbowTrendLadder(),
-      request.config,
-      candles,
-      request.startDate,
-      request.endDate,
-      0,
-      0,
-    )).toThrow("必須使用 1m 管理週期");
-  });
 
   it("由 M1 聚合已收盤 M30，使用正式七線核心進場並在回測尾端全平", () => {
     const candles = makeLongEntryManagementCandles();
@@ -107,8 +93,8 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
 
     expect(result.strategyKey).toBe(RAINBOW_TREND_LADDER_STRATEGY_KEY);
     expect(result.candleCount).toBe(candles.length);
-    expect(result.config.Entry_Timeframe_Minutes).toBe(30);
-    expect(result.config.Management_Interval_Minutes).toBe(1);
+    expect(result.config.Entry_Timeframe_Minutes).toBe(request.config.Entry_Timeframe_Minutes);
+    expect(result.config.Management_Interval_Minutes).toBe(request.config.Management_Interval_Minutes);
     expect(result.trades).toHaveLength(1);
     expect(result.trades[0]).toMatchObject({
       side: "long",

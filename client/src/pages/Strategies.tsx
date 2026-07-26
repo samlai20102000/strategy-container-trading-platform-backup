@@ -2368,12 +2368,21 @@ function StrategiesContent() {
 /**
  * 自動交易模式區塊：在策略卡片中顯示交易模式切換和 Heartbeat 狀態
  */
-const K_LINE_PERIODS = [
+export const K_LINE_PERIODS = [
+  { value: 1, label: "1 分鐘" },
+  { value: 3, label: "3 分鐘" },
+  { value: 5, label: "5 分鐘" },
   { value: 15, label: "15 分鐘" },
   { value: 30, label: "30 分鐘" },
   { value: 60, label: "1 小時" },
+  { value: 120, label: "2 小時" },
   { value: 240, label: "4 小時" },
+  { value: 360, label: "6 小時" },
+  { value: 480, label: "8 小時" },
+  { value: 720, label: "12 小時" },
   { value: 1440, label: "1 天" },
+  { value: 10080, label: "1 週" },
+  { value: 43200, label: "1 月" },
 ];
 
 function SyncExchangeButton({ strategyId }: { strategyId: number }) {

@@ -22,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { RainbowTrendLadderAiAdvisor } from "@/components/RainbowTrendLadderAiAdvisor";
+import { K_LINE_PERIODS } from "../pages/Strategies";
 import {
   createRainbowTrendLadderDefaultConfig,
   deriveRainbowTrendLadderFinalEnabledLayer,
@@ -192,7 +193,7 @@ export function RainbowTrendLadderConfigPanel({
   const layerRows = useMemo(() => {
     let cumulativeSpacingPct = 0;
     let cumulativeLot = 0;
-    return config.Martin_Layers.map((layer) => {
+    return config.Martin_Layers.slice(0, 20).map((layer) => {
       if (layer.enabled) {
         cumulativeSpacingPct += layer.triggerSpacingPct;
         cumulativeLot += layer.lotValue;
@@ -244,7 +245,7 @@ export function RainbowTrendLadderConfigPanel({
               </div>
               <h2 className="mt-4 text-xl font-black tracking-tight text-white sm:text-2xl">七彩虹線趨勢跟蹤階梯馬丁策略</h2>
               <p className="mt-2 max-w-3xl text-xs leading-6 text-slate-400 sm:text-sm">
-                M30 七線 SMA 完成趨勢、排列、穿越與波動區間四重確認；成交後切換 M1 盲人模式，以原始進場價累計八層距離，並由動態止盈與風控鐵幕統一離場。
+                七線 SMA 完成趨勢、排列、穿越與波動區間四重確認；成交後切換持倉管理週期，以原始進場價累計多層距離，並由動態止盈與風控鐵幕統一離場。
               </p>
             </div>
 
@@ -268,10 +269,38 @@ export function RainbowTrendLadderConfigPanel({
         </div>
 
         <div className="min-w-0 max-w-full space-y-4 p-3 sm:p-5">
-          <Sector index="01" title="任務時序與配置底倉" subtitle="新策略使用獨立設定與狀態；M30 只在新收盤 K 棒掃描，持倉管理固定每分鐘評估。" icon={Crosshair}>
+          <Sector index="01" title="任務時序與配置底倉" subtitle="新策略使用獨立設定與狀態；進場週期只在新收盤 K 棒掃描，持倉管理週期固定每分鐘評估。" icon={Crosshair}>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <NumberControl id="rtl-entry-tf" label="進場週期" value={config.Entry_Timeframe_Minutes} onChange={(next) => updateConfig({ Entry_Timeframe_Minutes: next })} min={1} max={1440} step={1} unit="MIN" disabled={disabled} />
-              <NumberControl id="rtl-manage-tf" label="持倉管理週期" value={config.Management_Interval_Minutes} onChange={(next) => updateConfig({ Management_Interval_Minutes: next })} min={1} max={60} step={1} unit="MIN" disabled={disabled} />
+              <div className="space-y-2">
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">進場週期</Label>
+                <Select
+                  value={String(config.Entry_Timeframe_Minutes)}
+                  onValueChange={(value) => updateConfig({ Entry_Timeframe_Minutes: Number(value) })}
+                  disabled={disabled}
+                >
+                  <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/90 font-mono text-sm text-slate-100"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {K_LINE_PERIODS.map((p: { value: number; label: string }) => (
+                      <SelectItem key={p.value} value={String(p.value)}>{p.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">持倉管理週期</Label>
+                <Select
+                  value={String(config.Management_Interval_Minutes)}
+                  onValueChange={(value) => updateConfig({ Management_Interval_Minutes: Number(value) })}
+                  disabled={disabled}
+                >
+                  <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/90 font-mono text-sm text-slate-100"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {K_LINE_PERIODS.map((p: { value: number; label: string }) => (
+                      <SelectItem key={p.value} value={String(p.value)}>{p.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <NumberControl id="rtl-capital" label="初始資金" value={config.Initial_Capital} onChange={(next) => updateConfig({ Initial_Capital: next })} min={1} step={100} unit="USDT" disabled={disabled} />
               <NumberControl id="rtl-point-value" label="每點價格" value={config.Point_Value} onChange={(next) => updateConfig({ Point_Value: next })} min={0.00000001} step={0.1} unit="USDT" disabled={disabled} />
               <div className="space-y-2">
@@ -355,7 +384,7 @@ export function RainbowTrendLadderConfigPanel({
             </div>
           </Sector>
 
-          <Sector index="03" title="八層階梯馬丁矩陣" subtitle="間距從原始進場價按層累加；lotValue 是真正下單值，倍率只作規格與稽核對照。" icon={Layers3} tone="violet">
+          <Sector index="03" title="階梯馬丁矩陣" subtitle="間距從原始進場價按層累加；lotValue 是真正下單值，倍率只作規格與稽核對照。" icon={Layers3} tone="violet">
             <div data-testid="rtl-layers-scroll" role="region" aria-label="八層階梯馬丁設定表，可水平捲動" tabIndex={0} className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-slate-800">
               <table className="w-full min-w-[900px] text-left text-xs">
                 <thead className="bg-slate-950/80 text-[9px] uppercase tracking-[0.16em] text-slate-500">

@@ -36,8 +36,8 @@ export interface RainbowTrendLadderLayerConfig {
 
 export interface RainbowTrendLadderConfig {
   Config_Version: typeof RAINBOW_TREND_LADDER_CONFIG_VERSION;
-  Entry_Timeframe_Minutes: number;
-  Management_Interval_Minutes: number;
+  Entry_Timeframe_Minutes: number; // 可配置的入場 K 線時間週期 (分鐘)
+  Management_Interval_Minutes: number; // 可配置的持倉管理週期 (分鐘)
   Lines: RainbowTrendLadderLineConfig[];
   Base_Lot_Size: RainbowTrendLadderBaseLot;
   Initial_Capital: number;
@@ -78,21 +78,38 @@ const DEFAULT_LINES: RainbowTrendLadderLineConfig[] = [
   { id: "L7", label: "波谷確認 SMA15 Low", period: 15, source: "low", color: "#bf5af2" },
 ];
 
-const DEFAULT_LAYERS: RainbowTrendLadderLayerConfig[] = [
-  { layer: 1, triggerSpacingPct: 0, lotMultiplier: 1, lotValue: 0.06, enabled: true },
-  { layer: 2, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-  { layer: 3, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-  { layer: 4, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-  { layer: 5, triggerSpacingPct: 0.77, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-  { layer: 6, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-  { layer: 7, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-  { layer: 8, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 0.09, enabled: true },
-];
+const DEFAULT_LAYERS: RainbowTrendLadderLayerConfig[] = Array.from({ length: 20 }).map((_, i) => {
+  const layer = i + 1;
+  let triggerSpacingPct = 0;
+  let lotMultiplier = 1;
+
+  if (layer === 1) {
+    triggerSpacingPct = 0;
+    lotMultiplier = 1;
+  } else if (layer <= 8) {
+    // Original 8 layers pattern
+    const originalSpacings = [0.31, 0.46, 0.62, 0.77, 0.62, 0.46, 0.31];
+    triggerSpacingPct = originalSpacings[layer - 2];
+    lotMultiplier = 1.5;
+  } else {
+    // Extend pattern for layers 9-20, using a simple decreasing spacing and increasing multiplier
+    triggerSpacingPct = Math.max(0.1, 0.31 - (layer - 8) * 0.02); // Decrease spacing gradually
+    lotMultiplier = 1.5 + (layer - 8) * 0.1; // Increase multiplier gradually
+  }
+
+  return {
+    layer,
+    triggerSpacingPct: parseFloat(triggerSpacingPct.toFixed(2)),
+    lotMultiplier: parseFloat(lotMultiplier.toFixed(2)),
+    lotValue: 0, // This will be calculated based on Base_Lot_Size later
+    enabled: true,
+  };
+});
 
 export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderConfig> = {
   Config_Version: RAINBOW_TREND_LADDER_CONFIG_VERSION,
-  Entry_Timeframe_Minutes: 30,
-  Management_Interval_Minutes: 1,
+  Entry_Timeframe_Minutes: 30, // 預設入場 K 線時間週期 (分鐘)
+  Management_Interval_Minutes: 1, // 預設持倉管理週期 (分鐘)
   Lines: DEFAULT_LINES,
   Base_Lot_Size: { value: 100, mode: "usdt" }, // 預設值改為 100 USDT
   Initial_Capital: 10_000,
@@ -296,7 +313,7 @@ export function validateRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadd
   const config = normalizeRainbowTrendLadderConfig(raw);
   const issues: RainbowTrendLadderValidationIssue[] = [];
   pushNumberIssue(issues, "Entry_Timeframe_Minutes", config.Entry_Timeframe_Minutes, 1, 1440, { integer: true });
-  pushNumberIssue(issues, "Management_Interval_Minutes", config.Management_Interval_Minutes, 1, 60, { integer: true });
+  pushNumberIssue(issues, "Management_Interval_Minutes", config.Management_Interval_Minutes, 1, 1440, { integer: true }); // 允許最大 24 小時 (1440 分鐘)
   if (config.Entry_Timeframe_Minutes % config.Management_Interval_Minutes !== 0) {
     issues.push({ path: "Management_Interval_Minutes", message: "持倉管理週期必須可整除進場週期" });
   }
@@ -324,7 +341,7 @@ export function validateRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadd
   pushNumberIssue(issues, "Trend_Deviation_Points", config.Trend_Deviation_Points, 0, null, { allowMin: false });
   pushNumberIssue(issues, "Max_Margin_Usage_Pct", config.Max_Margin_Usage_Pct, 0, 100, { allowMin: false });
 
-  if (config.Martin_Layers.length !== 8) issues.push({ path: "Martin_Layers", message: "階梯馬丁必須恰好配置 8 層" });
+  if (config.Martin_Layers.length < 1 || config.Martin_Layers.length > 20) issues.push({ path: "Martin_Layers", message: "階梯馬丁層數必須介於 1 到 20 層之間" });
   config.Martin_Layers.forEach((layer, index) => {
     const path = `Martin_Layers.${index}`;
     if (!Number.isSafeInteger(layer.layer) || layer.layer !== index + 1) {

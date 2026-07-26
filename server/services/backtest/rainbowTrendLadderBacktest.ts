@@ -85,11 +85,8 @@ export function runRainbowTrendLadderBacktest(
   const entryTimeframeLabel = config.Entry_Timeframe_Minutes % 60 === 0
     ? `${config.Entry_Timeframe_Minutes / 60}h`
     : `${config.Entry_Timeframe_Minutes}m`;
-  if (request.timeframe.toLowerCase() !== expectedTimeframe.toLowerCase()) {
-    throw new Error(
-      `七彩虹線階梯回測必須使用 ${expectedTimeframe} 管理週期；${entryTimeframeLabel} 入場 K 線由引擎內部聚合。`,
-    );
-  }
+// 移除硬編碼的時間週期驗證，改為使用可配置的 Entry_Timeframe_Minutes 和 Management_Interval_Minutes
+
 
   const trades: TradeRecord[] = [];
   const equityCurve: EquityPoint[] = [];
@@ -139,12 +136,13 @@ export function runRainbowTrendLadderBacktest(
   };
 
   const updateEntryAggregation = (candle: OHLCVRow): void => {
-    latestEntryBarClosed = false;
+
+    latestEntryBarClosed = false; // 重置旗標
     const bucketStart = Math.floor(candle.timestamp / entryFrameMs) * entryFrameMs;
     if (!activeBucket || bucketStart !== activeBucketStart) {
       if (activeBucket) {
         closedEntryCandles.push(activeBucket);
-        latestEntryBarClosed = true;
+        latestEntryBarClosed = true; // 只有在新的 Entry Bar 關閉時才設置為 true
       }
       activeBucketStart = bucketStart;
       activeBucket = {
@@ -254,7 +252,7 @@ export function runRainbowTrendLadderBacktest(
 
   onProgress?.(
     35,
-    `數據就緒（${candles.length} 根 ${expectedTimeframe}），啟動七彩虹線階梯 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
+    `數據就緒（${candles.length} 根 ${request.timeframe}），啟動七彩虹線階梯 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
   );
   const first = candles[0];
   equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
@@ -264,6 +262,10 @@ export function runRainbowTrendLadderBacktest(
     updateEntryAggregation(candle);
     const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
     let decision: RainbowTrendLadderCoreDecision | null = null;
+    // 添加日誌以診斷回測卡住問題
+    if (index % 1000 === 0) {
+      console.log(`[Backtest Debug] Index: ${index}, Timestamp: ${candle.timestamp}, Closed Entry Candles: ${closedEntryCandles.length}, Latest Entry Bar Closed: ${latestEntryBarClosed}, Has Position: ${hasPosition}`);
+    }
 
     if (hasPosition) {
       const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
@@ -291,6 +293,9 @@ export function runRainbowTrendLadderBacktest(
     }
 
     if (decision) {
+      if (index % 1000 === 0) {
+        console.log(`[Backtest Debug] Decision at index ${index}: ${decision.action}, Reason: ${decision.reason ?? decision.closeReason}`);
+      }
       if (decision.action === "hold") {
         state = decision.nextState;
       } else if (decision.action === "close") {
