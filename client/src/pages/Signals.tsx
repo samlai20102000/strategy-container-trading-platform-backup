@@ -232,6 +232,7 @@ function SignalsContent() {
                     <th className="pb-2 pr-4 font-medium">動作</th>
                     <th className="pb-2 pr-4 font-medium">交易對</th>
                     <th className="pb-2 pr-4 font-medium text-right">價格</th>
+                    <th className="pb-2 pr-4 font-medium text-right">盈虧</th>
                     <th className="pb-2 pr-4 font-medium">狀態</th>
                     <th className="pb-2 font-medium">訊息</th>
                   </tr>
@@ -273,6 +274,16 @@ function SignalsContent() {
                         </td>
                         <td className="py-2.5 pr-4 text-right font-mono-nums">
                           {sig.parsedPrice ?? "—"}
+                        </td>
+                        <td className="py-2.5 pr-4 text-right font-mono-nums">
+                          {sig.realizedPnl ? (
+                            <span className={parseFloat(sig.realizedPnl) >= 0 ? "text-green-500" : "text-red-500"}>
+                              {parseFloat(sig.realizedPnl) >= 0 ? "+" : ""}
+                              {parseFloat(sig.realizedPnl).toFixed(2)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="py-2.5 pr-4">
                           <SignalStatusBadge status={sig.status} />

@@ -132,24 +132,13 @@ function validateRequest(input: z.infer<typeof backtestRequestSchema>): Backtest
   if (input.config && typeof input.config === "object") {
     if (input.strategyKey === RAINBOW_20415_STRATEGY_KEY) {
       const config = assertValidRainbow20415Config(input.config);
-      const expectedTimeframe = timeframeForMinutes(config.Management_Interval_Minutes);
-      if (input.timeframe.toLowerCase() !== expectedTimeframe) {
-        throw new Error(
-          `20415 七彩虹回測資料週期必須為 ${expectedTimeframe}；${timeframeForMinutes(config.Entry_Timeframe_Minutes)} 入場 K 線由同源引擎內部聚合。`,
-        );
-      }
       input.config = { ...config };
     } else if (input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
       const config = assertValidRainbowTrendLadderConfig(input.config);
-      const expectedTimeframe = timeframeForMinutes(config.Management_Interval_Minutes);
-      if (input.timeframe.toLowerCase() !== expectedTimeframe) {
-        throw new Error(
-          `七彩虹線階梯回測資料週期必須為 ${expectedTimeframe}；${timeframeForMinutes(config.Entry_Timeframe_Minutes)} 入場 K 線由同源引擎內部聚合。`,
-        );
-      }
       input.config = { ...config };
     } else if (input.strategyKey === V25_STRATEGY_KEY) {
-      input.config = { ...assertValidV25Config(input.config) };
+      const config = assertValidV25Config(input.config);
+      input.config = { ...config };
     } else {
       // 舊通用策略：保留歷史 max_layers → Max_Layers 相容橋接。
       if (input.config.max_layers && !input.config.Max_Layers) {

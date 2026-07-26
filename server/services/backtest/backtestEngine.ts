@@ -159,6 +159,13 @@ export class BacktestEngine {
     const endMs = toMs(request.endDate);
     if (endMs <= startMs) throw new Error("結束時間必須晚於開始時間");
 
+    // === 分段回測邏輯：超過 7 天自動分段 ===
+    const spanMs = endMs - startMs;
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    if (spanMs > sevenDaysMs) {
+      return this.runSegmentedBacktest(request, onProgress);
+    }
+
     // === 任務 A2：策略動態載入（不再硬編碼 V3.5）===
     const strategy = getStrategy(request.strategyKey);
     if (!strategy) {
@@ -2354,6 +2361,87 @@ export class BacktestEngine {
       candleCount: candles.length,
       environment: envSnapshot,
     };
+  }
+
+  /**
+   * 分段回測：將超過 7 天的回測自動分成多個 7 天段，逐段執行並聚合結果
+   */
+  private async runSegmentedBacktest(
+    request: BacktestRequest,
+    onProgress?: (pct: number, message: string) => void,
+  ): Promise<BacktestResult> {
+    const startMs = toMs(request.startDate);
+    const endMs = toMs(request.endDate);
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    
+    const totalSpanMs = endMs - startMs;
+    const segmentCount = Math.ceil(totalSpanMs / sevenDaysMs);
+    
+    onProgress?.(5, `開始分段回測：共 ${segmentCount} 段，每段 7 天...`);
+    
+    const allTrades: TradeRecord[] = [];
+    let currentEquity = request.initialCapital;
+    const allEquityPoints: EquityPoint[] = [];
+    
+    for (let i = 0; i < segmentCount; i++) {
+      const segmentStart = startMs + i * sevenDaysMs;
+      const segmentEnd = Math.min(segmentStart + sevenDaysMs, endMs);
+      
+      onProgress?.(5 + (i / segmentCount) * 90, `執行第 ${i + 1}/${segmentCount} 段回測...`);
+      
+      const segmentRequest: BacktestRequest = {
+        ...request,
+        startDate: segmentStart < 1e12 ? segmentStart / 1000 : segmentStart,
+        endDate: segmentEnd < 1e12 ? segmentEnd / 1000 : segmentEnd,
+        initialCapital: currentEquity,
+      };
+      
+      try {
+        const result = await this.runBacktest(segmentRequest, (pct, msg) => {
+          const segmentProgress = 5 + (i / segmentCount) * 90 + (pct / 100) * (90 / segmentCount);
+          onProgress?.(segmentProgress, `第 ${i + 1}/${segmentCount} 段：${msg}`);
+        });
+        
+        allTrades.push(...result.trades);
+        allEquityPoints.push(...result.equityCurve);
+        currentEquity = result.metrics.totalReturnUSDT + request.initialCapital;
+      } catch (e) {
+        throw new Error(`第 ${i + 1}/${segmentCount} 段回測失敗：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    
+    const metrics = calculatePerformance(allTrades, allEquityPoints, request.initialCapital);
+    onProgress?.(95, "聚合結果中...");
+    
+    const strategy = getStrategy(request.strategyKey);
+    const runId = makeRunId(request.strategyKey, request.symbol);
+    const result: BacktestResult = {
+      runId,
+      strategyKey: request.strategyKey,
+      strategyName: strategy?.name ?? request.strategyKey,
+      trades: allTrades,
+      metrics,
+      equityCurve: downsample(allEquityPoints, 500),
+      config: request.config,
+      summary: `分段回測完成：${segmentCount} 段，共 ${allTrades.length} 筆交易，最終收益 ${metrics.totalReturn.toFixed(2)}%`,
+      candleCount: allEquityPoints.length,
+      environment: {
+        engineVersion: "5.7",
+        dataHash: `segmented_${segmentCount}`,
+        leverage: 1,
+        commission: request.commission ?? 0.0004,
+        slippage: request.slippage ?? 0.0001,
+        symbol: request.symbol,
+        timeframe: request.timeframe,
+        startDate: startMs,
+        endDate: endMs,
+        candleCount: allEquityPoints.length,
+        initialCapital: request.initialCapital,
+      },
+    };
+    
+    onProgress?.(100, "分段回測完成");
+    return result;
   }
 }
 

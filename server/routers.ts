@@ -1073,11 +1073,12 @@ const strategiesRouter = router({
         }
       }
 
-      // 寫入訊號日誌
+      // 寫入訊號日誌（包含 orderId 以便與交易記錄連接）
       try {
         await db.createSignal({
           strategyId: strategy.id,
           userId: ctx.user.id,
+          orderId: closedSides.length > 0 ? result?.orderId : undefined,
           rawPayload: JSON.stringify({
             action: "close",
             symbol: strategy.symbol,
