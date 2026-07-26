@@ -24,11 +24,11 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(config.Lines.map(({ id, period, source }) => ({ id, period, source }))).toEqual([
       { id: "L1", period: 30, source: "close" },
       { id: "L2", period: 60, source: "close" },
-      { id: "L3", period: 15, source: "hlc3" },
+      { id: "L3", period: 15, source: "high" },
       { id: "L4", period: 6, source: "close" },
-      { id: "L5", period: 3, source: "close" },
-      { id: "L6", period: 15, source: "high" },
-      { id: "L7", period: 15, source: "low" },
+      { id: "L5", period: 15, source: "low" },
+      { id: "L6", period: 3, source: "close" },
+      { id: "L7", period: 3, source: "close" },
     ]);
   });
 

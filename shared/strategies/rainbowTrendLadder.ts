@@ -69,13 +69,13 @@ export interface RainbowTrendLadderValidationResult {
 }
 
 const DEFAULT_LINES: RainbowTrendLadderLineConfig[] = [
-  { id: "L1", label: "趨勢快線 SMA30", period: 30, source: "close", color: "#ff453a" },
-  { id: "L2", label: "基礎趨勢線 SMA60", period: 60, source: "close", color: "#ff9f0a" },
-  { id: "L3", label: "典型價格 SMA15", period: 15, source: "hlc3", color: "#ffd60a" },
-  { id: "L4", label: "短線節奏 SMA6", period: 6, source: "close", color: "#30d158" },
-  { id: "L5", label: "入場觸發 SMA3", period: 3, source: "close", color: "#64d2ff" },
-  { id: "L6", label: "波峰確認 SMA15 High", period: 15, source: "high", color: "#0a84ff" },
-  { id: "L7", label: "波谷確認 SMA15 Low", period: 15, source: "low", color: "#bf5af2" },
+  { id: "L1", label: "Upper MA EMA30", period: 30, source: "close", color: "#ff453a" },
+  { id: "L2", label: "Lower MA EMA60", period: 60, source: "close", color: "#ff9f0a" },
+  { id: "L3", label: "Wave MA High EMA15", period: 15, source: "high", color: "#ffd60a" },
+  { id: "L4", label: "Wave MA Close EMA6", period: 6, source: "close", color: "#30d158" },
+  { id: "L5", label: "Wave MA Low EMA15", period: 15, source: "low", color: "#64d2ff" },
+  { id: "L6", label: "Killer MA EMA3", period: 3, source: "close", color: "#0a84ff" },
+  { id: "L7", label: "Enter MA EMA3", period: 3, source: "close", color: "#bf5af2" },
 ];
 
 const DEFAULT_LAYERS: RainbowTrendLadderLayerConfig[] = Array.from({ length: 20 }).map((_, i) => {

@@ -230,23 +230,39 @@ export function calculateRainbowTrendLadderLineSnapshot(
     slopes[line.id] = currentValue - previousValue;
   }
 
-  const trendSlopeIds: RainbowTrendLadderLineId[] = ["L1", "L2", "L3", "L4"];
-  const trendSlopes = trendSlopeIds.map((lineId) => slopes[lineId]);
-  const trendDirection: RainbowTrendLadderTrendDirection = trendSlopes.every((value) => value > 0)
+  // V3.0 新邏輯：排名序列不變 + 全部同向
+  const allLineIds: RainbowTrendLadderLineId[] = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
+  
+  // 條件1：計算排名序列（將7條線按數值由大至小排序）
+  const currentRankArray = [...allLineIds].sort((a, b) => (current[b] ?? 0) - (current[a] ?? 0));
+  const previousRankArray = [...allLineIds].sort((a, b) => (previous[b] ?? 0) - (previous[a] ?? 0));
+  const rankSequenceUnchanged = currentRankArray.every((line, idx) => line === previousRankArray[idx]);
+  
+  // 條件2：全部7條線斜率同向
+  const allSlopes = allLineIds.map((lineId) => slopes[lineId]);
+  const allUpSlopes = allSlopes.every((value) => value > 0);
+  const allDownSlopes = allSlopes.every((value) => value < 0);
+  const trendDirection: RainbowTrendLadderTrendDirection = allUpSlopes
     ? "UP"
-    : trendSlopes.every((value) => value < 0)
+    : allDownSlopes
       ? "DOWN"
       : "MIXED";
-  const longArrangement = current.L4 > current.L3 && current.L3 > current.L1 && current.L1 > current.L2;
-  const shortArrangement = current.L4 < current.L3 && current.L3 < current.L1 && current.L1 < current.L2;
-  const longTriggerCross = previous.L5 <= previous.L1 && current.L5 > current.L1;
-  const shortTriggerCross = previous.L5 >= previous.L1 && current.L5 < current.L1;
+  
+  // 條件3：價格方向確認
   const currentClose = candles[currentIndex].close;
-  const longPriceRelativeToL1 = currentClose > current.L1;
-  const shortPriceRelativeToL1 = currentClose < current.L1;
-  const volatilityFloor = Math.min(current.L6, current.L7);
-  const volatilityCeiling = Math.max(current.L6, current.L7);
-  const triggerInsideVolatilityBand = currentClose >= volatilityFloor && currentClose <= volatilityCeiling;
+  const previousClose = candles[previousIndex].close;
+  const priceDirectionConfirmed = 
+    (trendDirection === "UP" && currentClose > previousClose) ||
+    (trendDirection === "DOWN" && currentClose < previousClose);
+  
+  // 保留舊邏輯的字段以保持兼容性（但不再用於進場判斷）
+  const longArrangement = rankSequenceUnchanged && trendDirection === "UP" && priceDirectionConfirmed;
+  const shortArrangement = rankSequenceUnchanged && trendDirection === "DOWN" && priceDirectionConfirmed;
+  const longTriggerCross = longArrangement;
+  const shortTriggerCross = shortArrangement;
+  const longPriceRelativeToL1 = rankSequenceUnchanged && trendDirection === "UP" && priceDirectionConfirmed;
+  const shortPriceRelativeToL1 = rankSequenceUnchanged && trendDirection === "DOWN" && priceDirectionConfirmed;
+  const triggerInsideVolatilityBand = rankSequenceUnchanged && (trendDirection === "UP" || trendDirection === "DOWN");
   return {
     current,
     previous,
