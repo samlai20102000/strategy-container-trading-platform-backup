@@ -37,8 +37,8 @@ export interface RainbowTrendLadderLayerConfig {
 
 export interface RainbowTrendLadderConfig {
   Config_Version: typeof RAINBOW_TREND_LADDER_CONFIG_VERSION;
-  Entry_Timeframe_Minutes: number; // 可配置的入場 K 線時間週期 (分鐘)
-  Management_Interval_Minutes: number; // 可配置的持倉管理週期 (分鐘)
+  Entry_Timeframe_Minutes: number; // 方案 A：固定使用已收線 M30
+  Management_Interval_Minutes: number; // 方案 A：與進場同步使用已收線 M30
   Lines: RainbowTrendLadderLineConfig[];
   Base_Lot_Size: RainbowTrendLadderBaseLot;
   Initial_Capital: number;
@@ -46,7 +46,7 @@ export interface RainbowTrendLadderConfig {
   Max_Spread_Points: number;
   Max_Slippage_Points: number;
   Martin_Layers: RainbowTrendLadderLayerConfig[];
-  Max_Layers: number; // V4.2: 用戶可設的最大馬丁層數（1-999，默認 20）
+  Max_Layers: number; // 使用者設定的唯一馬丁執行上限；不得由層表長度或最後啟用層覆寫
   Max_Hold_Hours: number; // V4.2: 用戶可設的最大持倉時間（小時，0 表示無限）
   Trailing_Activation_Pct: number;
   Trailing_Callback_Pct: number;
@@ -113,8 +113,8 @@ const DEFAULT_LAYERS: RainbowTrendLadderLayerConfig[] = Array.from({ length: 20 
 
 export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderConfig> = {
   Config_Version: RAINBOW_TREND_LADDER_CONFIG_VERSION,
-  Entry_Timeframe_Minutes: 30, // 預設入場 K 線時間週期 (分鐘)
-  Management_Interval_Minutes: 1, // 預設持倉管理週期 (分鐘)
+  Entry_Timeframe_Minutes: 30,
+  Management_Interval_Minutes: 30,
   Lines: DEFAULT_LINES,
   Base_Lot_Size: { value: 100, mode: "usdt" }, // 預設值改為 100 USDT
   Initial_Capital: 10_000,
@@ -125,7 +125,7 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
     ...layer,
     lotValue: layer.layer * 100, // 預設層級的 lotValue 根據 Base_Lot_Size 預設值計算
   })),
-  Max_Layers: 20, // V4.2: 預設最大層數 20（用戶可調 1-999）
+  Max_Layers: 9, // 方案 A2 預設值；執行時永遠讀取使用者保存的 Max_Layers
   Max_Hold_Hours: 72, // V4.2: 預設最大持倉時間 72 小時（0 表示無限）
   Trailing_Activation_Pct: 1.1,
   Trailing_Callback_Pct: 0.1,
@@ -291,15 +291,16 @@ export function normalizeRainbowTrendLadderConfig(raw: unknown): RainbowTrendLad
     firstDefined(input.Max_Layers, input.maxLayers),
     defaults.Max_Layers,
   );
-  const maxLayers = Math.max(1, Math.min(requestedMaxLayers, Math.max(1, martinLayers.length)));
+  const maxLayers = Math.max(1, Math.min(Math.trunc(requestedMaxLayers), Math.max(1, martinLayers.length)));
   const baseLineCandidate = String(firstDefined(input.Trend_Base_Line, input.trendBaseLine, defaults.Trend_Base_Line));
   const trendBaseLine: RainbowTrendLadderBaseLine = ["L1", "L2", "L3", "L4"].includes(baseLineCandidate)
     ? baseLineCandidate as RainbowTrendLadderBaseLine
     : defaults.Trend_Base_Line;
   return {
     Config_Version: RAINBOW_TREND_LADDER_CONFIG_VERSION,
-    Entry_Timeframe_Minutes: toNumber(firstDefined(input.Entry_Timeframe_Minutes, input.TIMEFRAME, input.entryTimeframe), defaults.Entry_Timeframe_Minutes),
-    Management_Interval_Minutes: toNumber(firstDefined(input.Management_Interval_Minutes, input.managementInterval), defaults.Management_Interval_Minutes),
+    // 方案 A：舊快照中的 M1／M5 等值一律升級為同一個 M30 已收線契約。
+    Entry_Timeframe_Minutes: 30,
+    Management_Interval_Minutes: 30,
     Lines: parseLines(firstDefined(input.Lines, input.lines, input.MA_Lines), defaults.Lines),
     Base_Lot_Size: parseBaseLot(input, defaults.Base_Lot_Size),
     Initial_Capital: toNumber(firstDefined(input.Initial_Capital, input.initialCapital), defaults.Initial_Capital),
@@ -378,7 +379,7 @@ export function validateRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadd
   pushNumberIssue(issues, "Max_Layers", config.Max_Layers, 1, config.Martin_Layers.length, { integer: true });
   pushNumberIssue(issues, "Max_Hold_Hours", config.Max_Hold_Hours, 0, 9999, { integer: true }); // V4.2
 
-  if (config.Martin_Layers.length < 1 || config.Martin_Layers.length > 20) issues.push({ path: "Martin_Layers", message: "階梯馬丁層數必須介於 1 到 20 層之間" });
+  if (config.Martin_Layers.length < 1) issues.push({ path: "Martin_Layers", message: "階梯馬丁至少需要 1 層" });
   config.Martin_Layers.forEach((layer, index) => {
     const path = `Martin_Layers.${index}`;
     if (!Number.isSafeInteger(layer.layer) || layer.layer !== index + 1) {

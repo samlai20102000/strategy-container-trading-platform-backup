@@ -39,7 +39,6 @@ import {
 } from "../../shared/strategies/rainbow20415";
 import {
   assertValidRainbowTrendLadderConfig,
-  deriveRainbowTrendLadderFinalEnabledLayer,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../../shared/strategies/rainbowTrendLadder";
 
@@ -563,8 +562,12 @@ export const backtestRouter = router({
       const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
         ? assertValidRainbowTrendLadderConfig(config)
         : undefined;
-      const firstLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled);
-      const nextLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled && range.layer > 1);
+      const firstLadderRange = ladderConfig?.Martin_Layers.find(
+        (range) => range.enabled && range.layer <= ladderConfig.Max_Layers,
+      );
+      const nextLadderRange = ladderConfig?.Martin_Layers.find(
+        (range) => range.enabled && range.layer > 1 && range.layer <= ladderConfig.Max_Layers,
+      );
 
       await db.update(strategies)
         .set({
@@ -575,7 +578,7 @@ export const backtestRouter = router({
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
               : ladderConfig
-                ? Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(ladderConfig.Martin_Layers))
+                ? ladderConfig.Max_Layers
                 : config.Max_Layers ?? (strategy as any).maxMartinLevel,
           martinSpacingPct: String(
             nextLadderRange?.triggerSpacingPct
@@ -658,8 +661,12 @@ export const backtestRouter = router({
       const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
         ? assertValidRainbowTrendLadderConfig(config)
         : undefined;
-      const firstLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled);
-      const nextLadderRange = ladderConfig?.Martin_Layers.find((range) => range.enabled && range.layer > 1);
+      const firstLadderRange = ladderConfig?.Martin_Layers.find(
+        (range) => range.enabled && range.layer <= ladderConfig.Max_Layers,
+      );
+      const nextLadderRange = ladderConfig?.Martin_Layers.find(
+        (range) => range.enabled && range.layer > 1 && range.layer <= ladderConfig.Max_Layers,
+      );
       const backtestSettings =
         snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
           ? (snapshot.backtestSettings as Record<string, unknown>)
@@ -699,7 +706,7 @@ export const backtestRouter = router({
           : rainbowConfig
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
             : ladderConfig
-              ? Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(ladderConfig.Martin_Layers))
+              ? ladderConfig.Max_Layers
               : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
         martinSpacingPct: String(
           nextLadderRange?.triggerSpacingPct
@@ -792,20 +799,32 @@ export const backtestRouter = router({
         ? assertValidRainbow20415Config(config)
         : undefined;
       const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
+      const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+        ? assertValidRainbowTrendLadderConfig(config)
+        : undefined;
+      const firstLadderRange = ladderConfig?.Martin_Layers.find(
+        (range) => range.enabled && range.layer <= ladderConfig.Max_Layers,
+      );
+      const nextLadderRange = ladderConfig?.Martin_Layers.find(
+        (range) => range.enabled && range.layer > 1 && range.layer <= ladderConfig.Max_Layers,
+      );
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
+          martinMultiplier: String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
           maxMartinLevel: v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
-              : config.Max_Layers ?? (instance as any).maxMartinLevel,
+              : ladderConfig
+                ? ladderConfig.Max_Layers
+                : config.Max_Layers ?? (instance as any).maxMartinLevel,
           martinSpacingPct: String(
-            firstRainbowRange
+            nextLadderRange?.triggerSpacingPct
+              ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
-              : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct,
+              : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct),
           ),
           ...(v25Config ? {
             stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
@@ -818,6 +837,11 @@ export const backtestRouter = router({
             maxLossPct: String(rainbowConfig.Max_Account_Loss_Pct),
             kLinePeriod: rainbowConfig.Entry_Timeframe_Minutes,
             reentryEnabled: rainbowConfig.Reentry_Enabled,
+          } : ladderConfig ? {
+            stopLossPct: "0",
+            takeProfitPct: String(ladderConfig.Trailing_Activation_Pct),
+            kLinePeriod: ladderConfig.Entry_Timeframe_Minutes,
+            reentryEnabled: ladderConfig.Reentry_Wait_Next_M30_Close,
           } : {}),
         })
         .where(eq(strategies.id, input.targetInstanceId));

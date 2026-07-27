@@ -53,7 +53,6 @@ import {
 import {
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
   createRainbowTrendLadderDefaultConfig,
-  deriveRainbowTrendLadderFinalEnabledLayer,
   normalizeRainbowTrendLadderConfig,
   validateRainbowTrendLadderConfig,
   type RainbowTrendLadderConfig,
@@ -280,7 +279,9 @@ function StrategiesContent() {
       const rainbowConfig = normalizeRainbow20415Config(cfg);
       const trendLadderConfig = normalizeRainbowTrendLadderConfig(cfg);
       const firstRainbowRange = rainbowConfig.Martin_Ranges.find((range) => range.enabled);
-      const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find((layer) => layer.enabled && layer.layer > 1);
+      const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find(
+        (layer) => layer.enabled && layer.layer > 1 && layer.layer <= trendLadderConfig.Max_Layers,
+      );
       setForm({
         ...emptyForm,
         name: imported.suggestedName || `${imported.definitionKey || '未知策略'}_導入`,
@@ -293,12 +294,12 @@ function StrategiesContent() {
         stopLossPct: isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
         takeProfitPct: isTrendLadderImport ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
         martinMultiplier: String(isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
-        maxMartinLevel: String(isTrendLadderImport ? Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(trendLadderConfig.Martin_Layers)) : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
+        maxMartinLevel: String(isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
         martinSpacingPct: String(isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
         martinLayersJson,
         maxLossPct: String(cfg.Max_Loss_Pct || 6),
         callbackPct: String(isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
-        kLinePeriod: String(isTrendLadderImport ? trendLadderConfig.Entry_Timeframe_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
+        kLinePeriod: String(isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
         reentryOnTrend: isTrendLadderImport ? trendLadderConfig.Reentry_Wait_Next_M30_Close : isRainbowImport ? rainbowConfig.Reentry_Enabled : isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
         maxLossUsdt: String(cfg.Max_Loss_USDT || cfg.EscapeLossUSD || 15),
         Initial_Capital: String(isTrendLadderImport ? trendLadderConfig.Initial_Capital : (cfg.Initial_Capital || 100)),
@@ -459,7 +460,9 @@ function StrategiesContent() {
     const trendLadderConfig = isTrendLadder
       ? normalizeRainbowTrendLadderConfig(state.__rainbowTrendLadderConfig ?? state.__snapshotConfig)
       : createRainbowTrendLadderDefaultConfig();
-    const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find((layer) => layer.enabled && layer.layer > 1);
+    const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find(
+      (layer) => layer.enabled && layer.layer > 1 && layer.layer <= trendLadderConfig.Max_Layers,
+    );
     const storedMode = (s as any).positionMode ?? legacyPosition.mode;
     const positionMode: 'quantity' | 'usdt' = storedMode === "usdt" ? "usdt" : "quantity";
     
@@ -480,7 +483,7 @@ function StrategiesContent() {
       takeProfitPct: isTrendLadder ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbow ? String(rainbowConfig.Take_Profit_Pct) : s.takeProfitPct,
       maxDailyLoss: s.maxDailyLoss,
       martinMultiplier: isTrendLadder ? String(firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : ((s as any).martinMultiplier ?? "1"),
-      maxMartinLevel: isTrendLadder ? String(Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(trendLadderConfig.Martin_Layers))) : String((s as any).maxMartinLevel ?? 1),
+      maxMartinLevel: isTrendLadder ? String(trendLadderConfig.Max_Layers) : String((s as any).maxMartinLevel ?? 1),
       martinSpacingPct: isTrendLadder ? String(firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : ((s as any).martinSpacingPct ?? "0"),
       strategyKey,
       v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
@@ -493,7 +496,7 @@ function StrategiesContent() {
             martinLayersJson: JSON.stringify(trendLadderConfig.Martin_Layers),
             maxLossPct: String(trendLadderConfig.Max_Margin_Usage_Pct),
             callbackPct: String(trendLadderConfig.Trailing_Callback_Pct),
-            kLinePeriod: String(trendLadderConfig.Entry_Timeframe_Minutes),
+            kLinePeriod: String(trendLadderConfig.Management_Interval_Minutes),
             reentryOnTrend: trendLadderConfig.Reentry_Wait_Next_M30_Close,
             maxLossUsdt: "0",
             Initial_Capital: String(trendLadderConfig.Initial_Capital),
@@ -558,7 +561,9 @@ function StrategiesContent() {
     const rainbowConfig = rainbowValidation?.config;
     const trendLadderConfig = trendLadderValidation?.config;
     const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
-    const firstTrendLadderMartinLayer = trendLadderConfig?.Martin_Layers.find((layer) => layer.enabled && layer.layer > 1);
+    const firstTrendLadderMartinLayer = trendLadderConfig?.Martin_Layers.find(
+      (layer) => layer.enabled && layer.layer > 1 && layer.layer <= trendLadderConfig.Max_Layers,
+    );
     // 實盤部署倉位永遠由頂層表單控制；策略專用 Base_Lot_Size 僅保留為原始邏輯配置。
     const positionValue = parseFloat(String(form.positionValue));
     const effectivePositionMode: "quantity" | "usdt" = form.positionMode;
@@ -634,7 +639,7 @@ function StrategiesContent() {
       takeProfitPct: isTrendLadder ? (trendLadderConfig?.Trailing_Activation_Pct ?? 0) : isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
       maxDailyLoss: parseFloat(form.maxDailyLoss) || 0,
       martinMultiplier: isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
-      maxMartinLevel: isTrendLadder ? Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(trendLadderConfig?.Martin_Layers ?? [])) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : (parseInt(form.maxMartinLevel) || 1),
+      maxMartinLevel: isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : (parseInt(form.maxMartinLevel) || 1),
       martinSpacingPct: isTrendLadder
         ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0)
         : isRainbow
@@ -1881,7 +1886,9 @@ function StrategiesContent() {
               <RainbowTrendLadderConfigPanel
                 value={form.rainbowTrendLadder}
                 onChange={(nextConfig) => {
-                  const firstAddLayer = nextConfig.Martin_Layers.find((layer) => layer.enabled && layer.layer > 1);
+                  const firstAddLayer = nextConfig.Martin_Layers.find(
+                    (layer) => layer.enabled && layer.layer > 1 && layer.layer <= nextConfig.Max_Layers,
+                  );
                   setForm((prev) => ({
                     ...prev,
                     rainbowTrendLadder: nextConfig,
@@ -1892,11 +1899,11 @@ function StrategiesContent() {
                     callbackPct: String(nextConfig.Trailing_Callback_Pct),
                     Max_Loss_Pct: String(nextConfig.Max_Margin_Usage_Pct),
                     martinMultiplier: String(firstAddLayer?.lotMultiplier ?? 1),
-                    maxMartinLevel: String(Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(nextConfig.Martin_Layers))),
+                    maxMartinLevel: String(nextConfig.Max_Layers),
                     martinSpacingPct: String(firstAddLayer?.triggerSpacingPct ?? 0),
                     martinLayersJson: JSON.stringify(nextConfig.Martin_Layers),
                     martin_mode: "layered",
-                    kLinePeriod: String(nextConfig.Entry_Timeframe_Minutes),
+                    kLinePeriod: String(nextConfig.Management_Interval_Minutes),
                     reentryOnTrend: nextConfig.Reentry_Wait_Next_M30_Close,
                   }));
                 }}
@@ -2021,7 +2028,9 @@ function StrategiesContent() {
                       }
                       if (v === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
                         const nextConfig = prev.rainbowTrendLadder ?? createRainbowTrendLadderDefaultConfig();
-                        const firstAddLayer = nextConfig.Martin_Layers.find((layer) => layer.enabled && layer.layer > 1);
+                        const firstAddLayer = nextConfig.Martin_Layers.find(
+                          (layer) => layer.enabled && layer.layer > 1 && layer.layer <= nextConfig.Max_Layers,
+                        );
                         return {
                           ...prev,
                           strategyKey: v,
@@ -2034,11 +2043,11 @@ function StrategiesContent() {
                           callbackPct: String(nextConfig.Trailing_Callback_Pct),
                           Max_Loss_Pct: String(nextConfig.Max_Margin_Usage_Pct),
                           martinMultiplier: String(firstAddLayer?.lotMultiplier ?? 1),
-                          maxMartinLevel: String(Math.max(1, deriveRainbowTrendLadderFinalEnabledLayer(nextConfig.Martin_Layers))),
+                          maxMartinLevel: String(nextConfig.Max_Layers),
                           martinSpacingPct: String(firstAddLayer?.triggerSpacingPct ?? 0),
                           martinLayersJson: JSON.stringify(nextConfig.Martin_Layers),
                           martin_mode: "layered",
-                          kLinePeriod: String(nextConfig.Entry_Timeframe_Minutes),
+                          kLinePeriod: String(nextConfig.Management_Interval_Minutes),
                           reentryOnTrend: nextConfig.Reentry_Wait_Next_M30_Close,
                         };
                       }
@@ -2418,7 +2427,8 @@ function SyncExchangeButton({ strategyId }: { strategyId: number }) {
 function AutoTradeModeSection({ strategy }: { strategy: any }) {
   const utils = trpc.useUtils();
   const tradeMode: "webhook" | "auto" = strategy.tradeMode || "webhook";
-  const kLinePeriod: number = strategy.kLinePeriod || 15;
+  const isTrendLadder = strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+  const kLinePeriod: number = isTrendLadder ? 30 : (strategy.kLinePeriod || 15);
 
   // Heartbeat status query
   const { data: heartbeatData } = trpc.autoTrade.getHeartbeatStatus.useQuery(undefined, {
@@ -2489,7 +2499,7 @@ function AutoTradeModeSection({ strategy }: { strategy: any }) {
     if (toAuto) {
       createHeartbeat.mutate({
         strategyId: strategy.id,
-        kLinePeriod: selectedPeriod,
+        kLinePeriod: isTrendLadder ? 30 : selectedPeriod,
       });
     } else {
       if (confirm("確定切換回 Webhook 模式？\n將停止自動交易並刪除 Heartbeat 任務。")) {
@@ -2587,7 +2597,9 @@ function AutoTradeModeSection({ strategy }: { strategy: any }) {
             </div>
           </div>
           <p className="text-[10px] text-muted-foreground/70">
-            每分鐘檢測一次策略條件，條件達成即觸發信號（最大延遲 ≤ 1 分鐘）
+            {isTrendLadder
+              ? "每分鐘輪詢；進場與持倉管理只在新 30M 已收盤 K 線執行一次"
+              : "每分鐘檢測一次策略條件，條件達成即觸發信號（最大延遲 ≤ 1 分鐘）"}
           </p>
           {/* 手動觸發按鈕 */}
           <Button
@@ -2613,15 +2625,21 @@ function AutoTradeModeSection({ strategy }: { strategy: any }) {
       {tradeMode === "webhook" && strategy.strategyKey && (
         <div className="flex items-center gap-2 text-xs">
           <span className="text-muted-foreground shrink-0">分析 K 線週期：</span>
-          <select
-            className="bg-secondary border border-border/60 rounded px-1.5 py-0.5 text-xs"
-            value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(Number(e.target.value))}
-          >
-            {K_LINE_PERIODS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
+          {isTrendLadder ? (
+            <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-medium text-cyan-300">
+              30 分鐘（策略固定）
+            </span>
+          ) : (
+            <select
+              className="bg-secondary border border-border/60 rounded px-1.5 py-0.5 text-xs"
+              value={selectedPeriod}
+              onChange={(e) => setSelectedPeriod(Number(e.target.value))}
+            >
+              {K_LINE_PERIODS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          )}
           <span className="text-muted-foreground/60 text-[10px]">(每分鐘輪詢)</span>
         </div>
       )}

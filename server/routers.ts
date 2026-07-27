@@ -37,7 +37,6 @@ import {
 } from "../shared/strategies/rainbow20415";
 import {
   assertValidRainbowTrendLadderConfig,
-  deriveRainbowTrendLadderFinalEnabledLayer,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../shared/strategies/rainbowTrendLadder";
 import {
@@ -595,7 +594,7 @@ const strategiesRouter = router({
           : rainbow20415Config
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges))
             : rainbowTrendLadderConfig
-              ? deriveRainbowTrendLadderFinalEnabledLayer(rainbowTrendLadderConfig.Martin_Layers)
+              ? rainbowTrendLadderConfig.Max_Layers
               : input.maxMartinLevel,
         martinSpacingPct: String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
         martinState: {
@@ -769,7 +768,7 @@ const strategiesRouter = router({
         data.martinState = { ...prevState, __rainbowTrendLadderConfig: rainbowTrendLadderConfig };
         data.takeProfitPct = String(rainbowTrendLadderConfig.Trailing_Activation_Pct);
         data.martinMultiplier = String(firstAddLayer?.lotMultiplier ?? 1);
-        data.maxMartinLevel = deriveRainbowTrendLadderFinalEnabledLayer(rainbowTrendLadderConfig.Martin_Layers);
+        data.maxMartinLevel = rainbowTrendLadderConfig.Max_Layers;
         data.martinSpacingPct = String(firstAddLayer?.triggerSpacingPct ?? 0);
         data.kLinePeriod = rainbowTrendLadderConfig.Entry_Timeframe_Minutes;
         data.reentryEnabled = rainbowTrendLadderConfig.Reentry_Wait_Next_M30_Close;

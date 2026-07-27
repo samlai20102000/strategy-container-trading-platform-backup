@@ -93,8 +93,8 @@ function downsample(points: EquityPoint[], maxPoints: number): EquityPoint[] {
 /**
  * 全新七彩虹線趨勢跟蹤階梯馬丁專屬回測。
  *
- * 只接受管理週期 K 線（預設 M1），內部聚合已完整收盤的 M30 K 線；
- * 空倉只在新 M30 收盤時呼叫進場純核心，持倉則每根 M1 呼叫盲人管理純核心。
+ * 進場與持倉管理都只由同一個已完整收盤的 M30 事件驅動；
+ * 不再存在 M1／M5 管理節流，因此長區間回測只需載入 M30 資料。
  */
 export function runRainbowTrendLadderBacktest(
   request: BacktestRequest,
@@ -117,9 +117,6 @@ export function runRainbowTrendLadderBacktest(
   const entryTimeframeLabel = config.Entry_Timeframe_Minutes % 60 === 0
     ? `${config.Entry_Timeframe_Minutes / 60}h`
     : `${config.Entry_Timeframe_Minutes}m`;
-// 移除硬編碼的時間週期驗證，改為使用可配置的 Entry_Timeframe_Minutes 和 Management_Interval_Minutes
-
-
   const trades: TradeRecord[] = priorSession?.trades ?? [];
   const equityCurve: EquityPoint[] = priorSession?.equityCurve ?? [];
   let equity = priorSession?.equity ?? request.initialCapital;
@@ -292,21 +289,17 @@ export function runRainbowTrendLadderBacktest(
     equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
   }
   let previousCandleTimestamp = priorSession?.lastCandle?.timestamp ?? null;
-  let lastManagementCheckTime = priorSession?.lastCandle?.timestamp ?? null; // V4.3: 管理週期檢查時間戳
-  const managementIntervalMs = 5 * 60 * 1000; // V4.3: 5 分鐘管理週期
 
   for (let index = 0; index < candles.length; index += 1) {
     const candle = candles[index];
     updateEntryAggregation(candle);
     const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+    const closedManagementCandle = latestEntryBarClosed ? closedEntryCandles.at(-1) ?? null : null;
     const crossedUtcDayBoundary = previousCandleTimestamp !== null
       && Math.floor(previousCandleTimestamp / 86_400_000) !== Math.floor(candle.timestamp / 86_400_000);
-    const shouldCheckManagement = lastManagementCheckTime === null
-      || (candle.timestamp - lastManagementCheckTime) >= managementIntervalMs; // V4.3: 只在 5M 邊界檢查
     let decision: RainbowTrendLadderCoreDecision | null = null;
 
-    if (hasPosition && shouldCheckManagement) {
-      lastManagementCheckTime = candle.timestamp; // V4.3: 更新最後檢查時間
+    if (hasPosition && closedManagementCandle) {
       // V4.2: 檢查 Max_Hold_Hours 時間限制
       const active = positionMeta as { side: "long" | "short"; entryTime: number; layers: RainbowTrendLadderBacktestPositionLayer[] } | null;
       const entryTime = active?.entryTime ?? candle.timestamp;
@@ -319,9 +312,10 @@ export function runRainbowTrendLadderBacktest(
           : undefined;
         const dayBoundaryDecision = evaluateRainbowTrendLadderManagement(
           {
-            currentPrice: candle.close,
+            currentPrice: closedManagementCandle.close,
             now: candle.timestamp,
-            account: simulatedAccount(candle.close),
+            barTimestamp: closedManagementCandle.timestamp,
+            account: simulatedAccount(closedManagementCandle.close),
             trendSnapshot,
             spreadPoints: 0,
           },
@@ -340,7 +334,7 @@ export function runRainbowTrendLadderBacktest(
         decision = {
           action: "close" as const,
           reason: `時間止損觸發（持倉 ${holdHours.toFixed(1)} 小時 >= ${maxHoldHours} 小時限制）`,
-          price: candle.close,
+          price: closedManagementCandle.close,
           closeReason: "OTHER" as const,
           nextState: state,
           metrics: {
@@ -371,9 +365,10 @@ export function runRainbowTrendLadderBacktest(
           : undefined;
         decision = evaluateRainbowTrendLadderManagement(
           {
-            currentPrice: candle.close,
+            currentPrice: closedManagementCandle.close,
             now: candle.timestamp,
-            account: simulatedAccount(candle.close),
+            barTimestamp: closedManagementCandle.timestamp,
+            account: simulatedAccount(closedManagementCandle.close),
             trendSnapshot,
             spreadPoints: 0,
           },
@@ -381,8 +376,7 @@ export function runRainbowTrendLadderBacktest(
           config,
         );
       }
-    } else if (latestEntryBarClosed && shouldCheckManagement) { // V4.3: 空倉也只在 5M 邊界檢查進場
-      lastManagementCheckTime = candle.timestamp; // V4.3: 更新最後檢查時間
+    } else if (closedManagementCandle) {
       decision = evaluateRainbowTrendLadderEntry({
         candles: closedEntryCandles,
         state,
@@ -437,6 +431,7 @@ export function runRainbowTrendLadderBacktest(
       {
         currentPrice: last.close,
         now: last.timestamp,
+        barTimestamp: last.timestamp,
         account: simulatedAccount(last.close),
         trendSnapshot,
         spreadPoints: 0,

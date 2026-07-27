@@ -240,24 +240,28 @@ export async function generateTradingSignal(
           spreadPoints: quote?.spreadPoints ?? null,
         });
       } else {
-        const [managementKlines, trendKlines, balanceResult, positionsResult] = await Promise.all([
-          fetchKLineData(adapter, effectiveStrategy.symbol, config.Management_Interval_Minutes, 5, false),
+        const [managementKlines, trendKlines, balanceResult] = await Promise.all([
+          fetchKLineData(adapter, effectiveStrategy.symbol, config.Management_Interval_Minutes, 5, true),
           fetchKLineData(adapter, effectiveStrategy.symbol, config.Entry_Timeframe_Minutes, 100, true),
           adapter.getBalance().catch((error) => {
             console.warn(`[AutoTradeSignalGenerator][RainbowTrendLadder] 帳戶真值取得失敗：${error.message}`);
             return null;
           }),
-          adapter.getPositions(effectiveStrategy.symbol).catch((error) => {
-            console.warn(`[AutoTradeSignalGenerator][RainbowTrendLadder] 持倉真值取得失敗：${error.message}`);
-            return null;
-          }),
         ]);
-        const expectedSide = state.isLong ? "long" : "short";
-        const exchangePosition = positionsResult?.find((position) => position.side === expectedSide && position.size > 0);
-        const currentPrice = exchangePosition?.markPrice
-          || quote?.mid
-          || managementKlines.at(-1)?.close
-          || 0;
+        const managementCandle = managementKlines.at(-1);
+        const managementBarTimestamp = managementCandle?.timestamp ?? 0;
+        if (!managementCandle || managementBarTimestamp <= 0) {
+          const detail = `新七彩虹階梯策略無法取得 ${effectiveStrategy.symbol} M${config.Management_Interval_Minutes} 已收盤管理 K 線`;
+          if (withReason) return { signal: null, holdReason: { type: "no_data", detail } };
+          return null;
+        }
+        const runtime = (state as any).rainbowTrendLadderRuntime ?? {};
+        if (runtime.lastManagementBarTimestamp === managementBarTimestamp) {
+          const detail = `新七彩虹階梯策略已管理 M${config.Management_Interval_Minutes} K 棒 ${managementBarTimestamp}，等待下一根收盤`;
+          if (withReason) return { signal: null, holdReason: { type: "strategy_hold", detail } };
+          return null;
+        }
+        const currentPrice = managementCandle.close;
         const account: RainbowTrendLadderAccountMetrics | undefined = balanceResult
           ? {
               equity: balanceResult.total,
@@ -268,11 +272,12 @@ export async function generateTradingSignal(
         const trendSnapshot = trendKlines.length > 0
           ? calculateRainbowTrendLadderLineSnapshot(trendKlines, config)
           : undefined;
-        barTimestamp = managementKlines.at(-1)?.timestamp ?? trendKlines.at(-1)?.timestamp;
+        barTimestamp = managementBarTimestamp;
         decision = evaluateRainbowTrendLadderManagement(
           {
             currentPrice,
             now: Date.now(),
+            barTimestamp: managementBarTimestamp,
             account,
             trendSnapshot,
             spreadPoints: quote?.spreadPoints ?? null,
@@ -288,7 +293,7 @@ export async function generateTradingSignal(
         await saveStrategyState(effectiveStrategy.id, decision.nextState);
       }
       console.log(
-        `[AutoTradeSignalGenerator][RainbowTrendLadder] mode=${hasPosition ? "M1-BLIND" : "M30-SCAN"} armed=${config.Live_Trading_Armed} action=${decision.action} reason=${decision.reason}`,
+        `[AutoTradeSignalGenerator][RainbowTrendLadder] mode=${hasPosition ? "M30-BLIND" : "M30-SCAN"} armed=${config.Live_Trading_Armed} action=${decision.action} reason=${decision.reason}`,
       );
       if (decision.action === "hold" || !config.Live_Trading_Armed) {
         const detail = decision.action === "hold"

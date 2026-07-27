@@ -168,7 +168,10 @@ export class BacktestEngine {
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     if (spanMs > sevenDaysMs) {
       if (request.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
-        return this.runRainbowTrendLadderSegmentedBacktest(request, onProgress);
+        return this.runRainbowTrendLadderSegmentedBacktest(
+          { ...request, timeframe: "30m" },
+          onProgress,
+        );
       }
       return this.runSegmentedBacktest(request, onProgress);
     }
@@ -185,6 +188,9 @@ export class BacktestEngine {
     const isV25 = request.strategyKey === V25_STRATEGY_KEY;
     const isRainbow20415 = request.strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isRainbowTrendLadder = request.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const effectiveRequest = isRainbowTrendLadder
+      ? { ...request, timeframe: "30m" }
+      : request;
 
     // 合併策略默認配置（與實盤 resolveConfig 邏輯一致，依選中策略的 defaultConfig）
     const config: Record<string, unknown> = {
@@ -203,7 +209,7 @@ export class BacktestEngine {
 
     // 任務 A4：每次回測都是全新執行（無結果快取），日誌佐證
     console.log(
-      `[Backtest] 新回測執行：策略=${request.strategyKey}（${strategy.name}） 品種=${request.symbol} 框架=${request.timeframe} 參數=${JSON.stringify(request.config)}`,
+      `[Backtest] 新回測執行：策略=${request.strategyKey}（${strategy.name}） 品種=${request.symbol} 框架=${effectiveRequest.timeframe} 參數=${JSON.stringify(request.config)}`,
     );
 
     const commission = request.commission ?? 0.0004;
@@ -212,7 +218,7 @@ export class BacktestEngine {
     onProgress?.(5, "載入歷史數據中...");
     const candles = await ensureOHLCVData(
       request.symbol,
-      request.timeframe,
+      effectiveRequest.timeframe,
       startMs,
       endMs,
       request.exchange ?? "okx",
@@ -249,7 +255,7 @@ export class BacktestEngine {
         throw new Error("七彩虹線階梯回測引擎類型不一致");
       }
       return runRainbowTrendLadderBacktest(
-        request,
+        effectiveRequest,
         strategy,
         config,
         candles,
@@ -2381,6 +2387,7 @@ export class BacktestEngine {
     request: BacktestRequest,
     onProgress?: (pct: number, message: string) => void,
   ): Promise<BacktestResult> {
+    const canonicalRequest: BacktestRequest = { ...request, timeframe: "30m" };
     const startMs = toMs(request.startDate);
     const endMs = toMs(request.endDate);
     const segmentMs = 7 * 24 * 60 * 60 * 1000;
@@ -2412,8 +2419,8 @@ export class BacktestEngine {
       );
 
       const candles = await ensureOHLCVData(
-        request.symbol,
-        request.timeframe,
+        canonicalRequest.symbol,
+        canonicalRequest.timeframe,
         segmentStart,
         segmentEnd,
         request.exchange ?? "okx",
@@ -2423,7 +2430,7 @@ export class BacktestEngine {
       }
 
       finalResult = runRainbowTrendLadderBacktest(
-        request,
+        canonicalRequest,
         strategy,
         config,
         candles,

@@ -7,6 +7,8 @@ import {
   Gauge,
   Layers3,
   LockKeyhole,
+  Minus,
+  Plus,
   Radar,
   RotateCcw,
   ShieldAlert,
@@ -23,10 +25,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { RainbowTrendLadderAiAdvisor } from "@/components/RainbowTrendLadderAiAdvisor";
-import { K_LINE_PERIODS } from "../pages/Strategies";
 import {
   createRainbowTrendLadderDefaultConfig,
-  deriveRainbowTrendLadderFinalEnabledLayer,
   normalizeRainbowTrendLadderConfig,
   validateRainbowTrendLadderConfig,
   type RainbowTrendLadderBaseLine,
@@ -188,21 +188,24 @@ export function RainbowTrendLadderConfigPanel({
 }: RainbowTrendLadderConfigPanelProps) {
   const config = useMemo(() => normalizeRainbowTrendLadderConfig(value), [value]);
   const validation = useMemo(() => validateRainbowTrendLadderConfig(config), [config]);
-  const configuredFinalLayer = deriveRainbowTrendLadderFinalEnabledLayer(config.Martin_Layers);
-  const finalLayer = Math.min(config.Max_Layers, configuredFinalLayer);
+  const finalLayer = config.Martin_Layers.reduce(
+    (highest, layer) => layer.enabled && layer.layer <= config.Max_Layers ? layer.layer : highest,
+    0,
+  );
   const contextLabel = context === "backtest" ? "同源回測" : context === "snapshot" ? "快照覆核" : "隔離部署";
 
   const layerRows = useMemo(() => {
     let cumulativeSpacingPct = 0;
     let cumulativeLot = 0;
-    return config.Martin_Layers.slice(0, 20).map((layer) => {
-      if (layer.enabled) {
+    return config.Martin_Layers.map((layer) => {
+      const executable = layer.enabled && layer.layer <= config.Max_Layers;
+      if (executable) {
         cumulativeSpacingPct += layer.triggerSpacingPct;
         cumulativeLot += layer.lotValue;
       }
-      return { layer, cumulativeSpacingPct, cumulativeLot };
+      return { layer, executable, cumulativeSpacingPct, cumulativeLot };
     });
-  }, [config.Martin_Layers]);
+  }, [config.Martin_Layers, config.Max_Layers]);
 
   const updateConfig = (patch: Partial<RainbowTrendLadderConfig>) => {
     onChange({ ...cloneConfig(config), ...patch });
@@ -217,6 +220,32 @@ export function RainbowTrendLadderConfigPanel({
   const updateLayer = (index: number, patch: Partial<RainbowTrendLadderLayerConfig>) => {
     updateConfig({
       Martin_Layers: config.Martin_Layers.map((layer, layerIndex) => layerIndex === index ? { ...layer, ...patch } : { ...layer }),
+    });
+  };
+
+  const appendLayer = () => {
+    const nextLayer = config.Martin_Layers.length + 1;
+    const previous = config.Martin_Layers.at(-1);
+    updateConfig({
+      Martin_Layers: [
+        ...config.Martin_Layers.map((layer) => ({ ...layer })),
+        {
+          layer: nextLayer,
+          triggerSpacingPct: previous?.triggerSpacingPct ?? 0.1,
+          lotMultiplier: previous?.lotMultiplier ?? 1,
+          lotValue: config.Base_Lot_Size.value * nextLayer,
+          enabled: true,
+        },
+      ],
+    });
+  };
+
+  const removeLastLayer = () => {
+    if (config.Martin_Layers.length <= 1) return;
+    const nextLayers = config.Martin_Layers.slice(0, -1).map((layer) => ({ ...layer }));
+    updateConfig({
+      Martin_Layers: nextLayers,
+      Max_Layers: Math.min(config.Max_Layers, nextLayers.length),
     });
   };
 
@@ -254,8 +283,8 @@ export function RainbowTrendLadderConfigPanel({
             <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 xl:min-w-[520px]">
               {[
                 { label: "契約", value: validation.valid ? "VALID" : "REVIEW", icon: ShieldCheck, ok: validation.valid },
-                { label: "雙節奏", value: `${config.Entry_Timeframe_Minutes}M / ${config.Management_Interval_Minutes}M`, icon: Clock3, ok: true },
-                { label: "最終戰層", value: `${finalLayer || 0} L`, icon: Layers3, ok: finalLayer > 0 },
+                { label: "同步節奏", value: "30M / 30M", icon: Clock3, ok: true },
+                { label: "執行上限", value: `${config.Max_Layers} L`, icon: Layers3, ok: finalLayer > 0 },
                 { label: "累積手數", value: layerRows.at(-1)?.cumulativeLot.toFixed(2) ?? "0.00", icon: Gauge, ok: true },
               ].map((item) => (
                 <div key={item.label} className="rounded-lg border border-slate-700/80 bg-black/30 px-3 py-3">
@@ -271,37 +300,15 @@ export function RainbowTrendLadderConfigPanel({
         </div>
 
         <div className="min-w-0 max-w-full space-y-4 p-3 sm:p-5">
-          <Sector index="01" title="任務時序與配置底倉" subtitle="新策略使用獨立設定與狀態；進場週期只在新收盤 K 棒掃描，持倉管理週期固定每分鐘評估。" icon={Crosshair}>
+          <Sector index="01" title="任務時序與配置底倉" subtitle="方案 A 使用同一個已收線 M30 事件驅動進場與持倉管理，不再執行 M1／M5 中途檢查。" icon={Crosshair}>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
                 <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">進場週期</Label>
-                <Select
-                  value={String(config.Entry_Timeframe_Minutes)}
-                  onValueChange={(value) => updateConfig({ Entry_Timeframe_Minutes: Number(value) })}
-                  disabled={disabled}
-                >
-                  <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/90 font-mono text-sm text-slate-100"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {K_LINE_PERIODS.map((p: { value: number; label: string }) => (
-                      <SelectItem key={p.value} value={String(p.value)}>{p.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex h-10 items-center rounded-md border border-cyan-400/30 bg-cyan-400/5 px-3 font-mono text-sm font-black text-cyan-100">30M 已收線</div>
               </div>
               <div className="space-y-2">
                 <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">持倉管理週期</Label>
-                <Select
-                  value={String(config.Management_Interval_Minutes)}
-                  onValueChange={(value) => updateConfig({ Management_Interval_Minutes: Number(value) })}
-                  disabled={disabled}
-                >
-                  <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/90 font-mono text-sm text-slate-100"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {K_LINE_PERIODS.map((p: { value: number; label: string }) => (
-                      <SelectItem key={p.value} value={String(p.value)}>{p.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex h-10 items-center rounded-md border border-cyan-400/30 bg-cyan-400/5 px-3 font-mono text-sm font-black text-cyan-100">30M 已收線</div>
               </div>
               <NumberControl id="rtl-capital" label="初始資金" value={config.Initial_Capital} onChange={(next) => updateConfig({ Initial_Capital: next })} min={1} step={100} unit="USDT" disabled={disabled} />
               <NumberControl id="rtl-point-value" label="每點價格" value={config.Point_Value} onChange={(next) => updateConfig({ Point_Value: next })} min={0.00000001} step={0.1} unit="USDT" disabled={disabled} />
@@ -387,16 +394,31 @@ export function RainbowTrendLadderConfigPanel({
           </Sector>
 
           <Sector index="03" title="階梯馬丁矩陣" subtitle="間距從原始進場價按層累加；lotValue 是真正下單值，倍率只作規格與稽核對照。" icon={Layers3} tone="violet">
-            <div data-testid="rtl-layers-scroll" role="region" aria-label="八層階梯馬丁設定表，可水平捲動" tabIndex={0} className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-slate-800">
-              <table className="w-full min-w-[900px] text-left text-xs">
+            <div className="mb-3 flex flex-col gap-3 rounded-xl border border-violet-400/15 bg-violet-400/5 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-mono text-xs font-semibold text-violet-100">層表目前 {config.Martin_Layers.length} 層，未設固定總層數上限</p>
+                <p className="mt-1 text-[10px] leading-4 text-slate-500">增減層表只改可配置範圍；真正會執行到哪一層仍只由 SECTOR 07 的 Max_Layers 決定。</p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <Button type="button" variant="outline" size="sm" disabled={disabled || config.Martin_Layers.length <= 1} onClick={removeLastLayer} className="border-slate-700 bg-slate-950/60 text-slate-300 hover:bg-slate-900">
+                  <Minus className="mr-1.5 h-3.5 w-3.5" />移除末層
+                </Button>
+                <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={appendLayer} className="border-violet-400/30 bg-violet-400/10 text-violet-100 hover:bg-violet-400/20">
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />新增一層
+                </Button>
+              </div>
+            </div>
+            <div data-testid="rtl-layers-scroll" role="region" aria-label="階梯馬丁設定表，可水平捲動" tabIndex={0} className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-slate-800">
+              <table className="w-full min-w-[980px] text-left text-xs">
                 <thead className="bg-slate-950/80 text-[9px] uppercase tracking-[0.16em] text-slate-500">
-                  <tr><th className="px-3 py-3">啟用</th><th className="px-3 py-3">層級</th><th className="px-3 py-3">本層間距 %</th><th className="px-3 py-3">累積間距 %</th><th className="px-3 py-3">倍率</th><th className="px-3 py-3">本層手數</th><th className="px-3 py-3">累積手數</th></tr>
+                  <tr><th className="px-3 py-3">啟用</th><th className="px-3 py-3">層級</th><th className="px-3 py-3">執行狀態</th><th className="px-3 py-3">本層間距 %</th><th className="px-3 py-3">累積間距 %</th><th className="px-3 py-3">倍率</th><th className="px-3 py-3">本層手數</th><th className="px-3 py-3">累積手數</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 bg-[#050b11]/70">
-                  {layerRows.map(({ layer, cumulativeSpacingPct, cumulativeLot }, index) => (
-                    <tr key={layer.layer} className={cn(!layer.enabled && "opacity-45")}>
+                  {layerRows.map(({ layer, executable, cumulativeSpacingPct, cumulativeLot }, index) => (
+                    <tr key={layer.layer} className={cn(!executable && "opacity-45")}>
                       <td className="px-3 py-3"><Switch checked={layer.enabled} onCheckedChange={(enabled) => updateLayer(index, { enabled })} disabled={disabled || layer.layer === 1} /></td>
                       <td className="px-3 py-3 font-mono font-black text-violet-200">L{layer.layer}</td>
+                      <td className="px-3 py-3"><Badge className={cn("border font-mono text-[9px]", executable ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-slate-600 bg-slate-800/70 text-slate-400")}>{executable ? "底層會執行" : layer.layer > config.Max_Layers ? "超出上限" : "此層停用"}</Badge></td>
                       <td className="px-3 py-3"><Input type="number" min={0} max={100} step={0.01} value={layer.triggerSpacingPct} disabled={disabled || layer.layer === 1} onChange={(event) => updateLayer(index, { triggerSpacingPct: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
                       <td className="px-3 py-3 font-mono text-cyan-200">{cumulativeSpacingPct.toFixed(2)}%</td>
                       <td className="px-3 py-3"><Input type="number" min={0.01} max={100} step={0.1} value={layer.lotMultiplier} disabled={disabled} onChange={(event) => updateLayer(index, { lotMultiplier: Number(event.target.value) })} className="h-9 w-24 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
@@ -471,7 +493,7 @@ export function RainbowTrendLadderConfigPanel({
                       updateConfig({
                         Max_Layers: Number.isFinite(next)
                           ? Math.max(1, Math.min(config.Martin_Layers.length, Math.trunc(next)))
-                          : finalLayer,
+                          : config.Max_Layers,
                       });
                     }}
                     disabled={disabled}
@@ -479,7 +501,7 @@ export function RainbowTrendLadderConfigPanel({
                   />
                   <span className="flex items-center text-xs font-mono text-slate-500">層</span>
                 </div>
-                <p className="text-[10px] text-slate-500">目前逐層表共 {config.Martin_Layers.length} 層；底層只會執行此上限內已啟用的層。</p>
+                <p className="text-[10px] text-slate-500">這是唯一執行上限；策略建立、更新、快照、回測與實盤底層都同步保存此值。目前逐層表共 {config.Martin_Layers.length} 層。</p>
               </div>
               <div className="space-y-2">
                 <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">最長持倉時間</Label>
@@ -523,8 +545,8 @@ export function RainbowTrendLadderConfigPanel({
             </div>
             <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
               <p className="text-xs leading-5 text-amber-100/90">
-                <span className="font-bold">⚠️ 風險提示：</span>
-                執行層數上限不得超過目前逐層表；Max_Hold_Hours 設為 0 代表不使用時間上限。完整回測終點預設按市價標記，避免為報表製造不存在的成交。
+                <span className="font-bold">風險提示：</span>
+                執行層數上限由你設定，且不得超過目前逐層表；表內超出上限的列只保留配置、不會被底層執行。Max_Hold_Hours 設為 0 代表不使用時間上限。
               </p>
             </div>
           </Sector>

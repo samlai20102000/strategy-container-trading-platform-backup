@@ -11,13 +11,14 @@ import {
 } from "../shared/strategies/rainbowTrendLadder";
 
 describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
-  it("使用獨立身份、固定 M30/M1、七線與預設停用的實盤鎖", () => {
+  it("使用獨立身份、固定 M30/M30、使用者預設九層、七線與預設停用的實盤鎖", () => {
     const config = createRainbowTrendLadderDefaultConfig();
 
     expect(RAINBOW_TREND_LADDER_STRATEGY_KEY).toBe("RAINBOW_TREND_LADDER_V1");
     expect(config.Config_Version).toBe(RAINBOW_TREND_LADDER_CONFIG_VERSION);
     expect(config.Entry_Timeframe_Minutes).toBe(30);
-    expect(config.Management_Interval_Minutes).toBe(1);
+    expect(config.Management_Interval_Minutes).toBe(30);
+    expect(config.Max_Layers).toBe(9);
     expect(config.Base_Lot_Size).toEqual({ value: 100, mode: "usdt" });
     expect(config.Backtest_End_Position_Policy).toBe("mark_to_market");
     expect(config.Live_Trading_Armed).toBe(false);
@@ -34,7 +35,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     ]);
   });
 
-  it("精確保留預設層表、累積觸發間距及最終層", () => {
+  it("保留可擴充層表與累積觸發間距，但執行上限只讀取 Max_Layers", () => {
     const config = createRainbowTrendLadderDefaultConfig();
     expect(config.Martin_Layers).toHaveLength(20);
     const cumulative = config.Martin_Layers.map((layer) =>
@@ -47,6 +48,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
       }
     });
     expect(deriveRainbowTrendLadderFinalEnabledLayer(config.Martin_Layers)).toBe(20);
+    expect(config.Max_Layers).toBe(9);
   });
 
   it("每次建立預設設定都深拷貝七線與層數，避免跨策略狀態污染", () => {
@@ -65,14 +67,14 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     const normalized = normalizeRainbowTrendLadderConfig({
       Config_Version: "foreign-version",
       TIMEFRAME: "30",
-      managementInterval: "1",
+      managementInterval: "5",
       BASE_LOT: "100",
       maxSpread: "50",
       liveTradingArmed: "false",
     });
     expect(normalized.Config_Version).toBe(RAINBOW_TREND_LADDER_CONFIG_VERSION);
     expect(normalized.Entry_Timeframe_Minutes).toBe(30);
-    expect(normalized.Management_Interval_Minutes).toBe(1);
+    expect(normalized.Management_Interval_Minutes).toBe(30);
     expect(normalized.Base_Lot_Size.value).toBe(100);
     expect(normalized.Max_Spread_Points).toBe(50);
     expect(normalized.Live_Trading_Armed).toBe(false);
@@ -93,7 +95,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
       ...createRainbowTrendLadderDefaultConfig(),
       Martin_Layers: snapshotLayers,
       Max_Layers: 8,
-      Management_Interval_Minutes: 1,
+      Management_Interval_Minutes: 5,
       Entry_Timeframe_Minutes: 30,
     };
 
@@ -103,7 +105,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(firstImport.Martin_Layers).toEqual(snapshotLayers);
     expect(secondImport.Martin_Layers).toEqual(snapshotLayers);
     expect(secondImport.Max_Layers).toBe(8);
-    expect(secondImport.Management_Interval_Minutes).toBe(1);
+    expect(secondImport.Management_Interval_Minutes).toBe(30);
     expect(secondImport.Entry_Timeframe_Minutes).toBe(30);
     expect(secondImport.Martin_Layers[0]).not.toHaveProperty("start");
     expect(secondImport.Martin_Layers[0]).not.toHaveProperty("end");
@@ -126,14 +128,37 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(backtestSource).toContain("strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY");
   });
 
-  it("拒絕破壞層數規格（少於 1 或多於 20）及未隔離帳戶的實盤武裝", () => {
+  it("策略管理、建立更新、三條快照部署與回測資料取得都直讀 Max_Layers／30M 單一來源", () => {
+    const strategiesSource = readFileSync("./client/src/pages/Strategies.tsx", "utf8");
+    const routerSource = readFileSync("./server/routers.ts", "utf8");
+    const snapshotRouterSource = readFileSync("./server/routers/backtest.router.ts", "utf8");
+    const backtestEngineSource = readFileSync("./server/services/backtest/backtestEngine.ts", "utf8");
+    const deploymentSources = [strategiesSource, routerSource, snapshotRouterSource].join("\n");
+
+    expect(routerSource.match(/rainbowTrendLadderConfig\.Max_Layers/g)).toHaveLength(2);
+    expect(snapshotRouterSource.match(/\?\s*ladderConfig\.Max_Layers/g)).toHaveLength(3);
+    expect(strategiesSource).toContain("maxMartinLevel: isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1)");
+    expect(strategiesSource).toContain("maxMartinLevel: String(nextConfig.Max_Layers)");
+    expect(deploymentSources).not.toContain("deriveRainbowTrendLadderFinalEnabledLayer");
+    expect(backtestEngineSource).toContain('{ ...request, timeframe: "30m" }');
+    expect(backtestEngineSource).toContain('const canonicalRequest: BacktestRequest = { ...request, timeframe: "30m" }');
+  });
+
+  it("拒絕零層但不設固定 20 層上限，並封鎖未隔離帳戶的實盤武裝", () => {
     const invalidLayers = createRainbowTrendLadderDefaultConfig();
     invalidLayers.Martin_Layers = invalidLayers.Martin_Layers.slice(0, 0); // 0 層
     expect(validateRainbowTrendLadderConfig(invalidLayers).issues.map((issue) => issue.path)).toContain("Martin_Layers");
 
     const tooManyLayers = createRainbowTrendLadderDefaultConfig();
-    tooManyLayers.Martin_Layers = Array.from({ length: 21 }).map((_, i) => ({ layer: i + 1, triggerSpacingPct: 0, lotMultiplier: 1, lotValue: 0, enabled: true })); // 21 層
-    expect(validateRainbowTrendLadderConfig(tooManyLayers).issues.map((issue) => issue.path)).toContain("Martin_Layers");
+    tooManyLayers.Martin_Layers = Array.from({ length: 21 }).map((_, i) => ({
+      layer: i + 1,
+      triggerSpacingPct: i === 0 ? 0 : 0.1,
+      lotMultiplier: 1,
+      lotValue: (i + 1) * 100,
+      enabled: true,
+    }));
+    tooManyLayers.Max_Layers = 21;
+    expect(validateRainbowTrendLadderConfig(tooManyLayers).valid).toBe(true);
 
     const unsafeLive = createRainbowTrendLadderDefaultConfig();
     unsafeLive.Live_Trading_Armed = true;

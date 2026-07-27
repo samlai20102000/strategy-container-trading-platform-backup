@@ -22,7 +22,7 @@ function longL1() {
   });
 }
 
-describe("七彩虹線盲人模式、八層階梯與安全狀態", () => {
+describe("七彩虹線盲人模式、使用者層數上限與安全狀態", () => {
   it("底倉成交後進入盲人模式，L2 以初始進場價累積 0.31% 觸發並更新加權平均成本", () => {
     const l1 = longL1();
     expect(l1.currentLayer).toBe(1);
@@ -65,6 +65,37 @@ describe("七彩虹線盲人模式、八層階梯與安全狀態", () => {
     expect(decision.action).toBe("hold");
     expect(decision.metrics).toMatchObject({ currentLayer: 1, finalLayer: 1, nextLayer: null });
     expect(decision.reason).toContain("最後有效層 L1");
+  });
+
+  it("預設 Max_Layers=9 時 L9 為終點；使用者改為 10 後底層才允許執行 L10", () => {
+    const layerNineState = {
+      ...longL1(),
+      currentLayer: 9,
+    };
+    const cappedAtNine = evaluateRainbowTrendLadderManagement({
+      currentPrice: 1,
+      now: 2_000,
+      barTimestamp: 1_800,
+      account: { marginUsagePct: 10 },
+      spreadPoints: 1,
+    }, layerNineState, createRainbowTrendLadderDefaultConfig());
+
+    expect(cappedAtNine.action).toBe("hold");
+    expect(cappedAtNine.metrics).toMatchObject({ currentLayer: 9, finalLayer: 9, nextLayer: null });
+    expect(cappedAtNine.nextState.rainbowTrendLadderRuntime?.lastManagementBarTimestamp).toBe(1_800);
+
+    const userTenLayers = { ...createRainbowTrendLadderDefaultConfig(), Max_Layers: 10 };
+    const expandedToTen = evaluateRainbowTrendLadderManagement({
+      currentPrice: 1,
+      now: 3_000,
+      barTimestamp: 2_700,
+      account: { marginUsagePct: 10 },
+      spreadPoints: 1,
+    }, layerNineState, userTenLayers);
+
+    expect(expandedToTen.action).toBe("add_long");
+    expect(expandedToTen.layerNum).toBe(10);
+    expect(expandedToTen.metrics).toMatchObject({ currentLayer: 9, finalLayer: 10, nextLayer: 10 });
   });
 
   it("加倉條件成立但缺保證金真值或點差不合格時保持封鎖", () => {

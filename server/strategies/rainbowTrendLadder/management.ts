@@ -85,7 +85,11 @@ export function evaluateRainbowTrendLadderManagement(
 ): RainbowTrendLadderCoreDecision {
   const config = assertValidRainbowTrendLadderConfig(rawConfig);
   const nextState = cloneState(state);
-  const runtime = createRainbowTrendLadderRuntimeMeta(nextState.rainbowTrendLadderRuntime);
+  const previousRuntime = createRainbowTrendLadderRuntimeMeta(nextState.rainbowTrendLadderRuntime);
+  const runtime = createRainbowTrendLadderRuntimeMeta({
+    ...previousRuntime,
+    lastManagementBarTimestamp: input.barTimestamp ?? previousRuntime.lastManagementBarTimestamp,
+  });
   const currentPrice = input.currentPrice;
   const profitPct = calculateProfitPct(nextState, currentPrice);
   const highestProfitPct = Math.max(runtime.highestProfitPct, profitPct);

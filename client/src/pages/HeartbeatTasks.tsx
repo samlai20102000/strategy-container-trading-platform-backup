@@ -39,6 +39,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import DashboardLayout from "@/components/DashboardLayout";
+import { RAINBOW_TREND_LADDER_STRATEGY_KEY } from "@shared/strategies/rainbowTrendLadder";
 import {
   PlusCircle,
   Play,
@@ -83,6 +84,10 @@ export default function HeartbeatTasks() {
 
   // 獲取策略列表（用於新增任務時選擇策略）
   const { data: strategiesData } = trpc.strategies.list.useQuery();
+  const selectedCreateStrategy = strategiesData?.find(
+    (strategy: any) => String(strategy.id) === createForm.strategyId,
+  );
+  const isTrendLadderCreate = selectedCreateStrategy?.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
 
   // 創建任務
   const createTaskMutation = trpc.autoTrade.createHeartbeatTask.useMutation({
@@ -143,7 +148,7 @@ export default function HeartbeatTasks() {
     }
     createTaskMutation.mutate({
       strategyId: parseInt(createForm.strategyId),
-      kLinePeriod: parseInt(createForm.kLinePeriod),
+      kLinePeriod: isTrendLadderCreate ? 30 : parseInt(createForm.kLinePeriod),
     });
   };
 
@@ -374,9 +379,16 @@ export default function HeartbeatTasks() {
                 <Label>選擇策略</Label>
                 <Select
                   value={createForm.strategyId}
-                  onValueChange={(v) =>
-                    setCreateForm((f) => ({ ...f, strategyId: v }))
-                  }
+                  onValueChange={(strategyId) => {
+                    const selected = strategiesData?.find((strategy: any) => String(strategy.id) === strategyId);
+                    setCreateForm((form) => ({
+                      ...form,
+                      strategyId,
+                      kLinePeriod: selected?.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+                        ? "30"
+                        : form.kLinePeriod,
+                    }));
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="選擇要綁定的策略" />
@@ -392,23 +404,29 @@ export default function HeartbeatTasks() {
               </div>
               <div className="space-y-2">
                 <Label>K 線週期</Label>
-                <Select
-                  value={createForm.kLinePeriod}
-                  onValueChange={(v) =>
-                    setCreateForm((f) => ({ ...f, kLinePeriod: v }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {K_LINE_PERIODS.map((p) => (
-                      <SelectItem key={p.value} value={p.value}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {isTrendLadderCreate ? (
+                  <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-300">
+                    30 分鐘（七彩虹線進場與持倉管理統一週期）
+                  </div>
+                ) : (
+                  <Select
+                    value={createForm.kLinePeriod}
+                    onValueChange={(v) =>
+                      setCreateForm((f) => ({ ...f, kLinePeriod: v }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {K_LINE_PERIODS.map((p) => (
+                        <SelectItem key={p.value} value={p.value}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
             <DialogFooter>

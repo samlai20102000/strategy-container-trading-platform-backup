@@ -56,6 +56,7 @@ export interface RainbowTrendLadderRuntimeMeta {
   lastScanBarTimestamp: number;
   nextEntryBarTimestamp: number;
   lastManagedAt: number;
+  lastManagementBarTimestamp: number;
   lastActionTimestamp: number;
   lastActionSignature: string;
   lastDecisionReason: string;
@@ -107,6 +108,8 @@ export interface RainbowTrendLadderAccountMetrics {
 export interface RainbowTrendLadderManagementInput {
   currentPrice: number;
   now: number;
+  /** 本次管理所依據的已收盤 M30 K 棒起始時間；實盤用於阻止同一根 K 棒重複管理。 */
+  barTimestamp?: number;
   account?: RainbowTrendLadderAccountMetrics;
   /** 最新一根已收盤 M30 七線；只供規格明列的反轉離場，不重新啟用進場過濾。 */
   trendSnapshot?: RainbowTrendLadderLineSnapshot;
@@ -298,6 +301,7 @@ export function createRainbowTrendLadderRuntimeMeta(
     lastScanBarTimestamp: 0,
     nextEntryBarTimestamp: 0,
     lastManagedAt: 0,
+    lastManagementBarTimestamp: 0,
     lastActionTimestamp: 0,
     lastActionSignature: "",
     lastDecisionReason: "尚未執行七彩虹線趨勢跟蹤階梯馬丁決策",

@@ -84,6 +84,10 @@ describe("20415 不變性與新策略隔離", () => {
     expect(source).toContain('data-testid="rtl-layers-scroll"');
     expect(source.match(/w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain/g)).toHaveLength(2);
     expect(source).toContain('aria-label="七線 SMA 設定表，可水平捲動"');
-    expect(source).toContain('aria-label="八層階梯馬丁設定表，可水平捲動"');
+    expect(source).toContain('aria-label="階梯馬丁設定表，可水平捲動"');
+    expect(source).toContain("const appendLayer = () =>");
+    expect(source).toContain("const removeLastLayer = () =>");
+    expect(source).toContain("未設固定總層數上限");
+    expect(source).toContain("真正會執行到哪一層仍只由 SECTOR 07 的 Max_Layers 決定");
   });
 });

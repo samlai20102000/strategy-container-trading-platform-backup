@@ -4,6 +4,8 @@ import {
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../shared/strategies/rainbowTrendLadder";
 import { StrategyRainbowTrendLadder } from "./strategies/builtin/strategyRainbowTrendLadder";
+import { createRainbowTrendLadderRuntimeState } from "./strategies/rainbowTrendLadder/core";
+import { applyRainbowTrendLadderFillToState } from "./strategies/rainbowTrendLadder/management";
 import type { OHLCVRow } from "./services/backtest/backtestDatabase";
 import type { BacktestRequest } from "./services/backtest/backtestEngine";
 
@@ -34,18 +36,16 @@ function makeLongEntryManagementCandles(): OHLCVRow[] {
     const close = bucket <= 60 ? entryCloses[bucket] : 121.5;
     const high = bucket <= 60 ? close + 30 : close + 1;
     const low = bucket <= 60 ? close - 38.1 : close - 1;
-    for (let minute = 0; minute < 30; minute += 1) {
-      rows.push({
-        symbol: "BTC-USDT",
-        timeframe: "1m",
-        timestamp: start + (bucket * 30 + minute) * 60_000,
-        open: close,
-        high,
-        low,
-        close,
-        volume: 1,
-      });
-    }
+    rows.push({
+      symbol: "BTC-USDT",
+      timeframe: "30m",
+      timestamp: start + bucket * 30 * 60_000,
+      open: close,
+      high,
+      low,
+      close,
+      volume: 1,
+    });
   }
 
   return rows;
@@ -55,7 +55,7 @@ function makeRequest(candles: OHLCVRow[]): BacktestRequest {
   return {
     strategyKey: RAINBOW_TREND_LADDER_STRATEGY_KEY,
     symbol: "BTC-USDT",
-    timeframe: "1m",
+    timeframe: "30m",
     startDate: candles[0].timestamp,
     endDate: candles[candles.length - 1].timestamp,
     initialCapital: 10_000,
@@ -74,7 +74,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
 
 
 
-  it("由 M1 聚合已收盤 M30，使用正式七線核心並依獨立終局政策完成回測", () => {
+  it("直接使用已收盤 M30，並以相同 30M 邊界完成進場與持倉管理回測", () => {
     const candles = makeLongEntryManagementCandles();
     const request = makeRequest(candles);
     const progress: Array<{ pct: number; message: string }> = [];
@@ -107,7 +107,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
   });
 
-  it("資料在非 M30 邊界切片時仍與單次回測完全等價，中間片不結算也不持久化", () => {
+  it("30M 資料跨分片時仍與單次回測完全等價，中間片不結算也不持久化", () => {
     const candles = makeLongEntryManagementCandles();
     const request = makeRequest(candles);
     const strategy = new StrategyRainbowTrendLadder();
@@ -124,7 +124,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
 
     saveBacktestResult.mockClear();
     savePerformanceMetrics.mockClear();
-    const splitIndex = 1_001;
+    const splitIndex = 31;
     const firstSlice = candles.slice(0, splitIndex);
     const secondSlice = candles.slice(splitIndex);
     const partial = runRainbowTrendLadderBacktest(
@@ -167,5 +167,80 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     expect(segmented.session.equityCurve).toEqual(oneShot.session.equityCurve);
     expect(saveBacktestResult).toHaveBeenCalledTimes(1);
     expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
+  });
+
+  it("同一 30M 桶內不執行持倉管理，只有下一個 30M 邊界才管理一次", () => {
+    const start = Date.UTC(2026, 0, 1, 0, 0, 0, 0);
+    const makeCandle = (timestamp: number, close: number): OHLCVRow => ({
+      symbol: "BTC-USDT",
+      timeframe: "30m",
+      timestamp,
+      open: close,
+      high: close,
+      low: close,
+      close,
+      volume: 1,
+    });
+    const initialState = applyRainbowTrendLadderFillToState(
+      createRainbowTrendLadderRuntimeState(),
+      {
+        action: "buy",
+        fillPrice: 100,
+        fillQuantity: 100,
+        timestamp: start,
+        barTimestamp: start,
+        accountEquity: 10_000,
+      },
+    );
+    const firstCandle = makeCandle(start, 100);
+    const fiveMinuteUpdate = makeCandle(start + 5 * 60_000, 99.9);
+    const request = makeRequest([firstCandle, fiveMinuteUpdate]);
+    const initialSession = {
+      equity: 10_000,
+      tradeId: 0,
+      state: initialState,
+      positionMeta: {
+        side: "long" as const,
+        entryTime: start,
+        layers: [{ price: 100, size: 100, time: start }],
+      },
+      closedEntryCandles: [],
+      activeBucketStart: 0,
+      activeBucket: null,
+      trades: [],
+      equityCurve: [],
+      candleCount: 0,
+      firstCandle: null,
+      lastCandle: null,
+    };
+
+    const sameBucket = runRainbowTrendLadderBacktest(
+      request,
+      new StrategyRainbowTrendLadder(),
+      request.config,
+      [firstCandle, fiveMinuteUpdate],
+      firstCandle.timestamp,
+      fiveMinuteUpdate.timestamp,
+      0,
+      0,
+      undefined,
+      { session: initialSession, finalize: false },
+    );
+    expect(sameBucket.session.state.rainbowTrendLadderRuntime?.lastManagementBarTimestamp).toBe(0);
+
+    const nextBoundary = makeCandle(start + 30 * 60_000, 99.8);
+    const managed = runRainbowTrendLadderBacktest(
+      { ...request, endDate: nextBoundary.timestamp },
+      new StrategyRainbowTrendLadder(),
+      request.config,
+      [nextBoundary],
+      nextBoundary.timestamp,
+      nextBoundary.timestamp,
+      0,
+      0,
+      undefined,
+      { session: sameBucket.session, finalize: false },
+    );
+    expect(managed.session.state.rainbowTrendLadderRuntime?.lastManagementBarTimestamp).toBe(start);
   });
 });

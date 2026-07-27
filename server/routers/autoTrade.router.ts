@@ -209,7 +209,9 @@ export const autoTradeRouter = router({
       enabled: s.enabled,
       tradeMode: (s as any).tradeMode || "webhook",
       heartbeatTaskUid: (s as any).heartbeatTaskUid || null,
-      kLinePeriod: (s as any).kLinePeriod || 15,
+      kLinePeriod: s.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+        ? 30
+        : (s as any).kLinePeriod || 15,
     }));
   }),
 
@@ -229,6 +231,9 @@ export const autoTradeRouter = router({
       if (!strategy) {
         throw new Error(`Strategy ${strategyId} not found`);
       }
+      const effectiveKLinePeriod = strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+        ? 30
+        : kLinePeriod;
 
       // Create real Heartbeat task via Manus API
       try {
@@ -236,7 +241,7 @@ export const autoTradeRouter = router({
           {
             strategyId,
             symbol: strategy.symbol,
-            kLinePeriod,
+            kLinePeriod: effectiveKLinePeriod,
             enabled: true,
             taskUid: (strategy as any).heartbeatTaskUid || undefined,
           },
@@ -248,19 +253,19 @@ export const autoTradeRouter = router({
           enabled: true,
           tradeMode: "auto",
           heartbeatTaskUid: result.taskUid,
-          kLinePeriod,
+          kLinePeriod: effectiveKLinePeriod,
         } as any);
 
-        return { success: true, strategyId, kLinePeriod, taskUid: result.taskUid };
+        return { success: true, strategyId, kLinePeriod: effectiveKLinePeriod, taskUid: result.taskUid };
       } catch (err: any) {
         console.error("[autoTrade.createHeartbeatTask] Failed:", err);
         // Fallback: just update mode without real task
         await db.updateStrategy(strategyId, ctx.user!.id, {
           enabled: true,
           tradeMode: "auto",
-          kLinePeriod,
+          kLinePeriod: effectiveKLinePeriod,
         } as any);
-        return { success: true, strategyId, kLinePeriod, taskUid: null, warning: err.message };
+        return { success: true, strategyId, kLinePeriod: effectiveKLinePeriod, taskUid: null, warning: err.message };
       }
     }),
 
@@ -291,7 +296,9 @@ export const autoTradeRouter = router({
               {
                 strategyId,
                 symbol: strategy.symbol,
-                kLinePeriod: (strategy as any).kLinePeriod || 15,
+                kLinePeriod: strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+                  ? 30
+                  : (strategy as any).kLinePeriod || 15,
                 enabled: true,
                 taskUid,
               },
@@ -675,7 +682,9 @@ export const autoTradeRouter = router({
             limit: 1,
           });
 
-          const kLinePeriod = (strategy as any).kLinePeriod || 15;
+          const kLinePeriod = strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+            ? 30
+            : (strategy as any).kLinePeriod || 15;
           const tradeMode = (strategy as any).tradeMode || "webhook";
           const heartbeatTaskUid = (strategy as any).heartbeatTaskUid || null;
 
