@@ -11,6 +11,7 @@ import {
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
   Sparkles,
   Target,
 } from "lucide-react";
@@ -451,6 +452,52 @@ export function RainbowTrendLadderConfigPanel({
             </div>
             <div className="mt-3">
               <ToggleRow id="rtl-live-armed" title="實盤交易武裝" description="預設關閉。只有專用帳戶、所有權驗證、模擬盤與回測均完成後才可人工開啟；建立策略後仍會保持停用。" checked={config.Live_Trading_Armed} onCheckedChange={(checked) => updateConfig({ Live_Trading_Armed: checked })} disabled={disabled} danger />
+            </div>
+          </Sector>
+
+          <Sector index="06" title="用戶自由控制區 (V4.2)" subtitle="解除底層限制，所有參數由用戶設定；無上限配置需謹慎使用。" icon={Sliders} tone="violet">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="space-y-2">
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">最大馬丁層數</Label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="999"
+                    value={config.Max_Layers}
+                    onChange={(e) => updateConfig({ Max_Layers: Math.max(1, Math.min(999, Number(e.target.value) || 20)) })}
+                    disabled={disabled}
+                    className="h-10 flex-1 rounded-lg border border-slate-700/90 bg-[#050b11]/90 px-3 font-mono text-sm text-slate-100 placeholder-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
+                  />
+                  <span className="flex items-center text-xs font-mono text-slate-500">層</span>
+                </div>
+                <p className="text-[10px] text-slate-500">建議 10~50，設為 0 表示無上限（謹慎使用）</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">最長持倉時間</Label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="9999"
+                    value={config.Max_Hold_Hours}
+                    onChange={(e) => updateConfig({ Max_Hold_Hours: Math.max(0, Math.min(9999, Number(e.target.value) || 72)) })}
+                    disabled={disabled}
+                    className="h-10 flex-1 rounded-lg border border-slate-700/90 bg-[#050b11]/90 px-3 font-mono text-sm text-slate-100 placeholder-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
+                  />
+                  <span className="flex items-center text-xs font-mono text-slate-500">小時</span>
+                </div>
+                <p className="text-[10px] text-slate-500">設為 0 表示無時間限制，持倉直到盈利或風控觸發</p>
+              </div>
+              <div className="flex items-end">
+                <ToggleRow id="rtl-force-close" title="每日強制平倉" description="默認關閉。啟用後每日 08:00 可能強制平倉未盈利持倉。" checked={config.Force_Close_On_Day_Start} onCheckedChange={(checked) => updateConfig({ Force_Close_On_Day_Start: checked })} disabled={disabled} />
+              </div>
+            </div>
+            <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <p className="text-xs leading-5 text-amber-100/90">
+                <span className="font-bold">⚠️ 風險提示：</span>
+                Max_Layers 設為 0 會導致無限加倉（風險極高）；Max_Hold_Hours 設為 0 會無限期持倉。建議保留默認值或設為合理範圍。
+              </p>
             </div>
           </Sector>
 

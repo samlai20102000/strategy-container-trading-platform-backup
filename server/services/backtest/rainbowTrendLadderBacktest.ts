@@ -268,20 +268,59 @@ export function runRainbowTrendLadderBacktest(
     }
 
     if (hasPosition) {
-      const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
-        ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
-        : undefined;
-      decision = evaluateRainbowTrendLadderManagement(
-        {
-          currentPrice: candle.close,
-          now: candle.timestamp,
-          account: simulatedAccount(candle.close),
-          trendSnapshot,
-          spreadPoints: 0,
-        },
-        state,
-        config,
-      );
+      // V4.2: 檢查 Max_Hold_Hours 時間限制
+      const active = positionMeta as { side: "long" | "short"; entryTime: number; layers: PositionLayer[] } | null;
+      const entryTime = active?.entryTime ?? candle.timestamp;
+      const holdHours = (candle.timestamp - entryTime) / (1000 * 60 * 60);
+      const maxHoldHours = num(config.Max_Hold_Hours, 72);
+      
+      if (maxHoldHours > 0 && holdHours >= maxHoldHours) {
+        // 時間止損觸發
+        // 時間止損觸發 - 創建完整的決策對象
+        decision = {
+          action: "close" as const,
+          reason: `時間止損觸發（持倉 ${holdHours.toFixed(1)} 小時 >= ${maxHoldHours} 小時限制）`,
+          price: candle.close,
+          closeReason: "OTHER" as const,
+          nextState: state,
+          metrics: {
+            mode: "BLIND" as const,
+            profitPct: 0,
+            highestProfitPct: 0,
+            trailingActive: false,
+            trailingDrawdownPct: 0,
+            marginUsagePct: null,
+            spreadPoints: null,
+            spreadAllowed: false,
+            currentLayer: 0,
+            finalLayer: 0,
+            nextLayer: null,
+            nextCumulativeTriggerPct: null,
+            nextTriggerPrice: null,
+            initialEntryPrice: 0,
+            trendBaseValue: null,
+            trendBaseSlope: null,
+            trendDeviationPoints: null,
+            trendTurnedAgainstPosition: false,
+            killed: false,
+          },
+        };
+      } else {
+        const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
+          ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
+          : undefined;
+        decision = evaluateRainbowTrendLadderManagement(
+          {
+            currentPrice: candle.close,
+            now: candle.timestamp,
+            account: simulatedAccount(candle.close),
+            trendSnapshot,
+            spreadPoints: 0,
+          },
+          state,
+          config,
+        );
+      }
     } else if (latestEntryBarClosed) {
       decision = evaluateRainbowTrendLadderEntry({
         candles: closedEntryCandles,
@@ -315,6 +354,8 @@ export function runRainbowTrendLadderBacktest(
         ? (candle.close - state.avgPrice) * state.totalSize
         : (state.avgPrice - candle.close) * state.totalSize
       : 0;
+  // V4.2: 检查是否应该在回测结束时强制平仓
+  const shouldForceCloseAtEnd = config.Force_Close_On_Day_Start !== false;
     equityCurve.push({
       timestamp: candle.timestamp,
       equity: Math.round((equity + unrealizedPnl) * 100) / 100,

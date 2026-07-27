@@ -45,6 +45,8 @@ export interface RainbowTrendLadderConfig {
   Max_Spread_Points: number;
   Max_Slippage_Points: number;
   Martin_Layers: RainbowTrendLadderLayerConfig[];
+  Max_Layers: number; // V4.2: 用戶可設的最大馬丁層數（1-999，默認 20）
+  Max_Hold_Hours: number; // V4.2: 用戶可設的最大持倉時間（小時，0 表示無限）
   Trailing_Activation_Pct: number;
   Trailing_Callback_Pct: number;
   Trend_Deviation_Points: number;
@@ -54,6 +56,7 @@ export interface RainbowTrendLadderConfig {
   Reentry_Wait_Next_M30_Close: boolean;
   Require_Dedicated_Account: boolean;
   Kill_Close_Only_Owned_Position: boolean;
+  Force_Close_On_Day_Start: boolean; // V4.2: 是否啟用每日強制平倉（默認 false）
   Live_Trading_Armed: boolean;
 }
 
@@ -120,6 +123,8 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
     ...layer,
     lotValue: layer.layer * 100, // 預設層級的 lotValue 根據 Base_Lot_Size 預設值計算
   })),
+  Max_Layers: 20, // V4.2: 預設最大層數 20（用戶可調 1-999）
+  Max_Hold_Hours: 72, // V4.2: 預設最大持倉時間 72 小時（0 表示無限）
   Trailing_Activation_Pct: 1.1,
   Trailing_Callback_Pct: 0.1,
   Trend_Deviation_Points: 50, // V4.1: 已禁用，不再用於平倉判斷
@@ -129,6 +134,7 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
   Reentry_Wait_Next_M30_Close: true,
   Require_Dedicated_Account: true,
   Kill_Close_Only_Owned_Position: true,
+  Force_Close_On_Day_Start: false, // V4.2: 默認禁用每日強制平倉
   Live_Trading_Armed: false,
 };
 
@@ -279,6 +285,8 @@ export function normalizeRainbowTrendLadderConfig(raw: unknown): RainbowTrendLad
     Max_Spread_Points: toNumber(firstDefined(input.Max_Spread_Points, input.maxSpread), defaults.Max_Spread_Points),
     Max_Slippage_Points: toNumber(firstDefined(input.Max_Slippage_Points, input.maxSlippage), defaults.Max_Slippage_Points),
     Martin_Layers: parseLayers(firstDefined(input.Martin_Layers, input.MARTINGALE_LAYERS, input.layers), defaults.Martin_Layers),
+    Max_Layers: toNumber(firstDefined(input.Max_Layers, input.maxLayers), defaults.Max_Layers), // V4.2
+    Max_Hold_Hours: toNumber(firstDefined(input.Max_Hold_Hours, input.maxHoldHours), defaults.Max_Hold_Hours), // V4.2
     Trailing_Activation_Pct: toNumber(firstDefined(input.Trailing_Activation_Pct, input.trailingActivationPct), defaults.Trailing_Activation_Pct),
     Trailing_Callback_Pct: toNumber(firstDefined(input.Trailing_Callback_Pct, input.trailingCallbackPct), defaults.Trailing_Callback_Pct),
     Trend_Deviation_Points: toNumber(firstDefined(input.Trend_Deviation_Points, input.trendDeviationPoints), defaults.Trend_Deviation_Points),
@@ -288,6 +296,7 @@ export function normalizeRainbowTrendLadderConfig(raw: unknown): RainbowTrendLad
     Reentry_Wait_Next_M30_Close: toBoolean(firstDefined(input.Reentry_Wait_Next_M30_Close, input.reentryWaitNextM30Close), defaults.Reentry_Wait_Next_M30_Close),
     Require_Dedicated_Account: toBoolean(firstDefined(input.Require_Dedicated_Account, input.requireDedicatedAccount), defaults.Require_Dedicated_Account),
     Kill_Close_Only_Owned_Position: toBoolean(firstDefined(input.Kill_Close_Only_Owned_Position, input.killCloseOnlyOwnedPosition), defaults.Kill_Close_Only_Owned_Position),
+    Force_Close_On_Day_Start: toBoolean(firstDefined(input.Force_Close_On_Day_Start, input.forceCloseOnDayStart), defaults.Force_Close_On_Day_Start), // V4.2
     Live_Trading_Armed: toBoolean(firstDefined(input.Live_Trading_Armed, input.liveTradingArmed), defaults.Live_Trading_Armed),
   };
 }
@@ -340,6 +349,8 @@ export function validateRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadd
   pushNumberIssue(issues, "Trailing_Callback_Pct", config.Trailing_Callback_Pct, 0, config.Trailing_Activation_Pct, { allowMin: false });
   pushNumberIssue(issues, "Trend_Deviation_Points", config.Trend_Deviation_Points, 0, null, { allowMin: false });
   pushNumberIssue(issues, "Max_Margin_Usage_Pct", config.Max_Margin_Usage_Pct, 0, 100, { allowMin: false });
+  pushNumberIssue(issues, "Max_Layers", config.Max_Layers, 1, 999, { integer: true }); // V4.2
+  pushNumberIssue(issues, "Max_Hold_Hours", config.Max_Hold_Hours, 0, 9999, { integer: true }); // V4.2
 
   if (config.Martin_Layers.length < 1 || config.Martin_Layers.length > 20) issues.push({ path: "Martin_Layers", message: "階梯馬丁層數必須介於 1 到 20 層之間" });
   config.Martin_Layers.forEach((layer, index) => {
