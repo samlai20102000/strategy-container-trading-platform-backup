@@ -51,19 +51,16 @@ export function getLegacyConfigKey(strategyKey: string): string | undefined {
 /**
  * 部分既有執行器預期 Martin_Layers 是 JSON 字串。原始快照不會被修改，
  * 只在寫入舊版相容欄位時做格式橋接。
+ * 
+ * 修復（V4.2）：保持 Martin_Layers 為對象數組，避免前端反序列化失敗。
+ * 舊版執行器會自動透過 parseLayers() 處理字符串或對象。
  */
 export function toLegacyCompatibleConfig(
   config: StrategySnapshotConfig,
 ): StrategySnapshotConfig {
-  const martinLayers = config.Martin_Layers;
-  if (martinLayers == null || typeof martinLayers === "string") {
-    return { ...config };
-  }
-
-  return {
-    ...config,
-    Martin_Layers: JSON.stringify(martinLayers),
-  };
+  // V4.2: 不再轉換 Martin_Layers，保持原始格式
+  // 所有執行器都應使用 normalizeRainbowTrendLadderConfig() 進行規範化
+  return { ...config };
 }
 
 /**

@@ -52,7 +52,9 @@ describe("通用快照部署契約", () => {
 
     expect(state[SNAPSHOT_CONFIG_STATE_KEY]).toEqual(rawConfig);
     expect((state[SNAPSHOT_CONFIG_STATE_KEY] as Record<string, unknown>).Martin_Layers).toEqual(martinLayers);
-    expect((state.__v61Config as Record<string, unknown>).Martin_Layers).toBe(JSON.stringify(martinLayers));
+    // V4.2 修復：Martin_Layers 保持為對象數組，避免前端反序列化失敗
+    // 所有執行器都應使用 normalizeRainbowTrendLadderConfig() 進行規範化
+    expect((state.__v61Config as Record<string, unknown>).Martin_Layers).toEqual(martinLayers);
     expect((state.__v61Config as Record<string, unknown>).Reentry_On_Trend).toBe(false);
   });
 
