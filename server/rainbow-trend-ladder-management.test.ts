@@ -103,7 +103,8 @@ describe("七彩虹線盲人模式、八層階梯與安全狀態", () => {
     expect(decision.closeReason).toBe("TRAILING_TAKE_PROFIT");
   });
 
-  it("價格偏離基礎線至少 50 點且基礎線反向時全平", () => {
+  it("V4.1: 趨勢反轉已移除 - 價格偏離基礎線且基礎線反向時仍繼續持倉", () => {
+    // V4.1: 移除了趨勢反轉平倉邏輯，持倉應繼續持倉直到盈利達標或風控觸發
     const decision = evaluateRainbowTrendLadderManagement({
       currentPrice: 49,
       now: 4_000,
@@ -115,8 +116,9 @@ describe("七彩虹線盲人模式、八層階梯與安全狀態", () => {
         slopes: { L2: -1 },
       } as any,
     }, longL1(), config);
-    expect(decision.action).toBe("close");
-    expect(decision.closeReason).toBe("TREND_REVERSAL");
+    // V4.1: 預期不再因趨勢反轉而平倉，而是繼續持倉或加倉
+    expect(decision.action).not.toBe("close");
+    expect(decision.closeReason).not.toBe("TREND_REVERSAL");
   });
 
   it("KILL 先鎖定；有持倉時要求全平，平倉後仍永久鎖定，無倉才可人工解除", () => {

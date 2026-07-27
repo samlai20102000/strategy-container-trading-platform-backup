@@ -197,24 +197,9 @@ export function evaluateRainbowTrendLadderManagement(
       input.now,
     );
   }
-  if (
-    trendDeviationPoints != null &&
-    trendDeviationPoints >= config.Trend_Deviation_Points &&
-    trendTurnedAgainstPosition
-  ) {
-    return managementDecision(
-      {
-        action: "close",
-        reason: `趨勢反轉：價格偏離 ${config.Trend_Base_Line} ${trendDeviationPoints.toFixed(2)} 點且基礎線已反向`,
-        price: currentPrice,
-        closeReason: "TREND_REVERSAL",
-      },
-      nextState,
-      metrics,
-      runtime,
-      input.now,
-    );
-  }
+  // V4.1: 移除趨勢反轉平倉邏輯 - 持倉直到盈利達標或風控觸發
+  // 以下代碼已完全刪除，確保不再因趨勢反轉、價格偏離、均線轉向而平倉
+  // if (trendDeviationPoints != null && trendDeviationPoints >= config.Trend_Deviation_Points && trendTurnedAgainstPosition) { ... }
 
   if (nextLayer && nextTriggerPrice != null) {
     const triggered = nextState.isLong ? currentPrice <= nextTriggerPrice : currentPrice >= nextTriggerPrice;

@@ -122,7 +122,7 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
   })),
   Trailing_Activation_Pct: 1.1,
   Trailing_Callback_Pct: 0.1,
-  Trend_Deviation_Points: 50,
+  Trend_Deviation_Points: 50, // V4.1: 已禁用，不再用於平倉判斷
   Trend_Base_Line: "L2",
   Max_Margin_Usage_Pct: 70,
   Close_On_Margin_Breach: true,
