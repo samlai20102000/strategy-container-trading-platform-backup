@@ -53,6 +53,20 @@ describe("七彩虹線盲人模式、八層階梯與安全狀態", () => {
     expect(l2.rainbowTrendLadderRuntime?.initialEntryPrice).toBe(100);
   });
 
+  it("Max_Layers 是真實執行上限：設為 1 時即使 L2 已啟用且價格達標也不得加倉", () => {
+    const cappedConfig = { ...createRainbowTrendLadderDefaultConfig(), Max_Layers: 1 };
+    const decision = evaluateRainbowTrendLadderManagement({
+      currentPrice: 90,
+      now: 2_000,
+      account: { marginUsagePct: 10 },
+      spreadPoints: 1,
+    }, longL1(), cappedConfig);
+
+    expect(decision.action).toBe("hold");
+    expect(decision.metrics).toMatchObject({ currentLayer: 1, finalLayer: 1, nextLayer: null });
+    expect(decision.reason).toContain("最後有效層 L1");
+  });
+
   it("加倉條件成立但缺保證金真值或點差不合格時保持封鎖", () => {
     const state = longL1();
     const missingMargin = evaluateRainbowTrendLadderManagement({

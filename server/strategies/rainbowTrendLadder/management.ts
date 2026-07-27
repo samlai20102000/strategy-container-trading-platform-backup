@@ -97,9 +97,10 @@ export function evaluateRainbowTrendLadderManagement(
     : null;
   const spreadAllowed = spreadPoints != null && spreadPoints < config.Max_Spread_Points;
   const initialEntryPrice = runtime.initialEntryPrice > 0 ? runtime.initialEntryPrice : nextState.avgPrice;
-  const nextLayer = getRainbowTrendLadderNextEnabledLayer(config.Martin_Layers, nextState.currentLayer);
+  const executableLayers = config.Martin_Layers.filter((layer) => layer.layer <= config.Max_Layers);
+  const nextLayer = getRainbowTrendLadderNextEnabledLayer(executableLayers, nextState.currentLayer);
   const nextCumulativeTriggerPct = nextLayer
-    ? getRainbowTrendLadderCumulativeTriggerPct(config.Martin_Layers, nextLayer.layer)
+    ? getRainbowTrendLadderCumulativeTriggerPct(executableLayers, nextLayer.layer)
     : null;
   const nextTriggerPrice = nextCumulativeTriggerPct == null || !(initialEntryPrice > 0)
     ? null
@@ -124,7 +125,7 @@ export function evaluateRainbowTrendLadderManagement(
     spreadPoints,
     spreadAllowed,
     currentLayer: nextState.currentLayer,
-    finalLayer: getFinalEnabledLayer(config.Martin_Layers),
+    finalLayer: getFinalEnabledLayer(executableLayers),
     nextLayer: nextLayer?.layer ?? null,
     nextCumulativeTriggerPct,
     nextTriggerPrice,

@@ -188,7 +188,8 @@ export function RainbowTrendLadderConfigPanel({
 }: RainbowTrendLadderConfigPanelProps) {
   const config = useMemo(() => normalizeRainbowTrendLadderConfig(value), [value]);
   const validation = useMemo(() => validateRainbowTrendLadderConfig(config), [config]);
-  const finalLayer = deriveRainbowTrendLadderFinalEnabledLayer(config.Martin_Layers);
+  const configuredFinalLayer = deriveRainbowTrendLadderFinalEnabledLayer(config.Martin_Layers);
+  const finalLayer = Math.min(config.Max_Layers, configuredFinalLayer);
   const contextLabel = context === "backtest" ? "同源回測" : context === "snapshot" ? "快照覆核" : "隔離部署";
 
   const layerRows = useMemo(() => {
@@ -455,23 +456,30 @@ export function RainbowTrendLadderConfigPanel({
             </div>
           </Sector>
 
-          <Sector index="06" title="用戶自由控制區 (V4.2)" subtitle="解除底層限制，所有參數由用戶設定；無上限配置需謹慎使用。" icon={Sliders} tone="violet">
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <Sector index="07" title="回測與持倉控制區" subtitle="資料分片、每日邊界與完整回測終點是三個獨立事件；任何選項都不會在七天分片邊界平倉。" icon={Sliders} tone="violet">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">
-                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">最大馬丁層數</Label>
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">執行層數上限</Label>
                 <div className="flex gap-2">
                   <input
                     type="number"
                     min="1"
-                    max="999"
+                    max={config.Martin_Layers.length}
                     value={config.Max_Layers}
-                    onChange={(e) => updateConfig({ Max_Layers: Math.max(1, Math.min(999, Number(e.target.value) || 20)) })}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      updateConfig({
+                        Max_Layers: Number.isFinite(next)
+                          ? Math.max(1, Math.min(config.Martin_Layers.length, Math.trunc(next)))
+                          : finalLayer,
+                      });
+                    }}
                     disabled={disabled}
                     className="h-10 flex-1 rounded-lg border border-slate-700/90 bg-[#050b11]/90 px-3 font-mono text-sm text-slate-100 placeholder-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
                   />
                   <span className="flex items-center text-xs font-mono text-slate-500">層</span>
                 </div>
-                <p className="text-[10px] text-slate-500">建議 10~50，設為 0 表示無上限（謹慎使用）</p>
+                <p className="text-[10px] text-slate-500">目前逐層表共 {config.Martin_Layers.length} 層；底層只會執行此上限內已啟用的層。</p>
               </div>
               <div className="space-y-2">
                 <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">最長持倉時間</Label>
@@ -481,7 +489,10 @@ export function RainbowTrendLadderConfigPanel({
                     min="0"
                     max="9999"
                     value={config.Max_Hold_Hours}
-                    onChange={(e) => updateConfig({ Max_Hold_Hours: Math.max(0, Math.min(9999, Number(e.target.value) || 72)) })}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      updateConfig({ Max_Hold_Hours: Number.isFinite(next) ? Math.max(0, Math.min(9999, next)) : 72 });
+                    }}
                     disabled={disabled}
                     className="h-10 flex-1 rounded-lg border border-slate-700/90 bg-[#050b11]/90 px-3 font-mono text-sm text-slate-100 placeholder-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
                   />
@@ -489,14 +500,31 @@ export function RainbowTrendLadderConfigPanel({
                 </div>
                 <p className="text-[10px] text-slate-500">設為 0 表示無時間限制，持倉直到盈利或風控觸發</p>
               </div>
+              <div className="space-y-2">
+                <Label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">完整回測終點</Label>
+                <Select
+                  value={config.Backtest_End_Position_Policy}
+                  onValueChange={(next) => updateConfig({ Backtest_End_Position_Policy: next as "mark_to_market" | "force_close" })}
+                  disabled={disabled}
+                >
+                  <SelectTrigger className="h-10 border-slate-700/90 bg-[#050b11]/90 font-mono text-xs text-slate-100">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mark_to_market">按市價標記（推薦）</SelectItem>
+                    <SelectItem value="force_close">只在全域終點平倉</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-slate-500">按市價標記保留未平倉狀態，只把浮動盈虧計入期末權益。</p>
+              </div>
               <div className="flex items-end">
-                <ToggleRow id="rtl-force-close" title="每日強制平倉" description="默認關閉。啟用後每日 08:00 可能強制平倉未盈利持倉。" checked={config.Force_Close_On_Day_Start} onCheckedChange={(checked) => updateConfig({ Force_Close_On_Day_Start: checked })} disabled={disabled} />
+                <ToggleRow id="rtl-force-close" title="每日邊界強制平倉" description="預設關閉。啟用後只在新 UTC 交易日第一根管理 K 線平倉；與七天資料分片及完整回測終點無關。" checked={config.Force_Close_On_Day_Start} onCheckedChange={(checked) => updateConfig({ Force_Close_On_Day_Start: checked })} disabled={disabled} />
               </div>
             </div>
             <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
               <p className="text-xs leading-5 text-amber-100/90">
                 <span className="font-bold">⚠️ 風險提示：</span>
-                Max_Layers 設為 0 會導致無限加倉（風險極高）；Max_Hold_Hours 設為 0 會無限期持倉。建議保留默認值或設為合理範圍。
+                執行層數上限不得超過目前逐層表；Max_Hold_Hours 設為 0 代表不使用時間上限。完整回測終點預設按市價標記，避免為報表製造不存在的成交。
               </p>
             </div>
           </Sector>

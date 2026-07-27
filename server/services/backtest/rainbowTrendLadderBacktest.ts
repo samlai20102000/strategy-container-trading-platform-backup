@@ -23,19 +23,48 @@ import {
 } from "./performanceCalculator";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
 
-interface PositionLayer {
+export interface RainbowTrendLadderBacktestPositionLayer {
   price: number;
   size: number;
   time: number;
 }
 
-interface EntryCandle {
+export interface RainbowTrendLadderBacktestEntryCandle {
   open: number;
   high: number;
   low: number;
   close: number;
   volume: number;
   timestamp: number;
+}
+
+export interface RainbowTrendLadderBacktestSession {
+  equity: number;
+  tradeId: number;
+  state: RainbowTrendLadderRuntimeState;
+  positionMeta: {
+    side: "long" | "short";
+    entryTime: number;
+    layers: RainbowTrendLadderBacktestPositionLayer[];
+  } | null;
+  closedEntryCandles: RainbowTrendLadderBacktestEntryCandle[];
+  activeBucketStart: number;
+  activeBucket: RainbowTrendLadderBacktestEntryCandle | null;
+  trades: TradeRecord[];
+  equityCurve: EquityPoint[];
+  candleCount: number;
+  firstCandle: OHLCVRow | null;
+  lastCandle: OHLCVRow | null;
+}
+
+export interface RainbowTrendLadderBacktestRunOptions {
+  session?: RainbowTrendLadderBacktestSession;
+  /** 只有整個日期範圍最後一片可 finalize；中間資料片不得平倉或持久化。 */
+  finalize?: boolean;
+}
+
+export interface RainbowTrendLadderBacktestRunResult extends BacktestResult {
+  session: RainbowTrendLadderBacktestSession;
 }
 
 function num(value: unknown, fallback: number): number {
@@ -77,8 +106,11 @@ export function runRainbowTrendLadderBacktest(
   commission: number,
   slippage: number,
   onProgress?: (pct: number, message: string) => void,
-): BacktestResult {
+  options: RainbowTrendLadderBacktestRunOptions = {},
+): RainbowTrendLadderBacktestRunResult {
   const config = assertValidRainbowTrendLadderConfig(rawConfig);
+  const isFinalSegment = options.finalize ?? true;
+  const priorSession = options.session;
   const expectedTimeframe = config.Management_Interval_Minutes % 60 === 0
     ? `${config.Management_Interval_Minutes / 60}h`
     : `${config.Management_Interval_Minutes}m`;
@@ -88,24 +120,24 @@ export function runRainbowTrendLadderBacktest(
 // 移除硬編碼的時間週期驗證，改為使用可配置的 Entry_Timeframe_Minutes 和 Management_Interval_Minutes
 
 
-  const trades: TradeRecord[] = [];
-  const equityCurve: EquityPoint[] = [];
-  let equity = request.initialCapital;
-  let tradeId = 0;
-  let state: RainbowTrendLadderRuntimeState = createRainbowTrendLadderRuntimeState({
+  const trades: TradeRecord[] = priorSession?.trades ?? [];
+  const equityCurve: EquityPoint[] = priorSession?.equityCurve ?? [];
+  let equity = priorSession?.equity ?? request.initialCapital;
+  let tradeId = priorSession?.tradeId ?? 0;
+  let state: RainbowTrendLadderRuntimeState = priorSession?.state ?? createRainbowTrendLadderRuntimeState({
     capital: request.initialCapital,
   });
   let positionMeta: {
     side: "long" | "short";
     entryTime: number;
-    layers: PositionLayer[];
-  } | null = null;
+    layers: RainbowTrendLadderBacktestPositionLayer[];
+  } | null = priorSession?.positionMeta ?? null;
 
   const entryFrameMs = config.Entry_Timeframe_Minutes * 60_000;
   const requiredEntryBars = Math.max(...config.Lines.map((line) => line.period)) + 1;
-  const closedEntryCandles: EntryCandle[] = [];
-  let activeBucketStart = -1;
-  let activeBucket: EntryCandle | null = null;
+  const closedEntryCandles: RainbowTrendLadderBacktestEntryCandle[] = priorSession?.closedEntryCandles ?? [];
+  let activeBucketStart = priorSession?.activeBucketStart ?? -1;
+  let activeBucket: RainbowTrendLadderBacktestEntryCandle | null = priorSession?.activeBucket ?? null;
   let latestEntryBarClosed = false;
   const leverage = Math.max(1, num(rawConfig.Leverage ?? rawConfig.leverage, 1));
   const directionValue = String(
@@ -118,7 +150,7 @@ export function runRainbowTrendLadderBacktest(
     const active = positionMeta as {
       side: "long" | "short";
       entryTime: number;
-      layers: PositionLayer[];
+      layers: RainbowTrendLadderBacktestPositionLayer[];
     } | null;
     const unrealizedPnl = active && state.totalSize > 0
       ? active.side === "long"
@@ -255,26 +287,49 @@ export function runRainbowTrendLadderBacktest(
     `數據就緒（${candles.length} 根 ${request.timeframe}），啟動七彩虹線階梯 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
   );
   const first = candles[0];
-  equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
+  if (!first) throw new Error("七彩虹線回測沒有可處理的 K 線");
+  if (equityCurve.length === 0) {
+    equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
+  }
+  let previousCandleTimestamp = priorSession?.lastCandle?.timestamp ?? null;
 
   for (let index = 0; index < candles.length; index += 1) {
     const candle = candles[index];
     updateEntryAggregation(candle);
     const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+    const crossedUtcDayBoundary = previousCandleTimestamp !== null
+      && Math.floor(previousCandleTimestamp / 86_400_000) !== Math.floor(candle.timestamp / 86_400_000);
     let decision: RainbowTrendLadderCoreDecision | null = null;
-    // 添加日誌以診斷回測卡住問題
-    if (index % 1000 === 0) {
-      console.log(`[Backtest Debug] Index: ${index}, Timestamp: ${candle.timestamp}, Closed Entry Candles: ${closedEntryCandles.length}, Latest Entry Bar Closed: ${latestEntryBarClosed}, Has Position: ${hasPosition}`);
-    }
 
     if (hasPosition) {
       // V4.2: 檢查 Max_Hold_Hours 時間限制
-      const active = positionMeta as { side: "long" | "short"; entryTime: number; layers: PositionLayer[] } | null;
+      const active = positionMeta as { side: "long" | "short"; entryTime: number; layers: RainbowTrendLadderBacktestPositionLayer[] } | null;
       const entryTime = active?.entryTime ?? candle.timestamp;
       const holdHours = (candle.timestamp - entryTime) / (1000 * 60 * 60);
       const maxHoldHours = num(config.Max_Hold_Hours, 72);
       
-      if (maxHoldHours > 0 && holdHours >= maxHoldHours) {
+      if (config.Force_Close_On_Day_Start && crossedUtcDayBoundary) {
+        const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
+          ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
+          : undefined;
+        const dayBoundaryDecision = evaluateRainbowTrendLadderManagement(
+          {
+            currentPrice: candle.close,
+            now: candle.timestamp,
+            account: simulatedAccount(candle.close),
+            trendSnapshot,
+            spreadPoints: 0,
+          },
+          state,
+          config,
+        );
+        decision = {
+          ...dayBoundaryDecision,
+          action: "close",
+          reason: "每日 UTC 交易日邊界強制平倉",
+          closeReason: "OTHER",
+        };
+      } else if (maxHoldHours > 0 && holdHours >= maxHoldHours) {
         // 時間止損觸發
         // 時間止損觸發 - 創建完整的決策對象
         decision = {
@@ -332,9 +387,6 @@ export function runRainbowTrendLadderBacktest(
     }
 
     if (decision) {
-      if (index % 1000 === 0) {
-        console.log(`[Backtest Debug] Decision at index ${index}: ${decision.action}, Reason: ${decision.reason ?? decision.closeReason}`);
-      }
       if (decision.action === "hold") {
         state = decision.nextState;
       } else if (decision.action === "close") {
@@ -347,20 +399,19 @@ export function runRainbowTrendLadderBacktest(
     const active = positionMeta as {
       side: "long" | "short";
       entryTime: number;
-      layers: PositionLayer[];
+      layers: RainbowTrendLadderBacktestPositionLayer[];
     } | null;
     const unrealizedPnl = active && state.totalSize > 0
       ? active.side === "long"
         ? (candle.close - state.avgPrice) * state.totalSize
         : (state.avgPrice - candle.close) * state.totalSize
       : 0;
-  // V4.2: 检查是否应该在回测结束时强制平仓
-  const shouldForceCloseAtEnd = config.Force_Close_On_Day_Start !== false;
     equityCurve.push({
       timestamp: candle.timestamp,
       equity: Math.round((equity + unrealizedPnl) * 100) / 100,
       price: candle.close,
     });
+    previousCandleTimestamp = candle.timestamp;
 
     if (index > 0 && index % 2000 === 0) {
       const progress = 35 + Math.floor((index / candles.length) * 60);
@@ -371,7 +422,7 @@ export function runRainbowTrendLadderBacktest(
     }
   }
 
-  if (positionMeta) {
+  if (isFinalSegment && config.Backtest_End_Position_Policy === "force_close" && positionMeta) {
     const last = candles[candles.length - 1];
     const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
       ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
@@ -399,47 +450,68 @@ export function runRainbowTrendLadderBacktest(
     });
   }
 
-  onProgress?.(95, "計算七彩虹線階梯績效指標...");
+  if (isFinalSegment) onProgress?.(95, "計算七彩虹線階梯績效指標...");
   const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
   const runId = makeRunId(request.strategyKey, request.symbol);
-  const summary = `七彩虹線階梯回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根管理 K 線、${closedEntryCandles.length} 根已收盤 ${entryTimeframeLabel}、${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
+  const totalCandleCount = (priorSession?.candleCount ?? 0) + candles.length;
+  const firstCandle = priorSession?.firstCandle ?? candles[0] ?? null;
+  const lastCandle = candles[candles.length - 1] ?? priorSession?.lastCandle ?? null;
+  const summaryPrefix = isFinalSegment ? "七彩虹線階梯回測完成" : "七彩虹線階梯資料分片完成（狀態保留）";
+  const summary = `${summaryPrefix}：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${totalCandleCount} 根管理 K 線、${closedEntryCandles.length} 根已收盤 ${entryTimeframeLabel}、${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
-  try {
-    const database = getBacktestDatabase();
-    database.saveBacktestResult(
-      {
-        run_id: runId,
-        strategy_key: request.strategyKey,
-        symbol: request.symbol,
-        timeframe: request.timeframe,
-        start_date: startMs,
-        end_date: endMs,
-        initial_capital: request.initialCapital,
-        config: JSON.stringify(config),
-        status: "completed",
-        created_at: Date.now(),
-      },
-      trades,
-    );
-    database.savePerformanceMetrics(runId, metrics, downsample(equityCurve, 2000));
-  } catch (error) {
-    console.warn("[Backtest 七彩虹線階梯] 結果持久化失敗（不影響回傳）:", error);
+  const session: RainbowTrendLadderBacktestSession = {
+    equity,
+    tradeId,
+    state,
+    positionMeta,
+    closedEntryCandles,
+    activeBucketStart,
+    activeBucket,
+    trades,
+    equityCurve,
+    candleCount: totalCandleCount,
+    firstCandle,
+    lastCandle,
+  };
+
+  if (isFinalSegment) {
+    try {
+      const database = getBacktestDatabase();
+      database.saveBacktestResult(
+        {
+          run_id: runId,
+          strategy_key: request.strategyKey,
+          symbol: request.symbol,
+          timeframe: request.timeframe,
+          start_date: firstCandle?.timestamp ?? startMs,
+          end_date: lastCandle?.timestamp ?? endMs,
+          initial_capital: request.initialCapital,
+          config: JSON.stringify(config),
+          status: "completed",
+          created_at: Date.now(),
+        },
+        trades,
+      );
+      database.savePerformanceMetrics(runId, metrics, downsample(equityCurve, 2000));
+    } catch (error) {
+      console.warn("[Backtest 七彩虹線階梯] 結果持久化失敗（不影響回傳）:", error);
+    }
   }
 
   const environment = buildEnvironmentSnapshot(
     request.symbol,
     request.timeframe,
-    startMs,
-    endMs,
-    candles.length,
+    firstCandle?.timestamp ?? startMs,
+    lastCandle?.timestamp ?? endMs,
+    totalCandleCount,
     request.initialCapital,
     commission,
     slippage,
     leverage,
-    candles[0]?.close,
-    candles[candles.length - 1]?.close,
+    firstCandle?.close,
+    lastCandle?.close,
   );
-  onProgress?.(100, summary);
+  if (isFinalSegment) onProgress?.(100, summary);
   return {
     runId,
     strategyKey: request.strategyKey,
@@ -449,7 +521,8 @@ export function runRainbowTrendLadderBacktest(
     equityCurve: downsample(equityCurve, 2000),
     config: { ...config },
     summary,
-    candleCount: candles.length,
+    candleCount: totalCandleCount,
     environment,
+    session,
   };
 }

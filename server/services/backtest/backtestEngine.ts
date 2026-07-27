@@ -55,7 +55,11 @@ import {
   RAINBOW_20415_STRATEGY_KEY,
 } from "../../../shared/strategies/rainbow20415";
 import { RAINBOW_TREND_LADDER_STRATEGY_KEY } from "../../../shared/strategies/rainbowTrendLadder";
-import { runRainbowTrendLadderBacktest } from "./rainbowTrendLadderBacktest";
+import {
+  runRainbowTrendLadderBacktest,
+  type RainbowTrendLadderBacktestRunResult,
+  type RainbowTrendLadderBacktestSession,
+} from "./rainbowTrendLadderBacktest";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -163,6 +167,9 @@ export class BacktestEngine {
     const spanMs = endMs - startMs;
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     if (spanMs > sevenDaysMs) {
+      if (request.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+        return this.runRainbowTrendLadderSegmentedBacktest(request, onProgress);
+      }
       return this.runSegmentedBacktest(request, onProgress);
     }
 
@@ -2364,7 +2371,82 @@ export class BacktestEngine {
   }
 
   /**
-   * 分段回測：將超過 7 天的回測自動分成多個 7 天段，逐段執行並聚合結果
+   * 七彩虹線專用連續分片回測。
+   *
+   * 七天邊界只限制單次資料載入量；資金、持倉、馬丁層級、M30 聚合桶、
+   * 指標暖機、交易與權益曲線全部由同一 session 延續。只有全域最後一片
+   * 可以套用 Backtest_End_Position_Policy 並持久化結果。
+   */
+  private async runRainbowTrendLadderSegmentedBacktest(
+    request: BacktestRequest,
+    onProgress?: (pct: number, message: string) => void,
+  ): Promise<BacktestResult> {
+    const startMs = toMs(request.startDate);
+    const endMs = toMs(request.endDate);
+    const segmentMs = 7 * 24 * 60 * 60 * 1000;
+    const segmentCount = Math.ceil((endMs - startMs + 1) / segmentMs);
+    const strategy = getStrategy(request.strategyKey);
+    if (!(strategy instanceof StrategyRainbowTrendLadder)) {
+      throw new Error("七彩虹線階梯連續分片回測引擎類型不一致");
+    }
+
+    const config: Record<string, unknown> = {
+      ...strategy.defaultConfig,
+      ...request.config,
+    };
+    const commission = request.commission ?? 0.0004;
+    const slippage = request.slippage ?? 0.0001;
+    let session: RainbowTrendLadderBacktestSession | undefined;
+    let finalResult: RainbowTrendLadderBacktestRunResult | undefined;
+
+    onProgress?.(5, `開始七彩虹線連續分片回測：共 ${segmentCount} 片；分片邊界不結算持倉`);
+
+    for (let index = 0; index < segmentCount; index += 1) {
+      const segmentStart = startMs + index * segmentMs;
+      // 減 1ms 避免前後資料片在邊界重複同一根 K 線。
+      const segmentEnd = Math.min(startMs + (index + 1) * segmentMs - 1, endMs);
+      const isFinalSegment = index === segmentCount - 1;
+      onProgress?.(
+        5 + (index / segmentCount) * 90,
+        `載入第 ${index + 1}/${segmentCount} 片資料（持倉與馬丁狀態連續）...`,
+      );
+
+      const candles = await ensureOHLCVData(
+        request.symbol,
+        request.timeframe,
+        segmentStart,
+        segmentEnd,
+        request.exchange ?? "okx",
+      );
+      if (candles.length === 0) {
+        throw new Error(`第 ${index + 1}/${segmentCount} 片沒有歷史 K 線，不能保證連續回測準確性`);
+      }
+
+      finalResult = runRainbowTrendLadderBacktest(
+        request,
+        strategy,
+        config,
+        candles,
+        segmentStart,
+        segmentEnd,
+        commission,
+        slippage,
+        (pct, message) => {
+          const overall = 5 + ((index + Math.max(0, Math.min(100, pct)) / 100) / segmentCount) * 90;
+          onProgress?.(Math.min(95, overall), `第 ${index + 1}/${segmentCount} 片：${message}`);
+        },
+        { session, finalize: isFinalSegment },
+      );
+      session = finalResult.session;
+    }
+
+    if (!finalResult) throw new Error("七彩虹線連續分片回測未產生結果");
+    onProgress?.(100, finalResult.summary);
+    return finalResult;
+  }
+
+  /**
+   * 舊版獨立分段聚合器：保留給尚未完成 session 化的其他策略。
    */
   private async runSegmentedBacktest(
     request: BacktestRequest,

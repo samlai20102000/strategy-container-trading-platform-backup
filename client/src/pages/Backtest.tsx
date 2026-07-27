@@ -66,6 +66,7 @@ import {
   normalizeRainbowTrendLadderConfig,
   deriveRainbowTrendLadderFinalEnabledLayer,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
+  validateRainbowTrendLadderConfig,
 } from "@shared/strategies/rainbowTrendLadder";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
 
@@ -254,8 +255,14 @@ export default function Backtest() {
     if (rainbowValidation && !rainbowValidation.valid) {
       return toast.error(`20415 七彩虹參數設定錯誤：${rainbowValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
+    const rainbowTrendValidation = strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+      ? validateRainbowTrendLadderConfig(configJson)
+      : null;
+    if (rainbowTrendValidation && !rainbowTrendValidation.valid) {
+      return toast.error(`七彩虹線階梯參數設定錯誤：${rainbowTrendValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
     // O1：Martin_Layers 提交前驗證（與後端 validateMartinLayers 一致）
-    if ("Martin_Layers" in configJson) {
+    if (strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && "Martin_Layers" in configJson) {
       const layersErr = validateLayersUI(parseLayersValue(configJson.Martin_Layers));
       if (layersErr) return toast.error(`階梯式馬丁分層設定錯誤：${layersErr}`);
     }
@@ -267,7 +274,11 @@ export default function Backtest() {
       const { jobId: id } = await runMutation.mutateAsync({
         strategyKey,
         symbol: symbol.trim(),
-        timeframe: rainbowValidation ? `${rainbowValidation.config.Management_Interval_Minutes}m` : timeframe,
+        timeframe: rainbowValidation
+          ? `${rainbowValidation.config.Management_Interval_Minutes}m`
+          : rainbowTrendValidation
+            ? `${rainbowTrendValidation.config.Management_Interval_Minutes}m`
+            : timeframe,
         startDate: startMs,
         endDate: endMs,
         initialCapital: capital,
@@ -275,14 +286,18 @@ export default function Backtest() {
           ? { ...(v25Validation?.config ?? normalizeV25Config(configJson)) }
           : rainbowValidation
             ? { ...rainbowValidation.config }
-            : configJson,
+            : rainbowTrendValidation
+              ? { ...rainbowTrendValidation.config }
+              : configJson,
         exchange,
         strategyName: selectedStrategy?.name,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
           : rainbowValidation
             ? rainbowValidation.config.Base_Lot_Size.value
-            : Number(tradeAmount) || undefined,
+            : rainbowTrendValidation
+              ? rainbowTrendValidation.config.Base_Lot_Size.value
+              : Number(tradeAmount) || undefined,
       });
       setJobId(id);
       utils.backtest.getQueueStatus.invalidate();
@@ -554,12 +569,12 @@ export default function Backtest() {
       setTfValue(String(nextConfig.Management_Interval_Minutes));
       setTfUnit("m");
     } else if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
-      // V4.4: 七彩虹線策略規範化
+      // 七彩虹線完整契約替換；管理回測週期必須取 Management_Interval_Minutes。
       const nextConfig = normalizeRainbowTrendLadderConfig(previewConfig);
       setConfigJson({ ...nextConfig });
       setTradeAmount(String(nextConfig.Base_Lot_Size.value));
       setInitialCapital(String(nextConfig.Initial_Capital));
-      setTfValue(String(nextConfig.Entry_Timeframe_Minutes));
+      setTfValue(String(nextConfig.Management_Interval_Minutes));
       setTfUnit("m");
     } else {
       setConfigJson((prev) => ({ ...prev, ...previewConfig }));
@@ -574,7 +589,9 @@ export default function Backtest() {
     if (bs) {
       if (bs.exchange) setExchange(bs.exchange as "okx" | "bybit");
       if (bs.symbol) setSymbol(bs.symbol);
-      if (bs.timeframe) {
+      // 七彩虹線的資料週期是共享策略契約的一部分，舊快照的 backtestSettings
+      // 可能曾錯存 Entry_Timeframe，不能覆蓋 Management_Interval_Minutes。
+      if (bs.timeframe && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY) {
         // 解析 timeframe 字串（如 "1h", "15m", "4h", "1d"）
         const tfMatch = bs.timeframe.match(/^(\d+)([mhd])$/);
         if (tfMatch) {
@@ -628,10 +645,17 @@ export default function Backtest() {
       toast.error(`20415 七彩虹參數設定錯誤：${rainbowValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
       return;
     }
+    const rainbowTrendValidation = strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+      ? validateRainbowTrendLadderConfig(configJson)
+      : null;
+    if (rainbowTrendValidation && !rainbowTrendValidation.valid) {
+      toast.error(`七彩虹線階梯參數設定錯誤：${rainbowTrendValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+      return;
+    }
     const cfg = {
       ...(strategyKey === V25_STRATEGY_KEY
         ? v25Validation?.config ?? configJson
-        : rainbowValidation?.config ?? configJson),
+        : rainbowValidation?.config ?? rainbowTrendValidation?.config ?? configJson),
       Initial_Capital: Number(initialCapital) || 10000,
     };
     // ✅ 從回測結果中提取完整績效指標（如果已有結果）
@@ -664,7 +688,11 @@ export default function Backtest() {
       backtestSettings: {
         exchange,
         symbol: symbol.trim(),
-        timeframe: rainbowValidation ? `${rainbowValidation.config.Management_Interval_Minutes}m` : `${tfValue}${tfUnit}`,
+        timeframe: rainbowValidation
+          ? `${rainbowValidation.config.Management_Interval_Minutes}m`
+          : rainbowTrendValidation
+            ? `${rainbowTrendValidation.config.Management_Interval_Minutes}m`
+            : `${tfValue}${tfUnit}`,
         startDate,
         endDate,
         initialCapital: Number(initialCapital) || 10000,
@@ -672,14 +700,20 @@ export default function Backtest() {
           ? v25Validation?.config.Base_Lot_Size
           : rainbowValidation
             ? rainbowValidation.config.Base_Lot_Size.value
-            : Number(tradeAmount) || undefined,
+            : rainbowTrendValidation
+              ? rainbowTrendValidation.config.Base_Lot_Size.value
+              : Number(tradeAmount) || undefined,
         configJson: cfg,
         baseLotSize: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
           : rainbowValidation
             ? rainbowValidation.config.Base_Lot_Size.value
-            : Number(tradeAmount) || undefined,
-        baseLotSizeMode: rainbowValidation ? rainbowValidation.config.Base_Lot_Size.mode : "usdt",
+            : rainbowTrendValidation
+              ? rainbowTrendValidation.config.Base_Lot_Size.value
+              : Number(tradeAmount) || undefined,
+        baseLotSizeMode: rainbowValidation
+          ? rainbowValidation.config.Base_Lot_Size.mode
+          : rainbowTrendValidation?.config.Base_Lot_Size.mode ?? "usdt",
       },
     });
   };
@@ -855,8 +889,22 @@ export default function Backtest() {
               />
             )}
 
+            {strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
+              <RainbowTrendLadderConfigPanel
+                value={configJson}
+                onChange={(nextConfig) => {
+                  setConfigJson({ ...nextConfig });
+                  setInitialCapital(String(nextConfig.Initial_Capital));
+                  setTradeAmount(String(nextConfig.Base_Lot_Size.value));
+                  setTfValue(String(nextConfig.Management_Interval_Minutes));
+                  setTfUnit("m");
+                }}
+                context="backtest"
+              />
+            )}
+
             {/* 動態策略參數（UI-3：三大模組化區塊分類）- 內建策略深度定制面板 */}
-            {strategyKey !== V25_STRATEGY_KEY && strategyKey !== RAINBOW_20415_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
+            {strategyKey !== V25_STRATEGY_KEY && strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
               /** 單一參數渲染（含 UI-1/UI-2/UI-4 特殊規則） */
               const renderParam = (key: string, value: unknown) => {
                 // 任務 B2：Base_Lot_Size 雙模式（數量 / USDT）

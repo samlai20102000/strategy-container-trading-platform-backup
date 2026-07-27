@@ -7,6 +7,7 @@ export type RainbowTrendLadderLineId = (typeof RAINBOW_TREND_LADDER_LINE_IDS)[nu
 export type RainbowTrendLadderLineSource = "close" | "hlc3" | "high" | "low";
 export type RainbowTrendLadderPositionMode = "quantity" | "usdt";
 export type RainbowTrendLadderBaseLine = "L1" | "L2" | "L3" | "L4";
+export type RainbowTrendLadderBacktestEndPositionPolicy = "mark_to_market" | "force_close";
 
 export interface RainbowTrendLadderLineConfig {
   id: RainbowTrendLadderLineId;
@@ -57,6 +58,7 @@ export interface RainbowTrendLadderConfig {
   Require_Dedicated_Account: boolean;
   Kill_Close_Only_Owned_Position: boolean;
   Force_Close_On_Day_Start: boolean; // V4.2: 是否啟用每日強制平倉（默認 false）
+  Backtest_End_Position_Policy: RainbowTrendLadderBacktestEndPositionPolicy;
   Live_Trading_Armed: boolean;
 }
 
@@ -135,6 +137,7 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
   Require_Dedicated_Account: true,
   Kill_Close_Only_Owned_Position: true,
   Force_Close_On_Day_Start: false, // V4.2: 默認禁用每日強制平倉
+  Backtest_End_Position_Policy: "mark_to_market",
   Live_Trading_Armed: false,
 };
 
@@ -176,6 +179,16 @@ function toLineSource(value: unknown, fallback: RainbowTrendLadderLineSource): R
   return normalized === "close" || normalized === "hlc3" || normalized === "high" || normalized === "low"
     ? normalized
     : fallback;
+}
+
+function toBacktestEndPositionPolicy(
+  value: unknown,
+  fallback: RainbowTrendLadderBacktestEndPositionPolicy,
+): RainbowTrendLadderBacktestEndPositionPolicy {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["force_close", "force-close", "liquidate", "close"].includes(normalized)) return "force_close";
+  if (["mark_to_market", "mark-to-market", "mtm", "keep_open"].includes(normalized)) return "mark_to_market";
+  return fallback;
 }
 
 function cloneLines(lines: readonly RainbowTrendLadderLineConfig[]): RainbowTrendLadderLineConfig[] {
@@ -270,6 +283,15 @@ function parseLayers(value: unknown, defaults: readonly RainbowTrendLadderLayerC
 export function normalizeRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadderConfig {
   const input = isRecord(raw) ? raw : {};
   const defaults = createRainbowTrendLadderDefaultConfig();
+  const martinLayers = parseLayers(
+    firstDefined(input.Martin_Layers, input.MARTINGALE_LAYERS, input.layers),
+    defaults.Martin_Layers,
+  );
+  const requestedMaxLayers = toNumber(
+    firstDefined(input.Max_Layers, input.maxLayers),
+    defaults.Max_Layers,
+  );
+  const maxLayers = Math.max(1, Math.min(requestedMaxLayers, Math.max(1, martinLayers.length)));
   const baseLineCandidate = String(firstDefined(input.Trend_Base_Line, input.trendBaseLine, defaults.Trend_Base_Line));
   const trendBaseLine: RainbowTrendLadderBaseLine = ["L1", "L2", "L3", "L4"].includes(baseLineCandidate)
     ? baseLineCandidate as RainbowTrendLadderBaseLine
@@ -284,8 +306,8 @@ export function normalizeRainbowTrendLadderConfig(raw: unknown): RainbowTrendLad
     Point_Value: toNumber(firstDefined(input.Point_Value, input.pointValue), defaults.Point_Value),
     Max_Spread_Points: toNumber(firstDefined(input.Max_Spread_Points, input.maxSpread), defaults.Max_Spread_Points),
     Max_Slippage_Points: toNumber(firstDefined(input.Max_Slippage_Points, input.maxSlippage), defaults.Max_Slippage_Points),
-    Martin_Layers: parseLayers(firstDefined(input.Martin_Layers, input.MARTINGALE_LAYERS, input.layers), defaults.Martin_Layers),
-    Max_Layers: toNumber(firstDefined(input.Max_Layers, input.maxLayers), defaults.Max_Layers), // V4.2
+    Martin_Layers: martinLayers,
+    Max_Layers: maxLayers,
     Max_Hold_Hours: toNumber(firstDefined(input.Max_Hold_Hours, input.maxHoldHours), defaults.Max_Hold_Hours), // V4.2
     Trailing_Activation_Pct: toNumber(firstDefined(input.Trailing_Activation_Pct, input.trailingActivationPct), defaults.Trailing_Activation_Pct),
     Trailing_Callback_Pct: toNumber(firstDefined(input.Trailing_Callback_Pct, input.trailingCallbackPct), defaults.Trailing_Callback_Pct),
@@ -297,6 +319,10 @@ export function normalizeRainbowTrendLadderConfig(raw: unknown): RainbowTrendLad
     Require_Dedicated_Account: toBoolean(firstDefined(input.Require_Dedicated_Account, input.requireDedicatedAccount), defaults.Require_Dedicated_Account),
     Kill_Close_Only_Owned_Position: toBoolean(firstDefined(input.Kill_Close_Only_Owned_Position, input.killCloseOnlyOwnedPosition), defaults.Kill_Close_Only_Owned_Position),
     Force_Close_On_Day_Start: toBoolean(firstDefined(input.Force_Close_On_Day_Start, input.forceCloseOnDayStart), defaults.Force_Close_On_Day_Start), // V4.2
+    Backtest_End_Position_Policy: toBacktestEndPositionPolicy(
+      firstDefined(input.Backtest_End_Position_Policy, input.backtestEndPositionPolicy),
+      defaults.Backtest_End_Position_Policy,
+    ),
     Live_Trading_Armed: toBoolean(firstDefined(input.Live_Trading_Armed, input.liveTradingArmed), defaults.Live_Trading_Armed),
   };
 }
@@ -349,7 +375,7 @@ export function validateRainbowTrendLadderConfig(raw: unknown): RainbowTrendLadd
   pushNumberIssue(issues, "Trailing_Callback_Pct", config.Trailing_Callback_Pct, 0, config.Trailing_Activation_Pct, { allowMin: false });
   pushNumberIssue(issues, "Trend_Deviation_Points", config.Trend_Deviation_Points, 0, null, { allowMin: false });
   pushNumberIssue(issues, "Max_Margin_Usage_Pct", config.Max_Margin_Usage_Pct, 0, 100, { allowMin: false });
-  pushNumberIssue(issues, "Max_Layers", config.Max_Layers, 1, 999, { integer: true }); // V4.2
+  pushNumberIssue(issues, "Max_Layers", config.Max_Layers, 1, config.Martin_Layers.length, { integer: true });
   pushNumberIssue(issues, "Max_Hold_Hours", config.Max_Hold_Hours, 0, 9999, { integer: true }); // V4.2
 
   if (config.Martin_Layers.length < 1 || config.Martin_Layers.length > 20) issues.push({ path: "Martin_Layers", message: "階梯馬丁層數必須介於 1 到 20 層之間" });

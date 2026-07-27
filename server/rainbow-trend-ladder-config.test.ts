@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   RAINBOW_TREND_LADDER_CONFIG_VERSION,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
@@ -18,6 +19,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(config.Entry_Timeframe_Minutes).toBe(30);
     expect(config.Management_Interval_Minutes).toBe(1);
     expect(config.Base_Lot_Size).toEqual({ value: 100, mode: "usdt" });
+    expect(config.Backtest_End_Position_Policy).toBe("mark_to_market");
     expect(config.Live_Trading_Armed).toBe(false);
     expect(config.Require_Dedicated_Account).toBe(true);
     expect(config.Kill_Close_Only_Owned_Position).toBe(true);
@@ -74,6 +76,54 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(normalized.Base_Lot_Size.value).toBe(100);
     expect(normalized.Max_Spread_Points).toBe(50);
     expect(normalized.Live_Trading_Armed).toBe(false);
+  });
+
+  it("完整保留回測快照的八層逐層契約，序列化再導入不轉成舊 KAMA 分段規則", () => {
+    const snapshotLayers = [
+      { layer: 1, triggerSpacingPct: 0, lotMultiplier: 1.5, lotValue: 100, enabled: true },
+      { layer: 2, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 200, enabled: true },
+      { layer: 3, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 300, enabled: true },
+      { layer: 4, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 400, enabled: true },
+      { layer: 5, triggerSpacingPct: 0.77, lotMultiplier: 1.5, lotValue: 500, enabled: true },
+      { layer: 6, triggerSpacingPct: 0.62, lotMultiplier: 1.5, lotValue: 600, enabled: true },
+      { layer: 7, triggerSpacingPct: 0.46, lotMultiplier: 1.5, lotValue: 700, enabled: true },
+      { layer: 8, triggerSpacingPct: 0.31, lotMultiplier: 1.5, lotValue: 800, enabled: true },
+    ];
+    const storedSnapshot = {
+      ...createRainbowTrendLadderDefaultConfig(),
+      Martin_Layers: snapshotLayers,
+      Max_Layers: 8,
+      Management_Interval_Minutes: 1,
+      Entry_Timeframe_Minutes: 30,
+    };
+
+    const firstImport = normalizeRainbowTrendLadderConfig(storedSnapshot);
+    const secondImport = normalizeRainbowTrendLadderConfig(JSON.parse(JSON.stringify(firstImport)));
+
+    expect(firstImport.Martin_Layers).toEqual(snapshotLayers);
+    expect(secondImport.Martin_Layers).toEqual(snapshotLayers);
+    expect(secondImport.Max_Layers).toBe(8);
+    expect(secondImport.Management_Interval_Minutes).toBe(1);
+    expect(secondImport.Entry_Timeframe_Minutes).toBe(30);
+    expect(secondImport.Martin_Layers[0]).not.toHaveProperty("start");
+    expect(secondImport.Martin_Layers[0]).not.toHaveProperty("end");
+    expect(validateRainbowTrendLadderConfig(secondImport).valid).toBe(true);
+  });
+
+  it("只接受明確終局政策，舊快照缺欄位時安全回退為按市價標記", () => {
+    expect(normalizeRainbowTrendLadderConfig({}).Backtest_End_Position_Policy).toBe("mark_to_market");
+    expect(normalizeRainbowTrendLadderConfig({ backtestEndPositionPolicy: "force-close" }).Backtest_End_Position_Policy).toBe("force_close");
+    expect(normalizeRainbowTrendLadderConfig({ Backtest_End_Position_Policy: "unknown" }).Backtest_End_Position_Policy).toBe("mark_to_market");
+  });
+
+  it("回測中心導入八層快照時只走七彩虹線專用面板，不得落入舊 KAMA 分段編輯器", () => {
+    const backtestSource = readFileSync("./client/src/pages/Backtest.tsx", "utf8");
+
+    expect(backtestSource).toContain("const nextConfig = normalizeRainbowTrendLadderConfig(previewConfig)");
+    expect(backtestSource).toContain("setTfValue(String(nextConfig.Management_Interval_Minutes))");
+    expect(backtestSource).toContain("strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && !useDynamicFormMode");
+    expect(backtestSource).toContain("<RainbowTrendLadderConfigPanel");
+    expect(backtestSource).toContain("strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY");
   });
 
   it("拒絕破壞層數規格（少於 1 或多於 20）及未隔離帳戶的實盤武裝", () => {
