@@ -37,10 +37,15 @@ import { Label } from "@/components/ui/label";
 import { Star, Trash2, Play, Eye, Database, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
+import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
 import {
   RAINBOW_20415_STRATEGY_KEY,
   normalizeRainbow20415Config,
 } from "@shared/strategies/rainbow20415";
+import {
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+  normalizeRainbowTrendLadderConfig,
+} from "@shared/strategies/rainbowTrendLadder";
 
 export default function ParameterSnapshots() {
   const [sortBy, setSortBy] = useState<"totalReturn" | "winRate" | "sharpeRatio" | "createdAt">("createdAt");
@@ -324,12 +329,15 @@ export default function ParameterSnapshots() {
                         const rainbowConfig = s.strategyKey === RAINBOW_20415_STRATEGY_KEY
                           ? normalizeRainbow20415Config(cfg)
                           : null;
+                        const rainbowLadderConfig = s.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+                          ? normalizeRainbowTrendLadderConfig(cfg)
+                          : null;
                         setImportForm(prev => ({
                           ...prev,
                           name: `${s.snapshotName || '快照'}_副本`,
                           symbol: (bs?.symbol || cfg.symbol || cfg.Symbol || prev.symbol).replace(/-/g, '').toUpperCase(),
-                          positionSize: String(bs?.baseLotSize ?? bs?.tradeAmount ?? rainbowConfig?.Base_Lot_Size.value ?? cfg.Base_Lot_Size ?? prev.positionSize),
-                          positionMode: rainbowConfig?.Base_Lot_Size.mode ?? prev.positionMode,
+                          positionSize: String(bs?.baseLotSize ?? bs?.tradeAmount ?? rainbowConfig?.Base_Lot_Size.value ?? rainbowLadderConfig?.Base_Lot_Size.value ?? cfg.Base_Lot_Size ?? prev.positionSize),
+                          positionMode: rainbowConfig?.Base_Lot_Size.mode ?? rainbowLadderConfig?.Base_Lot_Size.mode ?? prev.positionMode,
                           leverage: String(cfg.leverage || prev.leverage),
                         }));
                         setImportDialogOpen(true);
@@ -372,6 +380,8 @@ export default function ParameterSnapshots() {
             </DialogHeader>
             {viewConfig && viewStrategyKey === RAINBOW_20415_STRATEGY_KEY ? (
               <Rainbow20415ConfigPanel value={viewConfig} onChange={() => undefined} disabled context="snapshot" />
+            ) : viewConfig && viewStrategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY ? (
+              <RainbowTrendLadderConfigPanel value={viewConfig} onChange={() => undefined} disabled context="snapshot" />
             ) : (
               <pre className="bg-muted p-4 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
                 {viewConfig ? JSON.stringify(viewConfig, null, 2) : ""}

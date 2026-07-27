@@ -62,6 +62,12 @@ import {
   normalizeRainbow20415Config,
   validateRainbow20415Config,
 } from "@shared/strategies/rainbow20415";
+import {
+  normalizeRainbowTrendLadderConfig,
+  deriveRainbowTrendLadderFinalEnabledLayer,
+  RAINBOW_TREND_LADDER_STRATEGY_KEY,
+} from "@shared/strategies/rainbowTrendLadder";
+import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -154,6 +160,8 @@ export default function Backtest() {
     if (strategyKey === '20415_KAMA_MARTIN_V35') return false;
     // 20415 七彩虹使用共享契約驅動的專用軍規面板
     if (strategyKey === RAINBOW_20415_STRATEGY_KEY) return false;
+    // 七彩虹線趨勢跟蹤使用共享契約驅動的專用軍規面板
+    if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) return false;
     // V6.1 高頻掃射策略使用深度定制面板（需要 V4.0 風格馬丁分層 UI）
     if (strategyKey === 'KAMA_3K_HF_V61') return false;
     // V2.5 使用共享參數契約驅動的專用面板
@@ -544,6 +552,14 @@ export default function Backtest() {
       setTradeAmount(String(nextConfig.Base_Lot_Size.value));
       setInitialCapital(String(nextConfig.Initial_Capital));
       setTfValue(String(nextConfig.Management_Interval_Minutes));
+      setTfUnit("m");
+    } else if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+      // V4.4: 七彩虹線策略規範化
+      const nextConfig = normalizeRainbowTrendLadderConfig(previewConfig);
+      setConfigJson({ ...nextConfig });
+      setTradeAmount(String(nextConfig.Base_Lot_Size.value));
+      setInitialCapital(String(nextConfig.Initial_Capital));
+      setTfValue(String(nextConfig.Entry_Timeframe_Minutes));
       setTfUnit("m");
     } else {
       setConfigJson((prev) => ({ ...prev, ...previewConfig }));
@@ -1444,7 +1460,16 @@ export default function Backtest() {
               <Rainbow20415ConfigPanel value={previewConfig} onChange={() => undefined} disabled context="snapshot" />
             </div>
           )}
-          {previewConfig && strategyKey !== RAINBOW_20415_STRATEGY_KEY && (
+          {previewConfig && strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY && (
+            <div className="mt-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">七彩虹線趨勢跟蹤契約覆核</p>
+                <p className="mt-1 text-xs text-muted-foreground">下列配置將完整填入回測表單；馬丁分層表、進場參數、止盈風控均原樣保留。</p>
+              </div>
+              <RainbowTrendLadderConfigPanel value={previewConfig} onChange={() => undefined} disabled context="snapshot" />
+            </div>
+          )}
+          {previewConfig && strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && (
             <div className="mt-4 p-4 bg-muted/50 rounded-lg">
               <div className="text-sm font-medium mb-2">參數預覽（將自動填入）</div>
               <div className="grid grid-cols-3 gap-2 text-xs">
