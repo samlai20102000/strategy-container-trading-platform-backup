@@ -292,6 +292,8 @@ export function runRainbowTrendLadderBacktest(
     equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
   }
   let previousCandleTimestamp = priorSession?.lastCandle?.timestamp ?? null;
+  let lastManagementCheckTime = priorSession?.lastCandle?.timestamp ?? null; // V4.3: 管理週期檢查時間戳
+  const managementIntervalMs = 5 * 60 * 1000; // V4.3: 5 分鐘管理週期
 
   for (let index = 0; index < candles.length; index += 1) {
     const candle = candles[index];
@@ -299,9 +301,12 @@ export function runRainbowTrendLadderBacktest(
     const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
     const crossedUtcDayBoundary = previousCandleTimestamp !== null
       && Math.floor(previousCandleTimestamp / 86_400_000) !== Math.floor(candle.timestamp / 86_400_000);
+    const shouldCheckManagement = lastManagementCheckTime === null
+      || (candle.timestamp - lastManagementCheckTime) >= managementIntervalMs; // V4.3: 只在 5M 邊界檢查
     let decision: RainbowTrendLadderCoreDecision | null = null;
 
-    if (hasPosition) {
+    if (hasPosition && shouldCheckManagement) {
+      lastManagementCheckTime = candle.timestamp; // V4.3: 更新最後檢查時間
       // V4.2: 檢查 Max_Hold_Hours 時間限制
       const active = positionMeta as { side: "long" | "short"; entryTime: number; layers: RainbowTrendLadderBacktestPositionLayer[] } | null;
       const entryTime = active?.entryTime ?? candle.timestamp;
@@ -376,7 +381,8 @@ export function runRainbowTrendLadderBacktest(
           config,
         );
       }
-    } else if (latestEntryBarClosed) {
+    } else if (latestEntryBarClosed && shouldCheckManagement) { // V4.3: 空倉也只在 5M 邊界檢查進場
+      lastManagementCheckTime = candle.timestamp; // V4.3: 更新最後檢查時間
       decision = evaluateRainbowTrendLadderEntry({
         candles: closedEntryCandles,
         state,
