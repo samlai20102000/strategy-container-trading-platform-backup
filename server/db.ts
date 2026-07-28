@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   apiKeys,
@@ -162,11 +162,28 @@ export async function deleteApiKey(id: number, userId: number) {
 export async function listStrategies(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db
-    .select()
+  const rows = await db
+    .select({
+      strategy: getTableColumns(strategies),
+      apiAccount: {
+        id: apiKeys.id,
+        label: apiKeys.label,
+        exchange: apiKeys.exchange,
+        isTestnet: apiKeys.isTestnet,
+      },
+    })
     .from(strategies)
+    .leftJoin(
+      apiKeys,
+      and(eq(strategies.apiKeyId, apiKeys.id), eq(apiKeys.userId, userId)),
+    )
     .where(eq(strategies.userId, userId))
     .orderBy(desc(strategies.createdAt));
+
+  return rows.map(({ strategy, apiAccount }) => ({
+    ...strategy,
+    apiAccount: apiAccount?.id ? apiAccount : null,
+  }));
 }
 
 export async function listEnabledStrategies() {
@@ -270,7 +287,27 @@ export async function deleteStrategy(id: number, userId: number) {
 export async function createSignal(data: InsertSignal): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("資料庫不可用");
-  const result = await db.insert(signals).values(data);
+  let strategyName = data.strategyName;
+  let strategyKey = data.strategyKey;
+
+  if (data.strategyId && (!strategyName || !strategyKey)) {
+    const [strategy] = await db
+      .select({ name: strategies.name, strategyKey: strategies.strategyKey })
+      .from(strategies)
+      .where(and(
+        eq(strategies.id, data.strategyId),
+        data.userId ? eq(strategies.userId, data.userId) : sql`TRUE`,
+      ))
+      .limit(1);
+    strategyName ??= strategy?.name ?? undefined;
+    strategyKey ??= strategy?.strategyKey ?? undefined;
+  }
+
+  const result = await db.insert(signals).values({
+    ...data,
+    strategyName,
+    strategyKey,
+  });
   return (result as any)[0].insertId as number;
 }
 
@@ -310,18 +347,67 @@ export async function listSignals(
       latencyMs: signals.latencyMs,
       source: signals.source,
       createdAt: signals.createdAt,
-      realizedPnl: trades.realizedPnl,
+      strategyName: sql<string | null>`COALESCE(${signals.strategyName}, ${strategies.name}, MAX(${trades.strategyName}))`,
+      strategyKey: sql<string | null>`COALESCE(${signals.strategyKey}, ${strategies.strategyKey}, MAX(${trades.strategyKey}))`,
+      filledPrice: sql<string | null>`
+        CASE
+          WHEN SUM(CASE WHEN ${trades.priceSource} = 'exchange_fill' AND ${trades.price} IS NOT NULL THEN ${trades.size} ELSE 0 END) > 0
+          THEN SUM(CASE WHEN ${trades.priceSource} = 'exchange_fill' AND ${trades.price} IS NOT NULL THEN ${trades.price} * ${trades.size} ELSE 0 END)
+            / SUM(CASE WHEN ${trades.priceSource} = 'exchange_fill' AND ${trades.price} IS NOT NULL THEN ${trades.size} ELSE 0 END)
+          ELSE NULL
+        END
+      `,
+      realizedPnl: sql<string | null>`SUM(CASE WHEN ${trades.reduceOnly} = TRUE THEN ${trades.realizedPnl} ELSE NULL END)`,
+      fee: sql<string | null>`SUM(CASE WHEN ${trades.reduceOnly} = TRUE THEN ${trades.fee} ELSE NULL END)`,
+      netRealizedPnl: sql<string | null>`SUM(CASE WHEN ${trades.reduceOnly} = TRUE THEN COALESCE(${trades.netRealizedPnl}, ${trades.realizedPnl}) ELSE NULL END)`,
+      pnlSource: sql<"exchange" | "local_estimate" | "legacy" | "unavailable">`
+        CASE
+          WHEN MAX(CASE WHEN ${trades.pnlSource} = 'exchange' THEN 1 ELSE 0 END) = 1 THEN 'exchange'
+          WHEN MAX(CASE WHEN ${trades.pnlSource} = 'local_estimate' THEN 1 ELSE 0 END) = 1 THEN 'local_estimate'
+          WHEN MAX(CASE WHEN ${trades.pnlSource} = 'legacy' THEN 1 ELSE 0 END) = 1 THEN 'legacy'
+          ELSE 'unavailable'
+        END
+      `,
+      hasClosingTrade: sql<boolean>`MAX(CASE WHEN ${trades.reduceOnly} = TRUE THEN 1 ELSE 0 END) = 1`,
+      closingTradeCount: sql<number>`SUM(CASE WHEN ${trades.reduceOnly} = TRUE THEN 1 ELSE 0 END)`,
     })
     .from(signals)
-    .leftJoin(trades, or(
-      eq(signals.id, trades.signalId),
-      and(
-        eq(signals.orderId, trades.orderId),
-        sql`${trades.orderId} IS NOT NULL`,
-        sql`${trades.signalId} IS NULL`
-      )
+    .leftJoin(
+      strategies,
+      and(eq(signals.strategyId, strategies.id), eq(strategies.userId, userId)),
+    )
+    .leftJoin(trades, and(
+      eq(trades.userId, userId),
+      or(
+        eq(signals.id, trades.signalId),
+        and(
+          eq(signals.orderId, trades.orderId),
+          sql`${trades.orderId} IS NOT NULL`,
+          sql`${trades.signalId} IS NULL`
+        )
+      ),
     ))
     .where(where)
+    .groupBy(
+      signals.id,
+      signals.strategyId,
+      signals.userId,
+      signals.strategyName,
+      signals.strategyKey,
+      signals.rawPayload,
+      signals.parsedAction,
+      signals.parsedSymbol,
+      signals.parsedPrice,
+      signals.status,
+      signals.message,
+      signals.exchangeResponse,
+      signals.orderId,
+      signals.latencyMs,
+      signals.source,
+      signals.createdAt,
+      strategies.name,
+      strategies.strategyKey,
+    )
     .orderBy(desc(signals.createdAt))
     .limit(opts.limit ?? 50)
     .offset(opts.offset ?? 0);
@@ -331,7 +417,14 @@ export async function listSignals(
     .from(signals)
     .where(where);
 
-  return { items, total: Number(countResult[0]?.count ?? 0) };
+  return {
+    items: items.map((item) => ({
+      ...item,
+      hasClosingTrade: Boolean(item.hasClosingTrade),
+      closingTradeCount: Number(item.closingTradeCount ?? 0),
+    })),
+    total: Number(countResult[0]?.count ?? 0),
+  };
 }
 
 /* ==================== 交易記錄 ==================== */
@@ -339,7 +432,60 @@ export async function listSignals(
 export async function createTrade(data: InsertTrade): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("資料庫不可用");
-  const result = await db.insert(trades).values(data);
+  let strategyName = data.strategyName;
+  let strategyKey = data.strategyKey;
+
+  if (!strategyName || !strategyKey) {
+    const [strategy] = await db
+      .select({ name: strategies.name, strategyKey: strategies.strategyKey })
+      .from(strategies)
+      .where(and(eq(strategies.id, data.strategyId), eq(strategies.userId, data.userId)))
+      .limit(1);
+    strategyName ??= strategy?.name ?? undefined;
+    strategyKey ??= strategy?.strategyKey ?? undefined;
+
+    if ((!strategyName || !strategyKey) && data.signalId) {
+      const [signal] = await db
+        .select({ strategyName: signals.strategyName, strategyKey: signals.strategyKey })
+        .from(signals)
+        .where(and(eq(signals.id, data.signalId), eq(signals.userId, data.userId)))
+        .limit(1);
+      strategyName ??= signal?.strategyName ?? undefined;
+      strategyKey ??= signal?.strategyKey ?? undefined;
+    }
+  }
+
+  const realizedPnl = data.realizedPnl === null || data.realizedPnl === undefined
+    ? undefined
+    : Number(data.realizedPnl);
+  const fee = data.fee === null || data.fee === undefined ? undefined : Number(data.fee);
+  const explicitNet = data.netRealizedPnl === null || data.netRealizedPnl === undefined
+    ? undefined
+    : Number(data.netRealizedPnl);
+  const realizedPnlValue = realizedPnl !== undefined && Number.isFinite(realizedPnl)
+    ? realizedPnl
+    : undefined;
+  const feeValue = fee !== undefined && Number.isFinite(fee) ? fee : undefined;
+  const explicitNetValue = explicitNet !== undefined && Number.isFinite(explicitNet)
+    ? explicitNet
+    : undefined;
+  const netRealizedPnl = explicitNetValue !== undefined
+    ? explicitNetValue
+    : realizedPnlValue !== undefined
+      ? realizedPnlValue + (feeValue ?? 0)
+      : undefined;
+  const pnlSource = data.pnlSource
+    ?? (realizedPnlValue !== undefined ? "legacy" : "unavailable");
+
+  const result = await db.insert(trades).values({
+    ...data,
+    strategyName,
+    strategyKey,
+    realizedPnl: realizedPnlValue !== undefined ? String(realizedPnlValue) : undefined,
+    fee: feeValue !== undefined ? String(feeValue) : undefined,
+    netRealizedPnl: netRealizedPnl !== undefined ? String(netRealizedPnl) : undefined,
+    pnlSource,
+  });
   return (result as any)[0].insertId as number;
 }
 

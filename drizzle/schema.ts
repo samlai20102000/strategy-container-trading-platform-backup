@@ -159,6 +159,10 @@ export const signals = mysqlTable("signals", {
   id: int("id").autoincrement().primaryKey(),
   strategyId: int("strategyId"),
   userId: int("userId"),
+  /** 建立訊號當下的策略名稱快照；策略日後刪除或改名仍可追溯 */
+  strategyName: varchar("strategyName", { length: 100 }),
+  /** 建立訊號當下的策略工作室 key 快照，用於歷史名稱推斷與稽核 */
+  strategyKey: varchar("strategyKey", { length: 100 }),
   /** 原始 payload（JSON 字串） */
   rawPayload: text("rawPayload").notNull(),
   /** 解析後的動作：buy / sell / close */
@@ -216,8 +220,20 @@ export const trades = mysqlTable("trades", {
     .notNull(),
   /** 是否為平倉單 */
   reduceOnly: boolean("reduceOnly").default(false).notNull(),
-  /** 已實現盈虧（平倉時記錄） */
+  /** 已實現毛盈虧（平倉時記錄；未扣本次成交費用） */
   realizedPnl: decimal("realizedPnl", { precision: 20, scale: 8 }),
+  /** 本次成交費用；沿用交易所符號，扣費通常為負數 */
+  fee: decimal("fee", { precision: 20, scale: 8 }),
+  /** 本次平倉淨盈虧 = realizedPnl + fee（不重複估算已在開倉成交扣除的費用） */
+  netRealizedPnl: decimal("netRealizedPnl", { precision: 20, scale: 8 }),
+  /** 盈虧真值來源：交易所原生／本地可稽核估算／舊資料／尚不可得 */
+  pnlSource: mysqlEnum("pnlSource", ["exchange", "local_estimate", "legacy", "unavailable"])
+    .default("unavailable")
+    .notNull(),
+  /** 建立交易當下的策略名稱快照 */
+  strategyName: varchar("strategyName", { length: 100 }),
+  /** 建立交易當下的策略工作室 key 快照 */
+  strategyKey: varchar("strategyKey", { length: 100 }),
   status: mysqlEnum("status", ["submitted", "filled", "failed", "cancelled"])
     .default("submitted")
     .notNull(),

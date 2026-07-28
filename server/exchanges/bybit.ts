@@ -138,6 +138,69 @@ export class BybitAdapter implements ExchangeAdapter {
     return symbol.replace(/[-/]/g, "").toUpperCase().replace(".P", "");
   }
 
+  /**
+   * 下單成功後只讀補查成交真值。Bybit 建單回應不含 fill/PnL，
+   * `/v5/execution/list` 才提供 execPrice、execQty、execFee 與 execPnl。
+   */
+  private async queryOrderFillDetails(
+    symbol: string,
+    orderId: string,
+    reduceOnly: boolean,
+  ): Promise<Partial<OrderResult>> {
+    const delays = [0, 150, 350, 700];
+    for (const delayMs of delays) {
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        const data = await this.request("GET", "/v5/execution/list", {
+          category: "linear",
+          symbol,
+          orderId,
+          limit: 100,
+        });
+        const fills = data.retCode === 0 && Array.isArray(data.result?.list)
+          ? data.result.list
+          : [];
+        if (fills.length === 0) continue;
+
+        let filledSize = 0;
+        let weightedNotional = 0;
+        let fee = 0;
+        let realizedPnl = 0;
+        let hasRealizedPnl = false;
+        for (const fill of fills) {
+          const size = Number(fill.execQty);
+          const price = Number(fill.execPrice);
+          const rawFee = Number(fill.execFee);
+          const rawPnl = Number(fill.execPnl);
+          if (Number.isFinite(size) && size > 0) {
+            filledSize += size;
+            if (Number.isFinite(price) && price > 0) weightedNotional += size * price;
+          }
+          if (Number.isFinite(rawFee)) fee += rawFee > 0 ? -rawFee : rawFee;
+          if (reduceOnly && Number.isFinite(rawPnl)) {
+            realizedPnl += rawPnl;
+            hasRealizedPnl = true;
+          }
+        }
+
+        const filledPrice = filledSize > 0 && weightedNotional > 0
+          ? weightedNotional / filledSize
+          : undefined;
+        return {
+          filledPrice,
+          filledSize: filledSize > 0 ? filledSize : undefined,
+          fee: Number.isFinite(fee) ? fee : undefined,
+          realizedPnl: hasRealizedPnl ? realizedPnl : undefined,
+          netRealizedPnl: hasRealizedPnl ? realizedPnl + fee : undefined,
+          pnlSource: hasRealizedPnl ? "exchange" : undefined,
+        };
+      } catch (error: any) {
+        console.warn(`[Bybit][fillTruth] orderId=${orderId} 補查失敗：${error?.message || error}`);
+      }
+    }
+    return {};
+  }
+
   async testConnection(serverIp?: string): Promise<{ success: boolean; message: string; balance?: number }> {
     try {
       const data = await this.request("GET", "/v5/account/wallet-balance", {
@@ -225,10 +288,15 @@ export class BybitAdapter implements ExchangeAdapter {
           if (attempt > 0) {
             console.log(`${TAG} ✅ 重試第 ${attempt} 次成功！orderId=${data.result?.orderId}`);
           }
+          const orderId = data.result?.orderId as string | undefined;
+          const fillTruth = orderId
+            ? await this.queryOrderFillDetails(symbol, orderId, params.reduceOnly === true)
+            : {};
           return {
             success: true,
-            orderId: data.result?.orderId,
+            orderId,
             rawResponse: JSON.stringify(data),
+            ...fillTruth,
           };
         }
 

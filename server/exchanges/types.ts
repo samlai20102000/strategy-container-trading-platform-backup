@@ -29,6 +29,14 @@ export interface OrderResult {
   filledPrice?: number;
   /** 實際成交數量（base 幣種單位，如 BTC） */
   filledSize?: number;
+  /** 交易所回傳的已實現毛盈虧；0 是有效值，不可當成缺值 */
+  realizedPnl?: number;
+  /** 本次成交費用；沿用交易所符號，扣費通常為負數 */
+  fee?: number;
+  /** 本次平倉淨盈虧；若交易所未直接提供，為 realizedPnl + fee */
+  netRealizedPnl?: number;
+  /** 盈虧真值來源；adapter 回傳時只會是交易所原生值 */
+  pnlSource?: "exchange" | "local_estimate";
 }
 
 export interface Balance {

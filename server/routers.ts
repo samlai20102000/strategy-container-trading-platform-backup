@@ -45,6 +45,7 @@ import {
   resolveDeploymentPosition,
 } from "./services/deploymentPosition";
 import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
+import { tradeFillRecordFields } from "./services/tradeFillTruth";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -1045,6 +1046,7 @@ const strategiesRouter = router({
       if (result.success) {
         closedSides.push(posSide);
         await db.createTrade({
+          ...tradeFillRecordFields(result, undefined, strategyTotalSize),
           strategyId: strategy.id,
           userId: ctx.user.id,
           exchange: strategy.exchange,
@@ -1185,6 +1187,7 @@ const strategiesRouter = router({
             const result = await adapter.closePositionSmart(strategy.symbol, posSide);
             if (result.success) {
               await db.createTrade({
+                ...tradeFillRecordFields(result, pos.markPrice || undefined, pos.size),
                 strategyId: strategy.id,
                 userId: ctx.user.id,
                 exchange: strategy.exchange,

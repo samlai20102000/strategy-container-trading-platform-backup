@@ -1,6 +1,12 @@
 import DashboardLayout from "@/components/DashboardLayout";
-import { formatTime, SignalStatusBadge } from "@/components/shared";
-import { Badge } from "@/components/ui/badge";
+import {
+  finiteNumber,
+  formatTime,
+  PNL_SOURCE_LABELS,
+  SignalPnl,
+  SignalStatusBadge,
+  SourceBadge,
+} from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -24,22 +30,6 @@ import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 25;
-
-/** 來源 Badge 組件 */
-function SourceBadge({ source }: { source?: string | null }) {
-  if (!source) return <span className="text-muted-foreground">—</span>;
-  const config: Record<string, { label: string; className: string }> = {
-    webhook: { label: "Webhook", className: "bg-blue-500/15 text-blue-600 border-blue-500/30" },
-    auto: { label: "自動交易", className: "bg-green-500/15 text-green-600 border-green-500/30" },
-    manual: { label: "手動觸發", className: "bg-orange-500/15 text-orange-600 border-orange-500/30" },
-  };
-  const c = config[source] || { label: source, className: "bg-secondary text-secondary-foreground" };
-  return (
-    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 font-medium ${c.className}`}>
-      {c.label}
-    </Badge>
-  );
-}
 
 export default function SignalsPage() {
   return (
@@ -103,9 +93,11 @@ function SignalsContent() {
     testSignalMutation.mutate({ strategyId: target });
   };
 
-  const strategyName = (id: number | null) => {
-    if (!id) return "—";
-    return strategies?.find((s) => s.id === id)?.name ?? `#${id}`;
+  const strategyName = (signal: any) => {
+    if (signal.strategyName) return signal.strategyName;
+    if (!signal.strategyId) return "未綁定策略";
+    return strategies?.find((s) => s.id === signal.strategyId)?.name
+      ?? "已刪除策略（名稱未保存）";
   };
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
@@ -256,7 +248,14 @@ function SignalsContent() {
                         <td className="py-2.5 pr-4 text-xs text-muted-foreground whitespace-nowrap">
                           {formatTime(sig.createdAt)}
                         </td>
-                        <td className="py-2.5 pr-4">{strategyName(sig.strategyId)}</td>
+                        <td className="py-2.5 pr-4">
+                          <div className="max-w-56 truncate" title={strategyName(sig)}>{strategyName(sig)}</div>
+                          {sig.strategyKey && (
+                            <div className="max-w-56 truncate font-mono text-[9px] text-muted-foreground" title={sig.strategyKey}>
+                              {sig.strategyKey}
+                            </div>
+                          )}
+                        </td>
                         <td className="py-2.5 pr-4">
                           <SourceBadge source={(sig as any).source} />
                         </td>
@@ -273,17 +272,15 @@ function SignalsContent() {
                           {sig.parsedSymbol ?? "—"}
                         </td>
                         <td className="py-2.5 pr-4 text-right font-mono-nums">
-                          {sig.parsedPrice ?? "—"}
+                          <div title={sig.filledPrice != null ? `實際成交價：${sig.filledPrice}` : "尚無實際成交價，顯示訊號價格"}>
+                            {sig.filledPrice ?? sig.parsedPrice ?? "—"}
+                            {sig.filledPrice != null && sig.parsedPrice != null && String(sig.filledPrice) !== String(sig.parsedPrice) && (
+                              <div className="text-[9px] text-muted-foreground">訊號 {sig.parsedPrice}</div>
+                            )}
+                          </div>
                         </td>
-                        <td className="py-2.5 pr-4 text-right font-mono-nums">
-                          {sig.realizedPnl ? (
-                            <span className={parseFloat(sig.realizedPnl) >= 0 ? "text-green-500" : "text-red-500"}>
-                              {parseFloat(sig.realizedPnl) >= 0 ? "+" : ""}
-                              {parseFloat(sig.realizedPnl).toFixed(2)}
-                            </span>
-                          ) : (
-                            "—"
-                          )}
+                        <td className="py-2.5 pr-4 text-right font-mono-nums whitespace-nowrap">
+                          <SignalPnl signal={sig} />
                         </td>
                         <td className="py-2.5 pr-4">
                           <SignalStatusBadge status={sig.status} />
@@ -296,7 +293,7 @@ function SignalsContent() {
                       </tr>
                       {expandedId === sig.id && (
                         <tr className="border-b border-border/50">
-                          <td colSpan={9} className="py-3 px-4 bg-secondary/20">
+                          <td colSpan={10} className="py-3 px-4 bg-secondary/20">
                             <div className="space-y-3 text-xs">
                               <div>
                                 <p className="text-muted-foreground mb-1 font-medium">
@@ -314,6 +311,29 @@ function SignalsContent() {
                                   <pre className="rounded-md bg-background border p-2.5 overflow-x-auto font-mono-nums whitespace-pre-wrap break-all">
                                     {formatJson(sig.exchangeResponse)}
                                   </pre>
+                                </div>
+                              )}
+                              {(sig.hasClosingTrade || sig.parsedAction === "close") && (
+                                <div>
+                                  <p className="text-muted-foreground mb-1 font-medium">平倉盈虧稽核</p>
+                                  <div className="grid gap-2 rounded-md border bg-background p-2.5 sm:grid-cols-4">
+                                    <div>
+                                      <span className="text-muted-foreground">毛盈虧</span>
+                                      <p className="font-mono-nums text-foreground">{finiteNumber(sig.realizedPnl)?.toFixed(8) ?? "待同步"} U</p>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">本次費用</span>
+                                      <p className="font-mono-nums text-foreground">{finiteNumber(sig.fee)?.toFixed(8) ?? "待同步"} U</p>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">淨盈虧</span>
+                                      <p className="font-mono-nums text-foreground">{(finiteNumber(sig.netRealizedPnl) ?? finiteNumber(sig.realizedPnl))?.toFixed(8) ?? "待同步"} U</p>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">資料來源</span>
+                                      <p className="text-foreground">{PNL_SOURCE_LABELS[sig.pnlSource] ?? "待同步"}</p>
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                               <div className="flex gap-6 text-muted-foreground">

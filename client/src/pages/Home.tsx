@@ -1,9 +1,13 @@
 import {
   ExchangeBadge,
+  finiteNumber,
   formatTime,
+  PNL_SOURCE_LABELS,
   PnlValue,
   SideBadge,
+  SignalPnl,
   SignalStatusBadge,
+  SourceBadge,
 } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1490,9 +1494,13 @@ function BlockE_Signals({
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  const strategyName = (id: number | null) => {
-    if (!id) return "—";
-    return strategies.find((s) => s.id === id)?.name ?? `#${id}`;
+  const strategyName = (signal: any) => {
+    if (typeof signal.strategyName === "string" && signal.strategyName.trim()) {
+      return signal.strategyName.trim();
+    }
+    if (!signal.strategyId) return "系統訊號";
+    return strategies.find((strategy) => strategy.id === signal.strategyId)?.name
+      ?? "已刪除策略（名稱未保存）";
   };
 
   // Filter signals by selected position symbol if active
@@ -1568,21 +1576,30 @@ function BlockE_Signals({
                         <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">
                           {formatTime(sig.createdAt)}
                         </td>
-                        <td className="py-2 pr-3 text-xs">{strategyName(sig.strategyId)}</td>
+                        <td className="py-2 pr-3 text-xs">
+                          <div className="max-w-56 truncate" title={strategyName(sig)}>{strategyName(sig)}</div>
+                          {sig.strategyKey && (
+                            <div className="max-w-56 truncate font-mono text-[9px] text-muted-foreground" title={sig.strategyKey}>
+                              {sig.strategyKey}
+                            </div>
+                          )}
+                        </td>
                         <td className="py-2 pr-3"><SourceBadge source={(sig as any).source} /></td>
                         <td className="py-2 pr-3 text-xs">
                           <ActionBadge action={sig.parsedAction} />
                         </td>
                         <td className="py-2 pr-3 font-mono text-xs">{sig.parsedSymbol ?? "—"}</td>
-                        <td className="py-2 pr-3 text-right font-mono text-xs">{sig.parsedPrice ?? "—"}</td>
-                        <td className="py-2 pr-3"><SignalStatusBadge status={sig.status} /></td>
-                        {/* Issue 5: PnL column */}
                         <td className="py-2 pr-3 text-right font-mono text-xs">
-                          {sig.realizedPnl && parseFloat(sig.realizedPnl) !== 0 ? (
-                            <PnlValue value={parseFloat(sig.realizedPnl)} suffix=" U" className="text-xs font-semibold" />
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
+                          <div title={sig.filledPrice != null ? `實際成交價：${sig.filledPrice}` : "尚無實際成交價，顯示訊號價格"}>
+                            {sig.filledPrice ?? sig.parsedPrice ?? "—"}
+                            {sig.filledPrice != null && sig.parsedPrice != null && String(sig.filledPrice) !== String(sig.parsedPrice) && (
+                              <div className="text-[9px] text-muted-foreground">訊號 {sig.parsedPrice}</div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3"><SignalStatusBadge status={sig.status} /></td>
+                        <td className="py-2 pr-3 text-right font-mono text-xs whitespace-nowrap">
+                          <SignalPnl signal={sig} />
                         </td>
                         {/* P1-5: Compressed message */}
                         <td className="py-2 text-xs text-muted-foreground max-w-60">
@@ -1608,6 +1625,29 @@ function BlockE_Signals({
                                   <pre className="rounded-md bg-background border p-2.5 overflow-x-auto font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
                                     {formatJson(sig.exchangeResponse)}
                                   </pre>
+                                </div>
+                              )}
+                              {(sig.hasClosingTrade || sig.parsedAction === "close") && (
+                                <div>
+                                  <p className="text-muted-foreground mb-1 font-medium">平倉盈虧稽核</p>
+                                  <div className="grid gap-2 rounded-md border bg-background p-2.5 sm:grid-cols-4">
+                                    <div>
+                                      <span className="text-muted-foreground">毛盈虧</span>
+                                      <p className="font-mono text-foreground">{finiteNumber(sig.realizedPnl)?.toFixed(8) ?? "待同步"} U</p>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">本次費用</span>
+                                      <p className="font-mono text-foreground">{finiteNumber(sig.fee)?.toFixed(8) ?? "待同步"} U</p>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">淨盈虧</span>
+                                      <p className="font-mono text-foreground">{(finiteNumber(sig.netRealizedPnl) ?? finiteNumber(sig.realizedPnl))?.toFixed(8) ?? "待同步"} U</p>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">資料來源</span>
+                                      <p className="text-foreground">{PNL_SOURCE_LABELS[sig.pnlSource] ?? "待同步"}</p>
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                               <div className="flex gap-6 text-muted-foreground">
@@ -2001,22 +2041,6 @@ function ActionBadge({ action }: { action?: string | null }) {
   };
   const c = config[action] || { label: action, className: "text-muted-foreground" };
   return <span className={cn("text-xs font-medium", c.className)}>{c.label}</span>;
-}
-
-/** Source Badge */
-function SourceBadge({ source }: { source?: string | null }) {
-  if (!source) return <span className="text-muted-foreground text-xs">—</span>;
-  const config: Record<string, { label: string; className: string }> = {
-    webhook: { label: "Webhook", className: "bg-blue-500/15 text-blue-400 border-blue-500/30" },
-    auto: { label: "自動交易", className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
-    manual: { label: "手動觸發", className: "bg-orange-500/15 text-orange-400 border-orange-500/30" },
-  };
-  const c = config[source] || { label: source, className: "bg-secondary text-secondary-foreground" };
-  return (
-    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 font-medium ${c.className}`}>
-      {c.label}
-    </Badge>
-  );
 }
 
 /** Stat Card */

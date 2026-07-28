@@ -122,9 +122,15 @@ describe("驗收：測試信號寫入日誌（sendTestSignal）", () => {
     createdStrategyId = strategy!.id;
 
     // 驗收 4：策略列表回傳可複製的 webhookUrl
-    expect(strategy!.webhookUrl).toMatch(
-      new RegExp(`https://test\\.example\\.com/api/webhook/${strategy!.id}\\?secret=`),
+    expect(strategy!.webhookUrl).toContain(
+      `https://test.example.com/api/webhook/${strategy!.id}?secret=`,
     );
+    expect(strategy!.apiAccount).toEqual({
+      id: createdKeyId,
+      label: "IT-測試金鑰",
+      exchange: "bybit",
+      isTestnet: true,
+    });
 
     // 3. 發送測試信號
     const result = await caller.signals.sendTestSignal({ strategyId: createdStrategyId! });
@@ -142,6 +148,12 @@ describe("驗收：測試信號寫入日誌（sendTestSignal）", () => {
     expect(testSignal!.status).toBe("executed");
     expect(testSignal!.message).toContain("測試信號成功路由");
     expect(JSON.parse(testSignal!.rawPayload!).isTest).toBe(true);
+    expect(testSignal!.strategyName).toBe("IT-測試策略");
+    expect(testSignal).toHaveProperty("strategyKey");
+    expect(testSignal).toHaveProperty("filledPrice");
+    expect(testSignal!.pnlSource).toBe("unavailable");
+    expect(testSignal!.hasClosingTrade).toBe(false);
+    expect(testSignal!.closingTradeCount).toBe(0);
   }, 30000);
 
   it("對不存在的策略發送測試信號應回傳明確 NOT_FOUND 錯誤", async () => {
