@@ -99,21 +99,9 @@ function UnifiedDashboard() {
   });
   const { data: perfData } = trpc.performance.byStrategy.useQuery({}, { refetchInterval: 30000 });
 
-  // ─── Filter State (Block C) ────────────────────────────────────
-  const [symbolFilter, setSymbolFilter] = useState("all");
-  const [sideFilter, setSideFilter] = useState("all");
-  const [strategyFilter, setStrategyFilter] = useState("all");
-  const [signalStatusFilter, setSignalStatusFilter] = useState("all");
-  const [signalSourceFilter, setSignalSourceFilter] = useState("all");
+  // ─── Signal journal pagination ──────────────────────────────────
   const [signalPage, setSignalPage] = useState(0);
   const [signalPageSize, setSignalPageSize] = useState(25);
-  // P2: Layer range filter
-  const [minLayerFilter, setMinLayerFilter] = useState(0);
-  const [maxLayerFilter, setMaxLayerFilter] = useState(20);
-  // Issue 4: Date range filter
-  const [dateStart, setDateStart] = useState("");
-  const [dateEnd, setDateEnd] = useState("");
-  const [reportDialogOpen, setReportDialogOpen] = useState(false);
 
   // ─── Position-Signal Linkage (P0-3) ───────────────────────────
   const [selectedPositionSymbol, setSelectedPositionSymbol] = useState<string | null>(null);
@@ -231,44 +219,14 @@ function UnifiedDashboard() {
     });
   }, [allPositions, positionSnapshots, strategies]);
 
-  // Filtered positions
-  const filteredPositions = useMemo(() => {
-    return positionsWithLayer.filter((p) => {
-      if (symbolFilter !== "all" && !p.symbol.toLowerCase().includes(symbolFilter.toLowerCase())) return false;
-      if (sideFilter !== "all" && p.side !== sideFilter) return false;
-      if (strategyFilter !== "all" && String(p.strategyId) !== strategyFilter) return false;
-      if (p.layer < minLayerFilter || p.layer > maxLayerFilter) return false;
-      return true;
-    });
-  }, [positionsWithLayer, symbolFilter, sideFilter, strategyFilter, minLayerFilter, maxLayerFilter]);
-
   // ─── Signal Query ──────────────────────────────────────────────
   const signalQueryInput = useMemo(
     () => ({
-      status: signalStatusFilter === "all" ? undefined : (signalStatusFilter as any),
-      source: signalSourceFilter === "all" ? undefined : (signalSourceFilter as any),
-      strategyIds: strategyFilter === "all" ? undefined : [parseInt(strategyFilter)],
-      symbol: selectedPositionSymbol
-        ? selectedPositionSymbol
-        : symbolFilter === "all"
-          ? undefined
-          : symbolFilter,
+      symbol: selectedPositionSymbol ?? undefined,
       limit: signalPageSize,
       offset: signalPage * signalPageSize,
-      startTime: dateStart ? new Date(dateStart) : undefined,
-      endTime: dateEnd ? new Date(dateEnd) : undefined,
     }),
-    [
-      signalStatusFilter,
-      signalSourceFilter,
-      strategyFilter,
-      symbolFilter,
-      selectedPositionSymbol,
-      signalPage,
-      signalPageSize,
-      dateStart,
-      dateEnd,
-    ],
+    [selectedPositionSymbol, signalPage, signalPageSize],
   );
 
   const { data: signalData, isLoading: signalLoading } = trpc.tradeJournal.list.useQuery(
@@ -279,6 +237,7 @@ function UnifiedDashboard() {
   // ─── P0-3: Position click → filter signals + open drawer ──────
   const handlePositionClick = useCallback((pos: any) => {
     const symbol = pos.symbol;
+    setSignalPage(0);
     setSelectedPositionSymbol((prev) => (prev === symbol ? null : symbol));
     setDrawerPosition((prev: any) => (prev?.symbol === symbol ? null : pos));
   }, []);
@@ -288,13 +247,6 @@ function UnifiedDashboard() {
     setFlashingSymbol(symbol);
     setTimeout(() => setFlashingSymbol(null), 2000);
   }, []);
-
-  // ─── Unique symbols for filter ─────────────────────────────────
-  const uniqueSymbols = useMemo(() => {
-    const symbols = new Set(allPositions.map((p) => p.symbol));
-    strategies?.forEach((s) => symbols.add(s.symbol));
-    return Array.from(symbols).sort();
-  }, [allPositions, strategies]);
 
   // ─── P2-3: Liquidation proximity toast ─────────────────────────
   const liquidationToastShown = useRef<Set<string>>(new Set());
@@ -457,50 +409,9 @@ function UnifiedDashboard() {
         onDismiss={(id) => setDismissedAlerts((prev) => new Set(prev).add(id))}
       />
 
-      {/* ═══ Block C: Filter Bar (P2-1 included) ═══ */}
-      <BlockC_Filter
-        symbolFilter={symbolFilter}
-        setSymbolFilter={setSymbolFilter}
-        sideFilter={sideFilter}
-        setSideFilter={setSideFilter}
-        strategyFilter={strategyFilter}
-        setStrategyFilter={(v) => { setStrategyFilter(v); setSignalPage(0); }}
-        signalStatusFilter={signalStatusFilter}
-        setSignalStatusFilter={(v) => { setSignalStatusFilter(v); setSignalPage(0); }}
-        signalSourceFilter={signalSourceFilter}
-        setSignalSourceFilter={(v) => { setSignalSourceFilter(v); setSignalPage(0); }}
-        minLayerFilter={minLayerFilter}
-        setMinLayerFilter={setMinLayerFilter}
-        maxLayerFilter={maxLayerFilter}
-        setMaxLayerFilter={setMaxLayerFilter}
-        dateStart={dateStart}
-        setDateStart={(v) => { setDateStart(v); setSignalPage(0); }}
-        dateEnd={dateEnd}
-        setDateEnd={(v) => { setDateEnd(v); setSignalPage(0); }}
-        strategies={strategies ?? []}
-        uniqueSymbols={uniqueSymbols}
-        onGenerateReport={() => setReportDialogOpen(true)}
-        selectedPositionSymbol={selectedPositionSymbol}
-        onClearPositionFilter={() => { setSelectedPositionSymbol(null); setDrawerPosition(null); }}
-      />
-
-      {reportDialogOpen && (
-        <TradeReportDialog
-          open={reportDialogOpen}
-          onOpenChange={setReportDialogOpen}
-          strategies={strategies ?? []}
-          initialStrategyId={strategyFilter === "all" ? null : parseInt(strategyFilter)}
-          initialStatus={signalStatusFilter}
-          initialSource={signalSourceFilter}
-          initialSymbol={selectedPositionSymbol ?? (symbolFilter === "all" ? "" : symbolFilter)}
-          initialStartTime={dateStart}
-          initialEndTime={dateEnd}
-        />
-      )}
-
       {/* ═══ Block D: Position Dashboard (P1-1, P1-2, P1-3, P2-3) ═══ */}
       <BlockD_Positions
-        positions={filteredPositions}
+        positions={positionsWithLayer}
         isLoading={isLoading}
         closeMutation={closeMutation}
         onPositionClick={handlePositionClick}
@@ -518,6 +429,7 @@ function UnifiedDashboard() {
         pageSize={signalPageSize}
         setPageSize={(v) => { setSignalPageSize(v); setSignalPage(0); }}
         selectedPositionSymbol={selectedPositionSymbol}
+        onClearPositionFilter={() => { setSelectedPositionSymbol(null); setDrawerPosition(null); setSignalPage(0); }}
         onSignalClick={handleSignalClick}
       />
 
@@ -943,220 +855,6 @@ function BlockB_Exchanges({
             ))}
           </div>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// BLOCK C: Filter Bar (P2-1: Layer Range + Date)
-// ═══════════════════════════════════════════════════════════════════
-function BlockC_Filter({
-  symbolFilter,
-  setSymbolFilter,
-  sideFilter,
-  setSideFilter,
-  strategyFilter,
-  setStrategyFilter,
-  signalStatusFilter,
-  setSignalStatusFilter,
-  signalSourceFilter,
-  setSignalSourceFilter,
-  minLayerFilter,
-  setMinLayerFilter,
-  maxLayerFilter,
-  setMaxLayerFilter,
-  dateStart,
-  setDateStart,
-  dateEnd,
-  setDateEnd,
-  strategies,
-  uniqueSymbols,
-  onGenerateReport,
-  selectedPositionSymbol,
-  onClearPositionFilter,
-}: {
-  symbolFilter: string;
-  setSymbolFilter: (v: string) => void;
-  sideFilter: string;
-  setSideFilter: (v: string) => void;
-  strategyFilter: string;
-  setStrategyFilter: (v: string) => void;
-  signalStatusFilter: string;
-  setSignalStatusFilter: (v: string) => void;
-  signalSourceFilter: string;
-  setSignalSourceFilter: (v: string) => void;
-  minLayerFilter: number;
-  setMinLayerFilter: (v: number) => void;
-  maxLayerFilter: number;
-  setMaxLayerFilter: (v: number) => void;
-  dateStart: string;
-  setDateStart: (v: string) => void;
-  dateEnd: string;
-  setDateEnd: (v: string) => void;
-  strategies: any[];
-  uniqueSymbols: string[];
-  onGenerateReport: () => void;
-  selectedPositionSymbol: string | null;
-  onClearPositionFilter: () => void;
-}) {
-  return (
-    <Card>
-      <CardContent className="pt-4 pb-3">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Symbol */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">幣種</Label>
-            <Select value={symbolFilter} onValueChange={setSymbolFilter}>
-              <SelectTrigger className="w-36 h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                {uniqueSymbols.map((s) => (
-                  <SelectItem key={s} value={s}>{s}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Side */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">方向</Label>
-            <Select value={sideFilter} onValueChange={setSideFilter}>
-              <SelectTrigger className="w-24 h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                <SelectItem value="long">▲ 多</SelectItem>
-                <SelectItem value="short">▼ 空</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Strategy */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">策略</Label>
-            <Select value={strategyFilter} onValueChange={setStrategyFilter}>
-              <SelectTrigger className="w-40 h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部策略</SelectItem>
-                {strategies.map((s) => (
-                  <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Signal Status */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">訊號狀態</Label>
-            <Select value={signalStatusFilter} onValueChange={setSignalStatusFilter}>
-              <SelectTrigger className="w-28 h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                <SelectItem value="executed">已執行</SelectItem>
-                <SelectItem value="failed">失敗</SelectItem>
-                <SelectItem value="rejected">已拒絕</SelectItem>
-                <SelectItem value="skipped">已跳過</SelectItem>
-                <SelectItem value="received">已接收</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Signal Source */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">來源</Label>
-            <Select value={signalSourceFilter} onValueChange={setSignalSourceFilter}>
-              <SelectTrigger className="w-28 h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
-                <SelectItem value="webhook">Webhook</SelectItem>
-                <SelectItem value="auto">自動交易</SelectItem>
-                <SelectItem value="manual">手動觸發</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* P2-1: Layer Range */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">層級</Label>
-            <input
-              type="number"
-              min={0}
-              max={20}
-              value={minLayerFilter}
-              onChange={(e) => setMinLayerFilter(Number(e.target.value))}
-              className="w-12 h-8 text-xs rounded-md border border-border bg-background px-2 text-center"
-            />
-            <span className="text-xs text-muted-foreground">~</span>
-            <input
-              type="number"
-              min={0}
-              max={20}
-              value={maxLayerFilter}
-              onChange={(e) => setMaxLayerFilter(Number(e.target.value))}
-              className="w-12 h-8 text-xs rounded-md border border-border bg-background px-2 text-center"
-            />
-          </div>
-
-          {/* Issue 4: Date Range Filter */}
-          <div className="flex items-center gap-1.5">
-            <Label className="text-xs text-muted-foreground">日期</Label>
-            <input
-              type="datetime-local"
-              value={dateStart}
-              onChange={(e) => setDateStart(e.target.value)}
-              className="h-8 text-xs rounded-md border border-border bg-background px-2"
-            />
-            <span className="text-xs text-muted-foreground">至</span>
-            <input
-              type="datetime-local"
-              value={dateEnd}
-              onChange={(e) => setDateEnd(e.target.value)}
-              className="h-8 text-xs rounded-md border border-border bg-background px-2"
-            />
-            {(dateStart || dateEnd) && (
-              <button
-                className="text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => { setDateStart(""); setDateEnd(""); }}
-                title="清除日期篩選"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-
-          {/* Position filter indicator */}
-          {selectedPositionSymbol && (
-            <Badge
-              variant="outline"
-              className="text-xs border-sky-500/40 text-sky-400 cursor-pointer hover:bg-sky-500/10"
-              onClick={onClearPositionFilter}
-            >
-              篩選：{selectedPositionSymbol} ✕
-            </Badge>
-          )}
-
-          {/* Report generation */}
-          <div className="ml-auto">
-            <Button
-              size="sm"
-              className="h-8 text-xs bg-sky-600 text-white hover:bg-sky-500"
-              onClick={onGenerateReport}
-            >
-              <Download className="h-3.5 w-3.5 mr-1.5" />
-              生成交易報告
-            </Button>
-          </div>
-        </div>
       </CardContent>
     </Card>
   );
@@ -1757,6 +1455,7 @@ function BlockE_Signals({
   pageSize,
   setPageSize,
   selectedPositionSymbol,
+  onClearPositionFilter,
   onSignalClick,
 }: {
   signalData: any;
@@ -1767,40 +1466,55 @@ function BlockE_Signals({
   pageSize: number;
   setPageSize: (v: number) => void;
   selectedPositionSymbol: string | null;
+  onClearPositionFilter: () => void;
   onSignalClick: (symbol: string) => void;
 }) {
   const [expandedId, setExpandedId] = useState<number | string | null>(null);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
 
   const strategyName = (id: number | null) => {
     if (!id) return "—";
     return strategies.find((s) => s.id === id)?.name ?? `#${id}`;
   };
 
-  // Filter signals by selected position symbol if active
-  const filteredItems = useMemo(() => {
-    if (!signalData?.items) return [];
-    if (!selectedPositionSymbol) return signalData.items;
-    return signalData.items.filter((sig: any) =>
-      sig.parsedSymbol?.includes(selectedPositionSymbol.split("-")[0]) ||
-      sig.parsedSymbol === selectedPositionSymbol
-    );
-  }, [signalData, selectedPositionSymbol]);
+  // tradeJournal.list 已在後端套用所選持倉 symbol；避免前端再次過濾而誤排除孤兒成交。
+  const filteredItems = signalData?.items ?? [];
 
   const totalPages = signalData ? Math.max(1, Math.ceil(signalData.total / pageSize)) : 1;
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            📜 訊號日誌
-            <span className="text-xs text-muted-foreground font-normal">（人類語言壓縮 · 技術明細折疊）</span>
-            {signalData && (
-              <Badge variant="secondary" className="text-[10px]">共 {signalData.total} 筆</Badge>
-            )}
-          </span>
-        </CardTitle>
-      </CardHeader>
+    <>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex flex-col gap-3 text-base sm:flex-row sm:items-center sm:justify-between">
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <span>📜 訊號日誌</span>
+              <span className="text-xs font-normal text-muted-foreground">（人類語言壓縮 · 技術明細折疊）</span>
+              {signalData && (
+                <Badge variant="secondary" className="text-[10px]">共 {signalData.total} 筆</Badge>
+              )}
+              {selectedPositionSymbol && (
+                <button
+                  type="button"
+                  onClick={onClearPositionFilter}
+                  className="inline-flex items-center rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-300 transition-colors hover:bg-cyan-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+                  title="清除持倉聯動篩選"
+                >
+                  持倉：{selectedPositionSymbol} ×
+                </button>
+              )}
+            </span>
+            <Button
+              size="sm"
+              className="w-full shrink-0 bg-sky-600 text-white shadow-sm hover:bg-sky-500 sm:w-auto"
+              onClick={() => setReportDialogOpen(true)}
+              aria-label="開啟交易報告篩選與生成流程"
+            >
+              <Download className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              生成交易報告
+            </Button>
+          </CardTitle>
+        </CardHeader>
       <CardContent>
         {signalLoading ? (
           <div className="py-8 flex justify-center">
@@ -1813,7 +1527,7 @@ function BlockE_Signals({
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="min-w-[960px] w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-muted-foreground border-b">
                     <th className="pb-2 pr-2 font-medium w-6"></th>
@@ -1973,8 +1687,23 @@ function BlockE_Signals({
             </div>
           </>
         )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      {reportDialogOpen && (
+        <TradeReportDialog
+          open={reportDialogOpen}
+          onOpenChange={setReportDialogOpen}
+          strategies={strategies}
+          initialStrategyId={null}
+          initialStatus="all"
+          initialSource="all"
+          initialSymbol={selectedPositionSymbol ?? ""}
+          initialStartTime=""
+          initialEndTime=""
+        />
+      )}
+    </>
   );
 }
 

@@ -33,6 +33,11 @@ import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderCo
 import { RainbowTrendLadderSafetyControls } from "@/components/RainbowTrendLadderSafetyControls";
 import { trpc } from "@/lib/trpc";
 import {
+  getStrategyApiIdentity,
+  type SafeApiAccountSummary,
+  type StrategyApiBindingSummary,
+} from "@/lib/strategyApiIdentity";
+import {
   V25_STRATEGY_KEY,
   createV25DefaultConfig,
   deriveV25MaxMartinLayer,
@@ -99,6 +104,44 @@ export default function StrategiesPage() {
     <DashboardLayout>
       <StrategiesContent />
     </DashboardLayout>
+  );
+}
+
+function StrategyApiAccountIdentity({
+  strategy,
+  apiKeys,
+}: {
+  strategy: StrategyApiBindingSummary;
+  apiKeys: readonly SafeApiAccountSummary[] | undefined;
+}) {
+  const identity = getStrategyApiIdentity(strategy, apiKeys);
+  const tone = identity.status === "missing"
+    ? "border-amber-500/35 bg-amber-500/5 text-amber-300"
+    : identity.status === "loading"
+      ? "border-zinc-500/30 bg-zinc-500/5 text-zinc-300"
+      : "border-sky-500/30 bg-sky-500/5 text-sky-200";
+
+  return (
+    <div
+      className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 ${tone}`}
+      data-api-binding-status={identity.status}
+      title={identity.status === "resolved"
+        ? `策略連接 API：${identity.displayName}（僅顯示安全名稱）`
+        : identity.displayName}
+    >
+      <LockKeyhole className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        API 帳戶
+      </span>
+      <span className="min-w-[10rem] flex-1 break-words font-mono text-xs font-medium text-current">
+        {identity.displayName}
+      </span>
+      {identity.status === "missing" && (
+        <Badge variant="outline" className="ml-auto shrink-0 border-amber-500/40 text-[10px] text-amber-300">
+          需重新綁定
+        </Badge>
+      )}
+    </div>
   );
 }
 
@@ -973,9 +1016,14 @@ function StrategiesContent() {
                           }
                         />
                       </div>
-                    </div>
+	                    </div>
 
-                    {!s.enabled && s.disabledReason && (
+	                    <StrategyApiAccountIdentity
+	                      strategy={{ apiKeyId: s.apiKeyId, exchange: s.exchange }}
+	                      apiKeys={apiKeys}
+	                    />
+
+	                    {!s.enabled && s.disabledReason && (
                       <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-400">
                         停用原因：{s.disabledReason}
                       </div>
