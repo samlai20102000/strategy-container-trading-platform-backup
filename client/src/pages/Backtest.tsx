@@ -87,6 +87,7 @@ export default function Backtest() {
   const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [initialCapital, setInitialCapital] = useState("10000");
   const [tradeAmount, setTradeAmount] = useState("15"); // 每次交易金額 (USDT)
+  const [endPositionPolicy, setEndPositionPolicy] = useState<"mark_to_market" | "force_close">("mark_to_market");
   const [configJson, setConfigJson] = useState<Record<string, unknown>>({});
 
   // ===== 任務狀態 =====
@@ -282,6 +283,7 @@ export default function Backtest() {
         startDate: startMs,
         endDate: endMs,
         initialCapital: capital,
+        endPositionPolicy,
         config: strategyKey === V25_STRATEGY_KEY
           ? { ...(v25Validation?.config ?? normalizeV25Config(configJson)) }
           : rainbowValidation
@@ -604,6 +606,9 @@ export default function Backtest() {
       if (bs.initialCapital && bs.initialCapital > 0) setInitialCapital(String(bs.initialCapital));
       if (bs.tradeAmount && bs.tradeAmount > 0) setTradeAmount(String(bs.tradeAmount));
       else if (bs.baseLotSize && bs.baseLotSize > 0) setTradeAmount(String(bs.baseLotSize));
+      if (bs.endPositionPolicy === "force_close" || bs.endPositionPolicy === "mark_to_market") {
+        setEndPositionPolicy(bs.endPositionPolicy);
+      }
     }
 
     setShowSnapshotModal(false);
@@ -696,6 +701,7 @@ export default function Backtest() {
         startDate,
         endDate,
         initialCapital: Number(initialCapital) || 10000,
+        endPositionPolicy,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
           : rainbowValidation
@@ -846,6 +852,42 @@ export default function Backtest() {
                       ? `由下方七彩虹 Base_Lot_Size 控制；數據鎖定 ${normalizeRainbow20415Config(configJson).Management_Interval_Minutes}m 管理週期`
                     : "首單固定金額，加倉按馬丁倍率遞增"}
                 </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/[0.04] p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="max-w-2xl">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label className="text-sm font-semibold">全域終點持倉政策</Label>
+                    <Badge variant="outline" className="border-cyan-500/50 font-mono text-[10px] text-cyan-300">V2.5</Badge>
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    僅在完整回測區間結束時處理未平倉；分段抓取資料不會觸發中途平倉。
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:w-[32rem]" role="radiogroup" aria-label="全域終點持倉政策">
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={endPositionPolicy === "mark_to_market"}
+                    onClick={() => setEndPositionPolicy("mark_to_market")}
+                    className={`rounded-md border px-3 py-3 text-left transition-[border-color,background-color,transform] duration-150 active:scale-[0.98] ${endPositionPolicy === "mark_to_market" ? "border-cyan-400 bg-cyan-500/15 ring-1 ring-cyan-400/30" : "border-border bg-background/60 hover:border-cyan-500/50"}`}
+                  >
+                    <span className="block text-xs font-semibold text-foreground">按市價估值（預設）</span>
+                    <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">保留未平倉，以最後收盤價計入未實現損益與最終權益。</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={endPositionPolicy === "force_close"}
+                    onClick={() => setEndPositionPolicy("force_close")}
+                    className={`rounded-md border px-3 py-3 text-left transition-[border-color,background-color,transform] duration-150 active:scale-[0.98] ${endPositionPolicy === "force_close" ? "border-amber-400 bg-amber-500/15 ring-1 ring-amber-400/30" : "border-border bg-background/60 hover:border-amber-500/50"}`}
+                  >
+                    <span className="block text-xs font-semibold text-foreground">全域終點強制平倉</span>
+                    <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">只在最後資料點產生一筆可稽核的合成平倉交易。</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1335,6 +1377,12 @@ export default function Backtest() {
             trades={result.trades as ReportTrade[]}
             equityCurve={result.equityCurve}
             config={(result as any).config ?? configJson}
+            endPositionPolicy={(result as any).endPositionPolicy ?? endPositionPolicy}
+            candleCount={(result as any).candleCount}
+            accounting={(result as any).accounting ?? null}
+            dataQuality={(result as any).dataQuality ?? null}
+            engineSemantics={(result as any).engineSemantics ?? null}
+            environment={(result as any).environment ?? null}
             backtestSettings={{
               exchange,
               symbol: symbol.trim(),
@@ -1343,6 +1391,7 @@ export default function Backtest() {
               endDate,
               initialCapital: Number(initialCapital),
               tradeAmount: Number(tradeAmount) || undefined,
+              endPositionPolicy,
               configJson,
               baseLotSize: Number(tradeAmount) || undefined,
               baseLotSizeMode: "usdt",
@@ -1404,6 +1453,12 @@ export default function Backtest() {
                       trades={loadedRun.trades as ReportTrade[]}
                       equityCurve={(loadedRun.equityCurve ?? []) as Array<{ timestamp: number; equity: number; price: number }>}
                       config={loadedRun.run.config}
+                      endPositionPolicy={(loadedRun.run as any).endPositionPolicy}
+                      candleCount={(loadedRun.run as any).candleCount}
+                      accounting={(loadedRun.run as any).accounting ?? null}
+                      dataQuality={(loadedRun.run as any).dataQuality ?? null}
+                      engineSemantics={(loadedRun.run as any).engineSemantics ?? null}
+                      environment={(loadedRun as any).environment ?? null}
                     />
                   )}
                   {loadedRun && !loadedRun.metrics && (

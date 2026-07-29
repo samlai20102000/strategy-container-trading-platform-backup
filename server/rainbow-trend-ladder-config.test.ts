@@ -141,7 +141,9 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
     expect(strategiesSource).toContain("maxMartinLevel: String(nextConfig.Max_Layers)");
     expect(deploymentSources).not.toContain("deriveRainbowTrendLadderFinalEnabledLayer");
     expect(backtestEngineSource).toContain('{ ...request, timeframe: "30m" }');
-    expect(backtestEngineSource).toContain('const canonicalRequest: BacktestRequest = { ...request, timeframe: "30m" }');
+    expect(backtestEngineSource).toContain("this.loadContinuousCandles(");
+    expect(backtestEngineSource).toContain("this.finalizeV25Result(");
+    expect(backtestEngineSource).not.toContain("runRainbowTrendLadderSegmentedBacktest");
   });
 
   it("拒絕零層但不設固定 20 層上限，並封鎖未隔離帳戶的實盤武裝", () => {

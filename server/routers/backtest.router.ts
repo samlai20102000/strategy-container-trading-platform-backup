@@ -99,7 +99,7 @@ function resolveKLineMinutes(config: Record<string, unknown>, timeframe: unknown
   return amount * (unit === "d" ? 1440 : unit === "h" ? 60 : 1);
 }
 
-const backtestRequestSchema = z.object({
+export const backtestRequestSchema = z.object({
   strategyKey: z.string().min(1),
   symbol: z.string().min(1),
   timeframe: z.string().min(2),
@@ -110,6 +110,23 @@ const backtestRequestSchema = z.object({
   commission: z.number().min(0).max(0.01).optional(),
   slippage: z.number().min(0).max(0.01).optional(),
   exchange: z.enum(["okx", "bybit"]).default("okx"),
+  endPositionPolicy: z.enum(["mark_to_market", "force_close"])
+    .default("mark_to_market"),
+});
+
+export const backtestSettingsSchema = z.object({
+  exchange: z.string(),
+  symbol: z.string(),
+  timeframe: z.string(),
+  startDate: z.string(),
+  endDate: z.string(),
+  initialCapital: z.number(),
+  tradeAmount: z.number().optional(),
+  endPositionPolicy: z.enum(["mark_to_market", "force_close"])
+    .default("mark_to_market"),
+  configJson: z.record(z.string(), z.unknown()).optional(),
+  baseLotSize: z.number().optional(),
+  baseLotSizeMode: z.string().optional(),
 });
 
 function validateRequest(input: z.infer<typeof backtestRequestSchema>): BacktestRequest {
@@ -250,10 +267,20 @@ export const backtestRouter = router({
       const dbJob = await backtestJobManager.getJobResultFromDB(input.jobId, userId);
       if (!dbJob || dbJob.status !== "completed") throw new Error("結果不存在（任務未完成或已過期）");
       return {
+        runId: dbJob.jobId,
+        strategyKey: dbJob.strategyKey,
+        strategyName: dbJob.strategyName ?? dbJob.strategyKey,
         metrics: dbJob.metrics as any,
         trades: dbJob.tradesData as any[] || [],
         equityCurve: dbJob.equityCurve as any[] || [],
+        config: dbJob.config as Record<string, unknown>,
         summary: dbJob.summary || "",
+        candleCount: dbJob.candleCount ?? 0,
+        endPositionPolicy: dbJob.endPositionPolicy,
+        accounting: dbJob.accounting ?? undefined,
+        dataQuality: dbJob.dataQuality ?? undefined,
+        engineSemantics: dbJob.engineSemantics ?? undefined,
+        environment: dbJob.environment ?? undefined,
       };
     }),
 
@@ -299,11 +326,18 @@ export const backtestRouter = router({
           endDate: dbJob.endDate,
           initialCapital: parseFloat(dbJob.initialCapital),
           config: dbJob.config as Record<string, unknown>,
+          endPositionPolicy: dbJob.endPositionPolicy,
+          candleCount: dbJob.candleCount,
           createdAt: new Date(dbJob.createdAt).getTime(),
         },
         metrics: dbJob.metrics ?? null,
         equityCurve: dbJob.equityCurve ?? null,
         trades: dbJob.tradesData ?? [],
+        summary: dbJob.summary ?? "",
+        accounting: dbJob.accounting ?? null,
+        dataQuality: dbJob.dataQuality ?? null,
+        engineSemantics: dbJob.engineSemantics ?? null,
+        environment: dbJob.environment ?? null,
       };
     }),
 
@@ -348,18 +382,7 @@ export const backtestRouter = router({
         maxLoss: z.number().optional(),
       }),
       /** 回測設定（交易所、交易對、時間框架、日期、資金等） */
-      backtestSettings: z.object({
-        exchange: z.string(),
-        symbol: z.string(),
-        timeframe: z.string(),
-        startDate: z.string(),
-        endDate: z.string(),
-        initialCapital: z.number(),
-        tradeAmount: z.number().optional(),
-        configJson: z.record(z.string(), z.unknown()).optional(),
-        baseLotSize: z.number().optional(),
-        baseLotSizeMode: z.string().optional(),
-      }).optional(),
+      backtestSettings: backtestSettingsSchema.optional(),
       /** V5.7 環境元數據（可選，回測引擎自動填入） */
       environment: z.object({
         dataHash: z.string(),
@@ -473,7 +496,7 @@ export const backtestRouter = router({
         snapshotName: r.snapshotName,
         config: r.config as Record<string, unknown>,
         metrics: r.metrics as Record<string, number>,
-        backtestSettings: r.backtestSettings as { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string } | null,
+        backtestSettings: r.backtestSettings as { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string } | null,
         totalReturn: r.totalReturn ? parseFloat(r.totalReturn) : 0,
         winRate: r.winRate ? parseFloat(r.winRate) : 0,
         sharpeRatio: r.sharpeRatio ? parseFloat(r.sharpeRatio) : null,
@@ -878,7 +901,7 @@ export const backtestRouter = router({
         snapshotName: snapshot.snapshotName,
         config: snapshot.config as Record<string, unknown>,
         metrics: snapshot.metrics as Record<string, number>,
-        backtestSettings: snapshot.backtestSettings as { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string } | null,
+        backtestSettings: snapshot.backtestSettings as { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string } | null,
         totalReturn: snapshot.totalReturn ? parseFloat(snapshot.totalReturn) : 0,
         winRate: snapshot.winRate ? parseFloat(snapshot.winRate) : 0,
         sharpeRatio: snapshot.sharpeRatio ? parseFloat(snapshot.sharpeRatio) : null,

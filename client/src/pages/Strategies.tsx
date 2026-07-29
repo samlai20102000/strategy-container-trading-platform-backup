@@ -79,7 +79,6 @@ import {
   Zap,
   AlertTriangle,
   LockKeyhole,
-  KeyRound,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -974,28 +973,6 @@ function StrategiesContent() {
                           }
                         />
                       </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-cyan-500/20 bg-cyan-500/[0.04] px-2.5 py-2 text-xs">
-                      <div className="flex items-center gap-1.5 text-muted-foreground">
-                        <KeyRound className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
-                        <span>API 帳號</span>
-                      </div>
-                      {s.apiAccount ? (
-                        <>
-                          <span className="min-w-0 max-w-full truncate font-medium text-foreground" title={s.apiAccount.label}>
-                            {s.apiAccount.label}
-                          </span>
-                          <Badge variant="outline" className="h-5 border-cyan-500/30 px-1.5 text-[9px] text-cyan-300">
-                            {s.apiAccount.exchange.toUpperCase()} · {s.apiAccount.isTestnet ? "模擬" : "實盤"}
-                          </Badge>
-                          <span className="font-mono text-[10px] text-muted-foreground">帳號 #{s.apiAccount.id}</span>
-                        </>
-                      ) : (
-                        <span className="text-amber-300">
-                          帳號已刪除、未綁定或無權查看 · 綁定 ID #{s.apiKeyId}
-                        </span>
-                      )}
                     </div>
 
                     {!s.enabled && s.disabledReason && (

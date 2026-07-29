@@ -38,6 +38,32 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 分鐘
 const MAX_RETRIES = 1;
 const PROGRESS_DB_INTERVAL = 5000; // 每 5 秒寫一次進度到 DB
 
+export function buildBacktestResultPersistence(
+  result: BacktestResult,
+  request: BacktestRequest,
+  startedAt?: number,
+  completedAt = new Date(),
+) {
+  return {
+    status: "completed" as const,
+    progress: 100,
+    message: result.summary,
+    metrics: result.metrics,
+    tradesData: result.trades,
+    equityCurve: result.equityCurve,
+    summary: result.summary,
+    endPositionPolicy:
+      result.endPositionPolicy ?? request.endPositionPolicy ?? "mark_to_market",
+    candleCount: result.candleCount,
+    accounting: result.accounting ?? null,
+    dataQuality: result.dataQuality ?? null,
+    engineSemantics: result.engineSemantics ?? null,
+    environment: result.environment ?? null,
+    startedAt: startedAt ? new Date(startedAt) : null,
+    completedAt,
+  };
+}
+
 class BacktestJobManager {
   private jobs = new Map<string, BacktestJobState>();
   private queue: string[] = [];
@@ -111,6 +137,7 @@ class BacktestJobManager {
           initialCapital: String(request.initialCapital),
           tradeAmount: options?.tradeAmount ? String(options.tradeAmount) : null,
           config: request.config || {},
+          endPositionPolicy: request.endPositionPolicy ?? "mark_to_market",
           status: "pending",
           progress: 0,
           message: job.message,
@@ -257,17 +284,7 @@ class BacktestJobManager {
       if (!db) return;
 
       await db.update(backtestJobs)
-        .set({
-          status: "completed",
-          progress: 100,
-          message: result.summary,
-          metrics: result.metrics,
-          tradesData: result.trades,
-          equityCurve: result.equityCurve,
-          summary: result.summary,
-          startedAt: job.startedAt ? new Date(job.startedAt) : null,
-          completedAt: new Date(),
-        })
+        .set(buildBacktestResultPersistence(result, job.request, job.startedAt))
         .where(eq(backtestJobs.jobId, job.jobId));
     } catch (e) {
       console.warn("[BacktestJobManager] 持久化結果失敗:", (e as Error)?.message);
@@ -374,6 +391,12 @@ class BacktestJobManager {
           message: backtestJobs.message,
           metrics: backtestJobs.metrics,
           summary: backtestJobs.summary,
+          endPositionPolicy: backtestJobs.endPositionPolicy,
+          candleCount: backtestJobs.candleCount,
+          accounting: backtestJobs.accounting,
+          dataQuality: backtestJobs.dataQuality,
+          engineSemantics: backtestJobs.engineSemantics,
+          environment: backtestJobs.environment,
           error: backtestJobs.error,
           createdAt: backtestJobs.createdAt,
           startedAt: backtestJobs.startedAt,

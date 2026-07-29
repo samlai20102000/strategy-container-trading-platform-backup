@@ -94,6 +94,7 @@ describe("20415 七彩虹同源回測結果驗證", () => {
       Take_Profit_Pct: 20,
       Max_Hold_Hours: 168,
       Reentry_Enabled: false,
+      Backtest_End_Position_Policy: "force_close",
     });
     expect(result.trades.length).toBeGreaterThan(0);
     expect(
@@ -108,6 +109,7 @@ describe("20415 七彩虹同源回測結果驗證", () => {
       Max_Margin_Usage_Pct: 100,
       Max_Account_Loss_Pct: 100,
       Reentry_Enabled: false,
+      Backtest_End_Position_Policy: "force_close",
       Martin_Ranges: [
         {
           id: "test-range-1-2",

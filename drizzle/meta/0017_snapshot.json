@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "9a0213f2-0fa9-45e4-b836-263e894a98a5",
+  "id": "3cfbc2f2-b215-4084-af42-c51de71d25be",
   "prevId": "c09a61fd-ff9a-4805-9d0a-440429791994",
   "tables": {
     "api_keys": {
@@ -212,6 +212,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "endPositionPolicy": {
+          "name": "endPositionPolicy",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'mark_to_market'"
+        },
         "status": {
           "name": "status",
           "type": "enum('pending','running','completed','failed','timeout','cancelled')",
@@ -259,6 +267,41 @@
         "summary": {
           "name": "summary",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "candleCount": {
+          "name": "candleCount",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "accounting": {
+          "name": "accounting",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "dataQuality": {
+          "name": "dataQuality",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "engineSemantics": {
+          "name": "engineSemantics",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "environment": {
+          "name": "environment",
+          "type": "json",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -1097,20 +1140,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "strategyName": {
-          "name": "strategyName",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "strategyKey": {
-          "name": "strategyKey",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "rawPayload": {
           "name": "rawPayload",
           "type": "text",
@@ -1701,42 +1730,6 @@
         "realizedPnl": {
           "name": "realizedPnl",
           "type": "decimal(20,8)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "fee": {
-          "name": "fee",
-          "type": "decimal(20,8)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "netRealizedPnl": {
-          "name": "netRealizedPnl",
-          "type": "decimal(20,8)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "pnlSource": {
-          "name": "pnlSource",
-          "type": "enum('exchange','local_estimate','legacy','unavailable')",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'unavailable'"
-        },
-        "strategyName": {
-          "name": "strategyName",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "strategyKey": {
-          "name": "strategyKey",
-          "type": "varchar(100)",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

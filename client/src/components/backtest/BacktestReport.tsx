@@ -69,6 +69,71 @@ export interface ReportMetrics {
   totalDays: number;
 }
 
+export interface ReportOpenPosition {
+  side: "long" | "short";
+  entryTime: number;
+  averageEntryPrice: number;
+  size: number;
+  markPrice: number;
+  entryNotional: number;
+  entryFees: number;
+  unrealizedGrossPnl: number;
+  unrealizedPnl: number;
+}
+
+export interface ReportAccounting {
+  initialCapital: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  finalEquity: number;
+  expectedFinalEquity: number;
+  reconciliationDifference: number;
+  balanced: boolean;
+  reconciled: boolean;
+  tolerance: number;
+  openPosition: ReportOpenPosition | null;
+  openPositionCount: number;
+  syntheticForceCloseCount: number;
+}
+
+export interface ReportDataQuality {
+  intervalContract: "[start,end)";
+  requestedStartMs: number;
+  requestedEndMs: number;
+  inputCandles: number;
+  returnedCandles: number;
+  candleCount: number;
+  duplicateCandlesRemoved: number;
+  outOfRangeCandlesRemoved: number;
+  invalidCandlesRemoved: number;
+  unclosedCandlesRemoved: number;
+  firstTimestamp: number | null;
+  lastTimestamp: number | null;
+  sortedAscending: boolean;
+}
+
+export interface ReportEngineSemantics {
+  version: string;
+  sessionMode: "continuous";
+  dataSlicing: "half_open";
+  finalizationScope: "global_end_only";
+  defaultEndPositionPolicy: "mark_to_market";
+}
+
+export interface ReportEnvironment {
+  engineVersion: string;
+  dataHash: string;
+  leverage: number;
+  commission: number;
+  slippage: number;
+  symbol: string;
+  timeframe: string;
+  startDate: number;
+  endDate: number;
+  candleCount: number;
+  initialCapital: number;
+}
+
 interface Props {
   runId: string;
   strategyName?: string;
@@ -77,7 +142,13 @@ interface Props {
   trades: ReportTrade[];
   equityCurve: Array<{ timestamp: number; equity: number; price: number }>;
   config: Record<string, unknown>;
-  backtestSettings?: { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string };
+  endPositionPolicy?: string;
+  candleCount?: number;
+  accounting?: ReportAccounting | null;
+  dataQuality?: ReportDataQuality | null;
+  engineSemantics?: ReportEngineSemantics | null;
+  environment?: ReportEnvironment | null;
+  backtestSettings?: { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string };
   onCopyParams?: (config: Record<string, unknown>) => void;
   onSaveSnapshot?: () => void;
 }
@@ -94,6 +165,12 @@ export default function BacktestReport({
   trades,
   equityCurve,
   config,
+  endPositionPolicy = "mark_to_market",
+  candleCount,
+  accounting,
+  dataQuality,
+  engineSemantics,
+  environment,
   backtestSettings,
   onCopyParams,
   onSaveSnapshot,
@@ -102,6 +179,8 @@ export default function BacktestReport({
   const [showParams, setShowParams] = useState(false);
   const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss">("all");
   const [martinFilter, setMartinFilter] = useState<"all" | "martin" | "no-martin">("all");
+  const hasV25Metadata = Boolean(accounting || dataQuality || engineSemantics || environment);
+  const isForceClose = endPositionPolicy === "force_close";
 
   const filteredTrades = useMemo(() => {
     return trades.filter((t) => {
@@ -386,6 +465,103 @@ export default function BacktestReport({
           </div>
         </CardContent>
       </Card>
+
+      {hasV25Metadata && (
+        <Card className="border-cyan-500/30 bg-slate-950/30">
+          <CardHeader className="gap-3 border-b border-border/60 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle className="text-sm">V2.5 對帳與資料口徑</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                單一權益帳本、連續 Session 與全域終點政策的可稽核結果。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline" className={isForceClose ? "border-amber-500/60 text-amber-300" : "border-cyan-500/60 text-cyan-300"}>
+                {isForceClose ? "終點：強制平倉" : "終點：按市價估值"}
+              </Badge>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                {engineSemantics?.version ?? environment?.engineVersion ?? "V2.5"}
+              </Badge>
+              {accounting && (
+                <Badge className={accounting.reconciled ? "bg-emerald-600 text-white" : "bg-red-600 text-white"}>
+                  {accounting.reconciled ? "帳本已對平" : "帳本未對平"}
+                </Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-5">
+            {accounting && (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                {[
+                  ["最終權益", `${accounting.finalEquity.toFixed(2)} USDT`],
+                  ["已實現損益", `${accounting.realizedPnl >= 0 ? "+" : ""}${accounting.realizedPnl.toFixed(2)} USDT`],
+                  ["未實現損益", `${accounting.unrealizedPnl >= 0 ? "+" : ""}${accounting.unrealizedPnl.toFixed(2)} USDT`],
+                  ["對帳差額", `${accounting.reconciliationDifference.toFixed(4)} USDT`],
+                  ["有效 K 棒", String(candleCount ?? dataQuality?.candleCount ?? environment?.candleCount ?? 0)],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-md border border-border/70 bg-background/50 px-3 py-3">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+                    <p className="mt-1 font-mono text-sm font-semibold text-foreground">{value}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {accounting?.openPosition && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-amber-50">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-amber-300">終點未平倉估值</p>
+                    <p className="mt-1 text-xs text-amber-100/80">按最後一根已收盤 K 棒標記價格納入最終權益，不製造合成交易。</p>
+                  </div>
+                  <Badge variant="outline" className="border-amber-400/60 text-amber-200">
+                    {accounting.openPosition.side === "long" ? "多單" : "空單"}
+                  </Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs md:grid-cols-5">
+                  <div><span className="text-amber-100/60">均價</span><p className="font-mono">{accounting.openPosition.averageEntryPrice.toFixed(4)}</p></div>
+                  <div><span className="text-amber-100/60">標記價</span><p className="font-mono">{accounting.openPosition.markPrice.toFixed(4)}</p></div>
+                  <div><span className="text-amber-100/60">數量</span><p className="font-mono">{accounting.openPosition.size.toFixed(6)}</p></div>
+                  <div><span className="text-amber-100/60">名義價值</span><p className="font-mono">{accounting.openPosition.entryNotional.toFixed(2)} USDT</p></div>
+                  <div><span className="text-amber-100/60">未實現淨損益</span><p className="font-mono font-semibold">{accounting.openPosition.unrealizedPnl >= 0 ? "+" : ""}{accounting.openPosition.unrealizedPnl.toFixed(2)} USDT</p></div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              {dataQuality && (
+                <div className="rounded-md border border-border/70 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">資料品質</p>
+                    <Badge variant="secondary" className="font-mono text-[10px]">{dataQuality.intervalContract}</Badge>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                    <span className="text-muted-foreground">輸入 / 回傳</span><span className="text-right font-mono">{dataQuality.inputCandles} / {dataQuality.returnedCandles}</span>
+                    <span className="text-muted-foreground">重複移除</span><span className="text-right font-mono">{dataQuality.duplicateCandlesRemoved}</span>
+                    <span className="text-muted-foreground">越界移除</span><span className="text-right font-mono">{dataQuality.outOfRangeCandlesRemoved}</span>
+                    <span className="text-muted-foreground">無效移除</span><span className="text-right font-mono">{dataQuality.invalidCandlesRemoved}</span>
+                    <span className="text-muted-foreground">未收盤移除</span><span className="text-right font-mono">{dataQuality.unclosedCandlesRemoved}</span>
+                    <span className="text-muted-foreground">時間排序</span><span className="text-right font-mono">{dataQuality.sortedAscending ? "嚴格遞增" : "異常"}</span>
+                  </div>
+                </div>
+              )}
+              {(engineSemantics || environment) && (
+                <div className="rounded-md border border-border/70 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">引擎語義與環境</p>
+                  <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                    <span className="text-muted-foreground">Session</span><span className="text-right font-mono">{engineSemantics?.sessionMode ?? "continuous"}</span>
+                    <span className="text-muted-foreground">資料切片</span><span className="text-right font-mono">{engineSemantics?.dataSlicing ?? "half_open"}</span>
+                    <span className="text-muted-foreground">結算範圍</span><span className="text-right font-mono">{engineSemantics?.finalizationScope ?? "global_end_only"}</span>
+                    <span className="text-muted-foreground">槓桿 / 費率</span><span className="text-right font-mono">{environment ? `${environment.leverage}x / ${(environment.commission * 100).toFixed(4)}%` : "—"}</span>
+                    <span className="text-muted-foreground">資料雜湊</span><span className="truncate text-right font-mono" title={environment?.dataHash}>{environment?.dataHash ? `${environment.dataHash.slice(0, 12)}…` : "—"}</span>
+                    <span className="text-muted-foreground">合成終點平倉</span><span className="text-right font-mono">{accounting?.syntheticForceCloseCount ?? 0}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 權益曲線 */}
       <Card>

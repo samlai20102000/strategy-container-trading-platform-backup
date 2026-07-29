@@ -42,7 +42,7 @@ describe("dataFetcher after 分頁邏輯（mock 多頁）", () => {
         json: async () => ({
           code: "0",
           msg: "",
-          data: page.map((ts) => [String(ts), "100", "110", "90", "105", "1000"]),
+          data: page.map((ts) => [String(ts), "100", "110", "90", "105", "1000", "0", "0", "1"]),
         }),
       } as any;
     }) as any;
@@ -50,7 +50,7 @@ describe("dataFetcher after 分頁邏輯（mock 多頁）", () => {
     const rows = await fetchOKXCandles("BTC-USDT", "1h", startMs, endMs);
 
     expect(calls.length).toBeGreaterThanOrEqual(3); // 至少 3 頁
-    expect(rows.length).toBe(total);
+    expect(rows.length).toBe(total - 1); // 半開區間排除 endMs
     // 昇冪
     for (let i = 1; i < rows.length; i++) {
       expect(rows[i].timestamp).toBeGreaterThan(rows[i - 1].timestamp);
@@ -59,7 +59,7 @@ describe("dataFetcher after 分頁邏輯（mock 多頁）", () => {
     expect(new Set(rows.map((r) => r.timestamp)).size).toBe(rows.length);
     // 邊界
     expect(rows[0].timestamp).toBe(startMs);
-    expect(rows[rows.length - 1].timestamp).toBe(endMs);
+    expect(rows[rows.length - 1].timestamp).toBe(endMs - H);
   }, 30000);
 
   it("OKX：區間外數據被過濾", async () => {
@@ -75,8 +75,8 @@ describe("dataFetcher after 分頁邏輯（mock 多頁）", () => {
         data:
           callCount++ === 0
             ? [
-                [String(endMs - H), "100", "110", "90", "105", "1000"],
-                [String(startMs - 5 * H), "1", "2", "0.5", "1.5", "10"],
+                [String(endMs - H), "100", "110", "90", "105", "1000", "0", "0", "1"],
+                [String(startMs - 5 * H), "1", "2", "0.5", "1.5", "10", "0", "0", "1"],
               ]
             : [],
       }),
@@ -85,6 +85,27 @@ describe("dataFetcher after 分頁邏輯（mock 多頁）", () => {
     const rows = await fetchOKXCandles("BTC-USDT", "1h", startMs, endMs);
     expect(rows.length).toBe(1);
     expect(rows[0].timestamp).toBe(endMs - H);
+  }, 15000);
+
+  it("OKX：confirm=0 未收盤 K 棒不得進入回測資料", async () => {
+    const endMs = 1_700_000_000_000;
+    const startMs = endMs - 3 * H;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        code: "0",
+        msg: "",
+        data: [
+          [String(endMs - H), "100", "110", "90", "105", "1000", "0", "0", "0"],
+          [String(endMs - 2 * H), "100", "110", "90", "104", "1000", "0", "0", "1"],
+          [String(startMs), "100", "110", "90", "103", "1000", "0", "0", "1"],
+        ],
+      }),
+    })) as any;
+
+    const rows = await fetchOKXCandles("BTC-USDT", "1h", startMs, endMs);
+    expect(rows.map((row) => row.timestamp)).toEqual([startMs, endMs - 2 * H]);
+    expect(rows.some((row) => row.timestamp === endMs - H)).toBe(false);
   }, 15000);
 
   it("Bybit：end 參數向更早翻頁，多頁合併正確", async () => {
@@ -109,10 +130,12 @@ describe("dataFetcher after 分頁邏輯（mock 多頁）", () => {
     }) as any;
 
     const rows = await fetchBybitCandles("BTCUSDT", "1h", startMs, endMs);
-    expect(rows.length).toBe(total);
+    expect(rows.length).toBe(total - 1); // 半開區間排除 endMs
     for (let i = 1; i < rows.length; i++) {
       expect(rows[i].timestamp).toBeGreaterThan(rows[i - 1].timestamp);
     }
+    expect(rows[0].timestamp).toBe(startMs);
+    expect(rows[rows.length - 1].timestamp).toBe(endMs - H);
   }, 30000);
 
   it("symbol 轉換：toOKXInstId / toBybitSymbol", () => {

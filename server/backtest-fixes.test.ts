@@ -11,6 +11,7 @@ import { BacktestEngine } from "./services/backtest/backtestEngine";
 import { getBacktestDatabase } from "./services/backtest/backtestDatabase";
 import { getStrategy, listRegisteredStrategies, initStrategyStudio } from "./services/strategyStudio";
 import type { OHLCVRow } from "./services/backtest/backtestDatabase";
+import { BACKTEST_ENGINE_VERSION } from "./services/backtest/backtestContracts";
 
 const TEST_SYMBOL = "FIXTEST-USDT";
 const TEST_TF = "1h";
@@ -390,7 +391,7 @@ describe("V5.7 環境快照完整性", () => {
     });
 
     expect(result.environment).toBeDefined();
-    expect(result.environment!.engineVersion).toBe("5.7");
+    expect(result.environment!.engineVersion).toBe(BACKTEST_ENGINE_VERSION);
     expect(result.environment!.symbol).toBe(TEST_SYMBOL);
     expect(result.environment!.timeframe).toBe(TEST_TF);
     // candleCount 是實際回測使用的 K 線數量，可能小於預期（因為數據可能不足）

@@ -36,6 +36,10 @@ interface CompareRow {
   strategyKey: string;
   symbol: string;
   timeframe: string;
+  endPositionPolicy?: string;
+  engineVersion?: string;
+  reconciled?: boolean;
+  candleCount?: number;
   metrics: {
     totalReturn: number;
     winRate: number;
@@ -136,6 +140,10 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
           strategyKey: data.run.strategyKey,
           symbol: data.run.symbol,
           timeframe: data.run.timeframe,
+          endPositionPolicy: data.run.endPositionPolicy,
+          engineVersion: data.engineSemantics?.version ?? data.environment?.engineVersion,
+          reconciled: data.accounting?.reconciled,
+          candleCount: data.run.candleCount ?? data.dataQuality?.candleCount,
           metrics: m,
         });
       }
@@ -248,6 +256,28 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                       })}
                     </TableRow>
                   ))}
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">引擎 / 終點政策</TableCell>
+                    {compareRows.map((r) => (
+                      <TableCell key={r.runId} className="text-center text-xs">
+                        <div className="font-mono text-[10px]">{r.engineVersion ?? "legacy"}</div>
+                        <div className="mt-0.5 text-muted-foreground">
+                          {r.endPositionPolicy === "force_close" ? "終點強制平倉" : "按市價估值"}
+                        </div>
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                  <TableRow>
+                    <TableCell className="text-xs font-medium">帳本 / 有效 K 棒</TableCell>
+                    {compareRows.map((r) => (
+                      <TableCell key={r.runId} className="text-center text-xs">
+                        <span className={r.reconciled === false ? "text-red-500" : r.reconciled ? "text-emerald-500" : "text-muted-foreground"}>
+                          {r.reconciled === false ? "未對平" : r.reconciled ? "已對平" : "舊版無資料"}
+                        </span>
+                        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{r.candleCount ?? "—"}</div>
+                      </TableCell>
+                    ))}
+                  </TableRow>
                 </TableBody>
               </Table>
             </div>
@@ -265,6 +295,7 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
               <TableHead className="text-xs">策略</TableHead>
               <TableHead className="text-xs">品種</TableHead>
               <TableHead className="text-xs">框架</TableHead>
+              <TableHead className="text-xs">引擎 / 終點</TableHead>
               <TableHead className="text-xs">狀態</TableHead>
               <TableHead className="text-xs text-right">操作</TableHead>
             </TableRow>
@@ -273,6 +304,11 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
             {runs.map((r) => {
               const st = statusMap[r.status] ?? { label: r.status, variant: "outline" as const };
               const rowId = r.jobId;
+              const semantics = r.engineSemantics as { version?: string } | null;
+              const environment = r.environment as { engineVersion?: string } | null;
+              const accounting = r.accounting as { reconciled?: boolean } | null;
+              const dataQuality = r.dataQuality as { candleCount?: number; duplicateCandlesRemoved?: number; invalidCandlesRemoved?: number } | null;
+              const engineVersion = semantics?.version ?? environment?.engineVersion;
               return (
                 <TableRow key={rowId} className={r.status === "running" ? "bg-blue-500/5" : ""}>
                   <TableCell>
@@ -290,6 +326,29 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                   </TableCell>
                   <TableCell className="text-xs font-mono">{r.symbol}</TableCell>
                   <TableCell className="text-xs">{r.timeframe}</TableCell>
+                  <TableCell className="text-xs">
+                    <div className="flex min-w-36 flex-wrap items-center gap-1">
+                      <Badge variant="outline" className="font-mono text-[9px]">
+                        {engineVersion ?? "legacy"}
+                      </Badge>
+                      <Badge variant="outline" className={`text-[9px] ${r.endPositionPolicy === "force_close" ? "border-amber-500/50 text-amber-400" : "border-cyan-500/50 text-cyan-400"}`}>
+                        {r.endPositionPolicy === "force_close" ? "終點強平" : "按市價"}
+                      </Badge>
+                      {accounting?.reconciled !== undefined && (
+                        <Badge className={`text-[9px] ${accounting.reconciled ? "bg-emerald-600 text-white" : "bg-red-600 text-white"}`}>
+                          {accounting.reconciled ? "已對平" : "未對平"}
+                        </Badge>
+                      )}
+                      {dataQuality?.candleCount != null && (
+                        <span
+                          className="text-[9px] text-muted-foreground"
+                          title={`重複移除 ${dataQuality.duplicateCandlesRemoved ?? 0}；無效移除 ${dataQuality.invalidCandlesRemoved ?? 0}`}
+                        >
+                          {dataQuality.candleCount} K
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="text-xs">
                     <div className="flex items-center gap-1.5">
                       <Badge variant={st.variant} className="text-[10px]">

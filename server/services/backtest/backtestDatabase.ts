@@ -127,24 +127,24 @@ export class BacktestDatabase {
     return insertMany(rows);
   }
 
-  /** 讀取 K 線（按時間昇冪） */
+  /** 讀取 K 線（按時間昇冪，半開區間 `[startMs, endMs)`） */
   getOHLCV(symbol: string, timeframe: string, startMs: number, endMs: number): OHLCVRow[] {
     return this.db
       .prepare(
         `SELECT symbol, timeframe, timestamp, open, high, low, close, volume
          FROM ohlcv
-         WHERE symbol = ? AND timeframe = ? AND timestamp >= ? AND timestamp <= ?
+         WHERE symbol = ? AND timeframe = ? AND timestamp >= ? AND timestamp < ?
          ORDER BY timestamp ASC`,
       )
       .all(symbol, timeframe, startMs, endMs) as OHLCVRow[];
   }
 
-  /** K 線筆數 */
+  /** K 線筆數（半開區間 `[startMs, endMs)`） */
   countOHLCV(symbol: string, timeframe: string, startMs: number, endMs: number): number {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) as cnt FROM ohlcv
-         WHERE symbol = ? AND timeframe = ? AND timestamp >= ? AND timestamp <= ?`,
+         WHERE symbol = ? AND timeframe = ? AND timestamp >= ? AND timestamp < ?`,
       )
       .get(symbol, timeframe, startMs, endMs) as { cnt: number };
     return row.cnt;

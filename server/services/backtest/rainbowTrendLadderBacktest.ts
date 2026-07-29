@@ -22,6 +22,13 @@ import {
   type TradeRecord,
 } from "./performanceCalculator";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
+import {
+  V25_END_OF_DATA_EXIT_REASON,
+  assertSingleEquityLedger,
+  buildAccountingSnapshot,
+  buildOpenPositionSnapshot,
+  roundBacktestMoney,
+} from "./backtestContracts";
 
 export interface RainbowTrendLadderBacktestPositionLayer {
   price: number;
@@ -143,17 +150,25 @@ export function runRainbowTrendLadderBacktest(
   const allowedDirection: "long" | "short" | "both" =
     directionValue === "long" || directionValue === "short" ? directionValue : "both";
 
-  const simulatedAccount = (price: number) => {
+  const openPositionAt = (price: number) => {
     const active = positionMeta as {
       side: "long" | "short";
       entryTime: number;
       layers: RainbowTrendLadderBacktestPositionLayer[];
     } | null;
-    const unrealizedPnl = active && state.totalSize > 0
-      ? active.side === "long"
-        ? (price - state.avgPrice) * state.totalSize
-        : (state.avgPrice - price) * state.totalSize
-      : 0;
+    return active && state.totalSize > 0
+      ? buildOpenPositionSnapshot({
+          side: active.side,
+          entryTime: active.entryTime,
+          avgPrice: state.avgPrice,
+          totalSize: state.totalSize,
+          layers: active.layers,
+        }, price, commission)
+      : null;
+  };
+
+  const simulatedAccount = (price: number) => {
+    const unrealizedPnl = openPositionAt(price)?.unrealizedPnl ?? 0;
     const markEquity = Math.max(0.00000001, equity + unrealizedPnl);
     const usedMargin = state.totalCost > 0 ? state.totalCost / leverage : 0;
     return {
@@ -252,11 +267,11 @@ export function runRainbowTrendLadderBacktest(
       0,
     );
     const fees = (entryNotional + effectiveExitPrice * state.totalSize) * commission;
-    const pnl = grossPnl - fees;
+    const pnl = roundBacktestMoney(grossPnl - fees);
     const pnlPct = state.avgPrice > 0
       ? (grossPnl / (state.avgPrice * state.totalSize)) * 100
       : 0;
-    equity += pnl;
+    equity = roundBacktestMoney(equity + pnl);
     trades.push({
       id: ++tradeId,
       entryTime: meta.entryTime,
@@ -265,7 +280,7 @@ export function runRainbowTrendLadderBacktest(
       entryPrice: Math.round(state.avgPrice * 100) / 100,
       exitPrice: Math.round(effectiveExitPrice * 100) / 100,
       size: state.totalSize,
-      pnl: Math.round(pnl * 100) / 100,
+      pnl,
       pnlPct: Math.round(pnlPct * 100) / 100,
       exitReason: forcedReason ?? decision.reason,
       martinLayer: Math.max(0, state.currentLayer - 1),
@@ -396,19 +411,10 @@ export function runRainbowTrendLadderBacktest(
       }
     }
 
-    const active = positionMeta as {
-      side: "long" | "short";
-      entryTime: number;
-      layers: RainbowTrendLadderBacktestPositionLayer[];
-    } | null;
-    const unrealizedPnl = active && state.totalSize > 0
-      ? active.side === "long"
-        ? (candle.close - state.avgPrice) * state.totalSize
-        : (state.avgPrice - candle.close) * state.totalSize
-      : 0;
+    const unrealizedPnl = openPositionAt(candle.close)?.unrealizedPnl ?? 0;
     equityCurve.push({
       timestamp: candle.timestamp,
-      equity: Math.round((equity + unrealizedPnl) * 100) / 100,
+      equity: roundBacktestMoney(equity + unrealizedPnl),
       price: candle.close,
     });
     previousCandleTimestamp = candle.timestamp;
@@ -440,9 +446,9 @@ export function runRainbowTrendLadderBacktest(
       config,
     );
     applyClose(
-      { ...forcedDecision, action: "close", reason: "回測結束強制平倉", closeReason: "OTHER" },
+      { ...forcedDecision, action: "close", reason: V25_END_OF_DATA_EXIT_REASON, closeReason: "OTHER" },
       last.timestamp,
-      "回測結束強制平倉",
+      V25_END_OF_DATA_EXIT_REASON,
     );
     equityCurve.push({
       timestamp: last.timestamp,
@@ -450,6 +456,33 @@ export function runRainbowTrendLadderBacktest(
       price: last.close,
     });
   }
+
+  const finalMark = candles[candles.length - 1] ?? priorSession?.lastCandle ?? null;
+  const openPosition = finalMark ? openPositionAt(finalMark.close) : null;
+  const finalEquity = roundBacktestMoney(equity + (openPosition?.unrealizedPnl ?? 0));
+  if (finalMark) {
+    if (equityCurve.length === 0 || equityCurve[equityCurve.length - 1].timestamp !== finalMark.timestamp) {
+      equityCurve.push({ timestamp: finalMark.timestamp, equity: finalEquity, price: finalMark.close });
+    } else {
+      equityCurve[equityCurve.length - 1] = {
+        timestamp: finalMark.timestamp,
+        equity: finalEquity,
+        price: finalMark.close,
+      };
+    }
+  }
+  const accounting = buildAccountingSnapshot({
+    initialCapital: request.initialCapital,
+    trades,
+    unrealizedPnl: openPosition?.unrealizedPnl ?? 0,
+    finalEquity,
+    openPositionCount: openPosition ? 1 : 0,
+    syntheticForceCloseCount: trades.filter(
+      trade => trade.exitReason === V25_END_OF_DATA_EXIT_REASON,
+    ).length,
+    openPosition,
+  });
+  assertSingleEquityLedger(accounting);
 
   if (isFinalSegment) onProgress?.(95, "計算七彩虹線階梯績效指標...");
   const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
@@ -524,6 +557,8 @@ export function runRainbowTrendLadderBacktest(
     summary,
     candleCount: totalCandleCount,
     environment,
+    endPositionPolicy: config.Backtest_End_Position_Policy,
+    accounting,
     session,
   };
 }

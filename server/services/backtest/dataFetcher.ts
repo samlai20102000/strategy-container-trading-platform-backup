@@ -7,6 +7,7 @@
 
 import { getBacktestDatabase, type OHLCVRow } from "./backtestDatabase";
 import { convertToOKXFormat, convertToBybitFormat, getTimeframeMilliseconds } from "./timeframeParser";
+import { normalizeOHLCVData } from "./backtestContracts";
 
 // OKX 多端點（主站 + AWS 備用）
 const OKX_ENDPOINTS = [
@@ -141,8 +142,9 @@ async function fetchOKXHistoryCandles(
 ): Promise<OHLCVRow[]> {
   const instId = toOKXInstId(symbol);
   const bar = convertToOKXFormat(timeframe);
+  const timeframeMs = getTimeframeMilliseconds(timeframe);
   const all: OHLCVRow[] = [];
-  let after = String(endMs + 1); // OKX after=ts 回傳 ts 之前（更早）的數據
+  let after = String(endMs); // `[start,end)`：OKX after=ts 回傳 ts 之前（更早）的數據
   let guard = 0;
 
   while (guard++ < 2000) {
@@ -163,7 +165,8 @@ async function fetchOKXHistoryCandles(
 
     for (const r of rows) {
       const ts = Number(r[0]);
-      if (ts >= startMs && ts <= endMs) {
+      // OKX 第 9 欄 confirm：0=未收盤、1=已收盤。缺欄僅供舊測試／相容端點使用。
+      if (ts >= startMs && ts < endMs && r[8] !== "0") {
         all.push({
           symbol,
           timeframe,
@@ -184,8 +187,11 @@ async function fetchOKXHistoryCandles(
     await sleep(REQUEST_INTERVAL_MS);
   }
 
-  all.sort((a, b) => a.timestamp - b.timestamp);
-  return dedupe(all);
+  return normalizeOHLCVData(all, {
+    startMs,
+    endMs,
+    timeframeMs,
+  }).candles;
 }
 
 /**
@@ -202,8 +208,9 @@ async function fetchOKXRegularCandles(
 ): Promise<OHLCVRow[]> {
   const instId = toOKXInstId(symbol);
   const bar = convertToOKXFormat(timeframe);
+  const timeframeMs = getTimeframeMilliseconds(timeframe);
   const all: OHLCVRow[] = [];
-  let after = String(endMs + 1);
+  let after = String(endMs);
   let guard = 0;
   const REGULAR_LIMIT = 100; // market/candles 每次最多 100 根
 
@@ -227,7 +234,7 @@ async function fetchOKXRegularCandles(
 
     for (const r of rows) {
       const ts = Number(r[0]);
-      if (ts >= startMs && ts <= endMs) {
+      if (ts >= startMs && ts < endMs && r[8] !== "0") {
         all.push({
           symbol,
           timeframe,
@@ -249,8 +256,11 @@ async function fetchOKXRegularCandles(
   }
 
   console.log(`[DataFetcher] OKX market/candles 完成: ${all.length} 根 K 線`);
-  all.sort((a, b) => a.timestamp - b.timestamp);
-  return dedupe(all);
+  return normalizeOHLCVData(all, {
+    startMs,
+    endMs,
+    timeframeMs,
+  }).candles;
 }
 
 /**
@@ -265,8 +275,9 @@ export async function fetchBybitCandles(
 ): Promise<OHLCVRow[]> {
   const bybitSymbol = toBybitSymbol(symbol);
   const interval = convertToBybitFormat(timeframe);
+  const timeframeMs = getTimeframeMilliseconds(timeframe);
   const all: OHLCVRow[] = [];
-  let end = endMs;
+  let end = endMs - 1;
   let guard = 0;
 
   while (guard++ < 2000) {
@@ -291,7 +302,7 @@ export async function fetchBybitCandles(
 
     for (const r of rows) {
       const ts = Number(r[0]);
-      if (ts >= startMs && ts <= endMs) {
+      if (ts >= startMs && ts < endMs) {
         all.push({
           symbol,
           timeframe,
@@ -312,20 +323,11 @@ export async function fetchBybitCandles(
     await sleep(REQUEST_INTERVAL_MS);
   }
 
-  all.sort((a, b) => a.timestamp - b.timestamp);
-  return dedupe(all);
-}
-
-function dedupe(rows: OHLCVRow[]): OHLCVRow[] {
-  const seen = new Set<number>();
-  const out: OHLCVRow[] = [];
-  for (const r of rows) {
-    if (!seen.has(r.timestamp)) {
-      seen.add(r.timestamp);
-      out.push(r);
-    }
-  }
-  return out;
+  return normalizeOHLCVData(all, {
+    startMs,
+    endMs,
+    timeframeMs,
+  }).candles;
 }
 
 /**
@@ -347,7 +349,10 @@ export async function ensureOHLCVData(
 
   // 覆蓋率 >= 95% 視為快取命中（週末/停盤縫隙容差）
   if (expected > 0 && existing >= expected * 0.95) {
-    return db.getOHLCV(symbol, timeframe, startMs, endMs);
+    return normalizeOHLCVData(
+      db.getOHLCV(symbol, timeframe, startMs, endMs),
+      { startMs, endMs, timeframeMs: tfMs },
+    ).candles;
   }
 
   // 直接使用用戶指定的交易所（fetchOKXCandles 內部已有 history-candles -> regular candles 降級邏輯）
@@ -373,8 +378,16 @@ export async function ensureOHLCVData(
     }
   }
 
-  if (fetched.length > 0) {
-    db.insertOHLCV(fetched);
+  const normalizedFetched = normalizeOHLCVData(fetched, {
+    startMs,
+    endMs,
+    timeframeMs: tfMs,
+  }).candles;
+  if (normalizedFetched.length > 0) {
+    db.insertOHLCV(normalizedFetched);
   }
-  return db.getOHLCV(symbol, timeframe, startMs, endMs);
+  return normalizeOHLCVData(
+    db.getOHLCV(symbol, timeframe, startMs, endMs),
+    { startMs, endMs, timeframeMs: tfMs },
+  ).candles;
 }

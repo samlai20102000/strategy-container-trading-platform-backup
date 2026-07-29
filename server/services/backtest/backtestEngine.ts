@@ -55,11 +55,22 @@ import {
   RAINBOW_20415_STRATEGY_KEY,
 } from "../../../shared/strategies/rainbow20415";
 import { RAINBOW_TREND_LADDER_STRATEGY_KEY } from "../../../shared/strategies/rainbowTrendLadder";
+import { runRainbowTrendLadderBacktest } from "./rainbowTrendLadderBacktest";
 import {
-  runRainbowTrendLadderBacktest,
-  type RainbowTrendLadderBacktestRunResult,
-  type RainbowTrendLadderBacktestSession,
-} from "./rainbowTrendLadderBacktest";
+  BACKTEST_ENGINE_VERSION,
+  V25_END_OF_DATA_EXIT_REASON,
+  assertSingleEquityLedger,
+  buildAccountingSnapshot,
+  buildOpenPositionSnapshot,
+  createContinuousEngineSemantics,
+  normalizeOHLCVData,
+  resolveEndPositionPolicy,
+  roundBacktestMoney,
+  type BacktestAccountingSnapshot,
+  type BacktestDataQuality,
+  type BacktestEndPositionPolicy,
+  type BacktestEngineSemantics,
+} from "./backtestContracts";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -73,6 +84,8 @@ export interface BacktestRequest {
   commission?: number; // 單邊手續費率，默認 0.0004
   slippage?: number; // 滑點率，默認 0.0001
   exchange?: "okx" | "bybit";
+  /** V2.5 全域終點持倉政策；預設按市價估值並保留未平倉狀態。 */
+  endPositionPolicy?: BacktestEndPositionPolicy;
 }
 
 export interface BacktestResult {
@@ -85,7 +98,7 @@ export interface BacktestResult {
   config: Record<string, unknown>;
   summary: string;
   candleCount: number;
-  /** V5.7 環境快照元數據 */
+  /** V2.5 環境快照元數據 */
   environment?: {
     engineVersion: string;
     dataHash: string;
@@ -99,6 +112,10 @@ export interface BacktestResult {
     candleCount: number;
     initialCapital: number;
   };
+  endPositionPolicy?: BacktestEndPositionPolicy;
+  accounting?: BacktestAccountingSnapshot;
+  dataQuality?: BacktestDataQuality;
+  engineSemantics?: BacktestEngineSemantics;
 }
 
 interface PositionLayer {
@@ -163,19 +180,6 @@ export class BacktestEngine {
     const endMs = toMs(request.endDate);
     if (endMs <= startMs) throw new Error("結束時間必須晚於開始時間");
 
-    // === 分段回測邏輯：超過 7 天自動分段 ===
-    const spanMs = endMs - startMs;
-    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-    if (spanMs > sevenDaysMs) {
-      if (request.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
-        return this.runRainbowTrendLadderSegmentedBacktest(
-          { ...request, timeframe: "30m" },
-          onProgress,
-        );
-      }
-      return this.runSegmentedBacktest(request, onProgress);
-    }
-
     // === 任務 A2：策略動態載入（不再硬編碼 V3.5）===
     const strategy = getStrategy(request.strategyKey);
     if (!strategy) {
@@ -197,6 +201,14 @@ export class BacktestEngine {
       ...strategy.defaultConfig,
       ...request.config,
     };
+    const endPositionPolicy = resolveEndPositionPolicy(
+      request.endPositionPolicy ?? config.Backtest_End_Position_Policy,
+    );
+    config.Backtest_End_Position_Policy = endPositionPolicy;
+    // 專用策略會先把設定清洗成各自的強型別契約；政策屬於回測請求而非交易參數，
+    // 因此在派送前回寫到 request，確保所有分支都取得同一個已正規化值。
+    request.endPositionPolicy = endPositionPolicy;
+    effectiveRequest.endPositionPolicy = endPositionPolicy;
 
     // V5.7: 風控參數驗證
     const riskValidation = validateRiskSettings(config);
@@ -216,14 +228,15 @@ export class BacktestEngine {
     const slippage = request.slippage ?? 0.0001;
 
     onProgress?.(5, "載入歷史數據中...");
-    const candles = await ensureOHLCVData(
+    const continuousData = await this.loadContinuousCandles(
       request.symbol,
       effectiveRequest.timeframe,
       startMs,
       endMs,
       request.exchange ?? "okx",
-      (p) => onProgress?.(5 + Math.min(25, p.fetched / 400), p.message),
+      onProgress,
     );
+    const candles = continuousData.candles;
 
     if (candles.length < 120) {
       throw new Error(
@@ -236,7 +249,7 @@ export class BacktestEngine {
       if (!(strategy instanceof Strategy20415)) {
         throw new Error("20415 七彩虹回測引擎類型不一致");
       }
-      return this.runRainbow20415Backtest(
+      return this.finalizeV25Result(this.runRainbow20415Backtest(
         request,
         strategy,
         config,
@@ -246,7 +259,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      );
+      ), request, startMs, endMs, continuousData.quality);
     }
 
     // 全新七彩虹線階梯：獨立純核心回測，禁止落入通用策略近似器。
@@ -254,7 +267,7 @@ export class BacktestEngine {
       if (!(strategy instanceof StrategyRainbowTrendLadder)) {
         throw new Error("七彩虹線階梯回測引擎類型不一致");
       }
-      return runRainbowTrendLadderBacktest(
+      return this.finalizeV25Result(await runRainbowTrendLadderBacktest(
         effectiveRequest,
         strategy,
         config,
@@ -264,7 +277,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      );
+      ), effectiveRequest, startMs, endMs, continuousData.quality);
     }
 
     // V2.5：逐 K 調用與實盤相同的獨立純核心，禁止落入通用 SMA 回測空殼。
@@ -272,7 +285,7 @@ export class BacktestEngine {
       if (!(strategy instanceof StrategyKama3kBreakoutV25)) {
         throw new Error("V2.5 回測引擎類型不一致");
       }
-      return this.runV25Backtest(
+      return this.finalizeV25Result(this.runV25Backtest(
         request,
         strategy,
         config,
@@ -282,22 +295,22 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      );
+      ), request, startMs, endMs, continuousData.quality);
     }
 
     // === V5.0 策略：複用 V3.5 KAMA+3K 回測路徑（同樣的 KAMA 指標 + 3K 形態 + 馬丁，但參數來自 V5.0 配置）===
     // V5.0 和 V3.5 共享相同的 KAMA+3K 回測核心，差異僅在參數預設值和 F1-F6 模組（在實盤中生效）
     if (!isV35 && !isV50 && !isV61 && !isV70) {
-      return this.runGenericBacktest(
+      return this.finalizeV25Result(await this.runGenericBacktest(
         request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
-      );
+      ), request, startMs, endMs, continuousData.quality);
     }
 
     // V7.0 龍捲風雙渦輪：使用專屬回測路徑
     if (isV70) {
-      return this.runV70Backtest(
+      return this.finalizeV25Result(await this.runV70Backtest(
         request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
-      );
+      ), request, startMs, endMs, continuousData.quality);
     }
 
     onProgress?.(35, `數據就緒（${candles.length} 根），計算 KAMA 指標...`);
@@ -434,10 +447,10 @@ export class BacktestEngine {
           ? (effExit - p.avgPrice) * p.totalSize
           : (p.avgPrice - effExit) * p.totalSize;
       const fees = (p.avgPrice + effExit) * p.totalSize * commission;
-      const pnl = grossPnl - fees;
+      const pnl = roundBacktestMoney(grossPnl - fees);
       const pnlPct = p.avgPrice > 0 ? (grossPnl / (p.avgPrice * p.totalSize)) * 100 : 0;
 
-      equity += pnl;
+      equity = roundBacktestMoney(equity + pnl);
       // 連續虧損計數（用於 enable_loss_shrink 縮倉功能）
       if (pnl < 0) {
         consecutiveLoss++;
@@ -452,7 +465,7 @@ export class BacktestEngine {
         entryPrice: Math.round(p.avgPrice * 100) / 100,
         exitPrice: Math.round(effExit * 100) / 100,
         size: p.totalSize,
-        pnl: Math.round(pnl * 100) / 100,
+        pnl,
         pnlPct: Math.round(pnlPct * 100) / 100,
         exitReason: reason,
         martinLayer: p.layers.length - 1,
@@ -607,7 +620,7 @@ export class BacktestEngine {
           }
         }
 
-        equityCurve.push({ timestamp: now, equity: equityWithUnrealized(equity, p, price), price });
+        equityCurve.push({ timestamp: now, equity: equityWithUnrealized(equity, p, price, commission), price });
         continue;
       }
 
@@ -659,7 +672,7 @@ export class BacktestEngine {
         reentryBox.req = null;
         equityCurve.push({
           timestamp: now,
-          equity: position ? equityWithUnrealized(equity, position, price) : equity,
+          equity: position ? equityWithUnrealized(equity, position, price, commission) : equity,
           price,
         });
         continue;
@@ -788,17 +801,43 @@ export class BacktestEngine {
 
       equityCurve.push({
         timestamp: now,
-        equity: position ? equityWithUnrealized(equity, position, price) : equity,
+        equity: position ? equityWithUnrealized(equity, position, price, commission) : equity,
         price,
       });
     }
 
-    // 回測結束：強制平倉未結倉位
-    if (position) {
-      const last = candles[candles.length - 1];
-      closePosition(last.close, last.timestamp, "回測結束強制平倉");
-      equityCurve.push({ timestamp: last.timestamp, equity, price: last.close });
+    // V2.5：資料分片不結算；只有完整回測區間的全域終點可套用政策。
+    const last = candles[candles.length - 1];
+    if (position && endPositionPolicy === "force_close") {
+      closePosition(last.close, last.timestamp, V25_END_OF_DATA_EXIT_REASON);
     }
+    const openPosition = position
+      ? buildOpenPositionSnapshot(position, last.close, commission)
+      : null;
+    const finalEquity = position
+      ? equityWithUnrealized(equity, position, last.close, commission)
+      : equity;
+    if (equityCurve.length === 0 || equityCurve[equityCurve.length - 1].timestamp !== last.timestamp) {
+      equityCurve.push({ timestamp: last.timestamp, equity: finalEquity, price: last.close });
+    } else {
+      equityCurve[equityCurve.length - 1] = {
+        timestamp: last.timestamp,
+        equity: finalEquity,
+        price: last.close,
+      };
+    }
+    const accounting = buildAccountingSnapshot({
+      initialCapital: request.initialCapital,
+      trades,
+      unrealizedPnl: openPosition?.unrealizedPnl ?? 0,
+      finalEquity,
+      openPositionCount: openPosition ? 1 : 0,
+      syntheticForceCloseCount: trades.filter(
+        trade => trade.exitReason === V25_END_OF_DATA_EXIT_REASON,
+      ).length,
+      openPosition,
+    });
+    assertSingleEquityLedger(accounting, `${request.strategyKey} 主 KAMA`);
 
     onProgress?.(95, "計算績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
@@ -847,7 +886,7 @@ export class BacktestEngine {
 
     onProgress?.(100, summary);
 
-    return {
+    return this.finalizeV25Result({
       runId,
       strategyKey: request.strategyKey,
       strategyName: strategy.name,
@@ -858,6 +897,129 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment: envSnapshotV35,
+      endPositionPolicy,
+      accounting,
+    }, request, startMs, endMs, continuousData.quality);
+  }
+
+  /**
+   * V2.5 連續資料 Session：七日只作為網路／快取讀取批次，不建立子回測、
+   * 不重設資金、持倉、馬丁層、冷卻、指標或任何策略狀態。
+   */
+  private async loadContinuousCandles(
+    symbol: string,
+    timeframe: string,
+    startMs: number,
+    endMs: number,
+    exchange: "okx" | "bybit",
+    onProgress?: (pct: number, message: string) => void,
+  ): Promise<{ candles: OHLCVRow[]; quality: BacktestDataQuality }> {
+    const dataChunkMs = 7 * 24 * 60 * 60 * 1000;
+    const timeframeMs = getTimeframeMilliseconds(timeframe);
+    const collected: OHLCVRow[] = [];
+    const totalSpan = Math.max(1, endMs - startMs);
+
+    for (let cursor = startMs; cursor < endMs;) {
+      const chunkStart = cursor;
+      const chunkEnd = Math.min(endMs, chunkStart + dataChunkMs);
+      const rows = await ensureOHLCVData(
+        symbol,
+        timeframe,
+        chunkStart,
+        chunkEnd,
+        exchange,
+        (progress) => {
+          const completedSpan = chunkStart - startMs;
+          const localRatio = Math.min(1, progress.fetched / 400);
+          const ratio = Math.min(1, (completedSpan + (chunkEnd - chunkStart) * localRatio) / totalSpan);
+          onProgress?.(5 + ratio * 25, `連續資料 Session：${progress.message}`);
+        },
+      );
+      collected.push(...rows);
+      cursor = chunkEnd;
+    }
+
+    const normalized = normalizeOHLCVData(collected, {
+      startMs,
+      endMs,
+      timeframeMs,
+    });
+    onProgress?.(
+      30,
+      `連續資料 Session 就緒（${normalized.candles.length} 根，已去除 ${normalized.quality.duplicateCandlesRemoved} 根重複 K 棒）`,
+    );
+    return normalized;
+  }
+
+  /** 所有現有與未來策略不可繞過的 V2.5 結果契約守門器。 */
+  private finalizeV25Result(
+    result: BacktestResult,
+    request: BacktestRequest,
+    startMs: number,
+    endMs: number,
+    dataQuality: BacktestDataQuality,
+  ): BacktestResult {
+    const policy = resolveEndPositionPolicy(
+      result.endPositionPolicy ?? request.endPositionPolicy ?? request.config.Backtest_End_Position_Policy,
+    );
+    const syntheticForceCloseCount = result.trades.filter((trade) =>
+      trade.exitReason === V25_END_OF_DATA_EXIT_REASON
+      || trade.exitReason === "global_end_force_close"
+      || trade.exitReason.includes("回測結束強平"),
+    ).length;
+    if (policy === "mark_to_market" && syntheticForceCloseCount > 0) {
+      throw new Error("V2.5 契約違反：mark_to_market 不得建立全域終點合成平倉");
+    }
+    if (policy === "force_close" && syntheticForceCloseCount > 1) {
+      throw new Error("V2.5 契約違反：force_close 在全域終點最多只能建立一筆合成平倉");
+    }
+
+    const finalEquity = roundBacktestMoney(
+      result.equityCurve[result.equityCurve.length - 1]?.equity ?? request.initialCapital,
+    );
+    const realizedPnl = roundBacktestMoney(
+      result.trades.reduce((sum, trade) => sum + trade.pnl, 0),
+    );
+    const inferredUnrealized = roundBacktestMoney(
+      finalEquity - request.initialCapital - realizedPnl,
+    );
+    const accounting = result.accounting ?? buildAccountingSnapshot({
+      initialCapital: request.initialCapital,
+      trades: result.trades,
+      unrealizedPnl: inferredUnrealized,
+      finalEquity,
+      openPositionCount: Math.abs(inferredUnrealized) > 0.00000001 ? 1 : 0,
+      syntheticForceCloseCount,
+    });
+    assertSingleEquityLedger(accounting);
+    if (accounting.syntheticForceCloseCount !== syntheticForceCloseCount) {
+      throw new Error("V2.5 契約違反：合成平倉計數與交易帳本不一致");
+    }
+    if (
+      policy === "force_close"
+      && (
+        accounting.openPositionCount !== 0
+        || Math.abs(accounting.unrealizedPnl) > 0.00000001
+      )
+    ) {
+      throw new Error("V2.5 契約違反：force_close 完成後不得保留未平倉部位或未實現盈虧");
+    }
+
+    return {
+      ...result,
+      endPositionPolicy: policy,
+      accounting,
+      dataQuality,
+      engineSemantics: createContinuousEngineSemantics(),
+      environment: result.environment
+        ? {
+            ...result.environment,
+            engineVersion: BACKTEST_ENGINE_VERSION,
+            startDate: startMs,
+            endDate: endMs,
+            candleCount: dataQuality.returnedCandles,
+          }
+        : result.environment,
     };
   }
 
@@ -907,6 +1069,10 @@ export class BacktestEngine {
     let state: Rainbow20415RuntimeState = createRainbow20415RuntimeState({
       capital: request.initialCapital,
     });
+    const endPositionPolicy = resolveEndPositionPolicy(
+      request.endPositionPolicy
+        ?? (config as unknown as Record<string, unknown>).Backtest_End_Position_Policy,
+    );
     let positionMeta: {
       side: "long" | "short";
       entryTime: number;
@@ -932,11 +1098,15 @@ export class BacktestEngine {
         entryTime: number;
         layers: PositionLayer[];
       } | null;
-      const unrealizedPnl = active && state.totalSize > 0
+      const unrealizedGrossPnl = active && state.totalSize > 0
         ? active.side === "long"
           ? (price - state.avgPrice) * state.totalSize
           : (state.avgPrice - price) * state.totalSize
         : 0;
+      const entryFees = active
+        ? active.layers.reduce((sum, layer) => sum + layer.price * layer.size * commission, 0)
+        : 0;
+      const unrealizedPnl = unrealizedGrossPnl - entryFees;
       const markEquity = Math.max(0.00000001, equity + unrealizedPnl);
       const usedMargin = state.totalCost > 0 ? state.totalCost : 0;
       return {
@@ -1034,11 +1204,11 @@ export class BacktestEngine {
         0,
       );
       const fees = (entryNotional + effectiveExitPrice * state.totalSize) * commission;
-      const pnl = grossPnl - fees;
+      const pnl = roundBacktestMoney(grossPnl - fees);
       const pnlPct = state.avgPrice > 0
         ? (grossPnl / (state.avgPrice * state.totalSize)) * 100
         : 0;
-      equity += pnl;
+      equity = roundBacktestMoney(equity + pnl);
       trades.push({
         id: ++tradeId,
         entryTime: meta.entryTime,
@@ -1047,7 +1217,7 @@ export class BacktestEngine {
         entryPrice: Math.round(state.avgPrice * 100) / 100,
         exitPrice: Math.round(effectiveExitPrice * 100) / 100,
         size: state.totalSize,
-        pnl: Math.round(pnl * 100) / 100,
+        pnl,
         pnlPct: Math.round(pnlPct * 100) / 100,
         exitReason: forcedReason ?? decision.reason,
         martinLayer: Math.max(0, state.currentLayer - 1),
@@ -1118,14 +1288,18 @@ export class BacktestEngine {
         entryTime: number;
         layers: PositionLayer[];
       } | null;
-      const unrealizedPnl = active && state.totalSize > 0
+      const unrealizedGrossPnl = active && state.totalSize > 0
         ? active.side === "long"
           ? (candle.close - state.avgPrice) * state.totalSize
           : (state.avgPrice - candle.close) * state.totalSize
         : 0;
+      const entryFees = active
+        ? active.layers.reduce((sum, layer) => sum + layer.price * layer.size * commission, 0)
+        : 0;
+      const unrealizedPnl = unrealizedGrossPnl - entryFees;
       equityCurve.push({
         timestamp: candle.timestamp,
-        equity: Math.round((equity + unrealizedPnl) * 100) / 100,
+        equity: roundBacktestMoney(equity + unrealizedPnl),
         price: candle.close,
       });
 
@@ -1138,24 +1312,55 @@ export class BacktestEngine {
       }
     }
 
-    if (positionMeta) {
-      const last = candles[candles.length - 1];
+    const last = candles[candles.length - 1];
+    if (positionMeta && endPositionPolicy === "force_close") {
       const forcedDecision = evaluateRainbow20415Management(
         { currentPrice: last.close, now: last.timestamp, account: simulatedAccount(last.close) },
         state,
         config,
       );
       applyClose(
-        { ...forcedDecision, action: "close", reason: "回測結束強制平倉", closeReason: "OTHER" },
+        { ...forcedDecision, action: "close", reason: V25_END_OF_DATA_EXIT_REASON, closeReason: "OTHER" },
         last.timestamp,
-        "回測結束強制平倉",
+        V25_END_OF_DATA_EXIT_REASON,
       );
-      equityCurve.push({
-        timestamp: last.timestamp,
-        equity: Math.round(equity * 100) / 100,
-        price: last.close,
-      });
     }
+    const activeAtEnd = positionMeta as {
+      side: "long" | "short";
+      entryTime: number;
+      layers: PositionLayer[];
+    } | null;
+    const openPosition = activeAtEnd && state.totalSize > 0
+      ? buildOpenPositionSnapshot({
+          side: activeAtEnd.side,
+          entryTime: activeAtEnd.entryTime,
+          avgPrice: state.avgPrice,
+          totalSize: state.totalSize,
+          layers: activeAtEnd.layers,
+        }, last.close, commission)
+      : null;
+    const finalEquity = roundBacktestMoney(equity + (openPosition?.unrealizedPnl ?? 0));
+    if (equityCurve.length === 0 || equityCurve[equityCurve.length - 1].timestamp !== last.timestamp) {
+      equityCurve.push({ timestamp: last.timestamp, equity: finalEquity, price: last.close });
+    } else {
+      equityCurve[equityCurve.length - 1] = {
+        timestamp: last.timestamp,
+        equity: finalEquity,
+        price: last.close,
+      };
+    }
+    const accounting = buildAccountingSnapshot({
+      initialCapital: request.initialCapital,
+      trades,
+      unrealizedPnl: openPosition?.unrealizedPnl ?? 0,
+      finalEquity,
+      openPositionCount: openPosition ? 1 : 0,
+      syntheticForceCloseCount: trades.filter(
+        trade => trade.exitReason === V25_END_OF_DATA_EXIT_REASON,
+      ).length,
+      openPosition,
+    });
+    assertSingleEquityLedger(accounting, `${request.strategyKey} 20415 七彩虹`);
 
     onProgress?.(95, "計算 20415 七彩虹績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
@@ -1209,6 +1414,8 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment,
+      endPositionPolicy,
+      accounting,
     };
   }
 
@@ -1235,6 +1442,10 @@ export class BacktestEngine {
     let state: V25RuntimeState = createV25RuntimeState({
       capital: request.initialCapital,
     });
+    const endPositionPolicy = resolveEndPositionPolicy(
+      request.endPositionPolicy
+        ?? (config as unknown as Record<string, unknown>).Backtest_End_Position_Policy,
+    );
     let positionMeta: {
       side: "long" | "short";
       entryTime: number;
@@ -1317,12 +1528,12 @@ export class BacktestEngine {
       );
       const fees =
         (entryNotional + effectiveExitPrice * state.totalSize) * commission;
-      const pnl = grossPnl - fees;
+      const pnl = roundBacktestMoney(grossPnl - fees);
       const pnlPct =
         state.avgPrice > 0
           ? (grossPnl / (state.avgPrice * state.totalSize)) * 100
           : 0;
-      equity += pnl;
+      equity = roundBacktestMoney(equity + pnl);
       trades.push({
         id: ++tradeId,
         entryTime: meta.entryTime,
@@ -1331,7 +1542,7 @@ export class BacktestEngine {
         entryPrice: Math.round(state.avgPrice * 100) / 100,
         exitPrice: Math.round(effectiveExitPrice * 100) / 100,
         size: state.totalSize,
-        pnl: Math.round(pnl * 100) / 100,
+        pnl,
         pnlPct: Math.round(pnlPct * 100) / 100,
         exitReason: forcedReason ?? decision.reason,
         martinLayer: Math.max(0, meta.layers.length - 1),
@@ -1393,15 +1604,22 @@ export class BacktestEngine {
         entryTime: number;
         layers: PositionLayer[];
       } | null;
-      const unrealizedPnl =
+      const unrealizedGrossPnl =
         activePosition && state.totalSize > 0
           ? activePosition.side === "long"
             ? (candle.close - state.avgPrice) * state.totalSize
             : (state.avgPrice - candle.close) * state.totalSize
           : 0;
+      const entryFees = activePosition
+        ? activePosition.layers.reduce(
+            (sum, layer) => sum + layer.price * layer.size * commission,
+            0,
+          )
+        : 0;
+      const unrealizedPnl = unrealizedGrossPnl - entryFees;
       equityCurve.push({
         timestamp: candle.timestamp,
-        equity: Math.round((equity + unrealizedPnl) * 100) / 100,
+        equity: roundBacktestMoney(equity + unrealizedPnl),
         price: candle.close,
       });
 
@@ -1415,12 +1633,12 @@ export class BacktestEngine {
       }
     }
 
-    if (positionMeta) {
-      const last = candles[candles.length - 1];
+    const last = candles[candles.length - 1];
+    if (positionMeta && endPositionPolicy === "force_close") {
       applyClose(
         {
           action: "close",
-          reason: "回測結束強制平倉",
+          reason: V25_END_OF_DATA_EXIT_REASON,
           price: last.close,
           closeReason: "OTHER",
           nextState: state,
@@ -1435,14 +1653,45 @@ export class BacktestEngine {
           },
         },
         last.timestamp,
-        "回測結束強制平倉",
+        V25_END_OF_DATA_EXIT_REASON,
       );
-      equityCurve.push({
-        timestamp: last.timestamp,
-        equity: Math.round(equity * 100) / 100,
-        price: last.close,
-      });
     }
+    const activeAtEnd = positionMeta as {
+      side: "long" | "short";
+      entryTime: number;
+      layers: PositionLayer[];
+    } | null;
+    const openPosition = activeAtEnd && state.totalSize > 0
+      ? buildOpenPositionSnapshot({
+          side: activeAtEnd.side,
+          entryTime: activeAtEnd.entryTime,
+          avgPrice: state.avgPrice,
+          totalSize: state.totalSize,
+          layers: activeAtEnd.layers,
+        }, last.close, commission)
+      : null;
+    const finalEquity = roundBacktestMoney(equity + (openPosition?.unrealizedPnl ?? 0));
+    if (equityCurve.length === 0 || equityCurve[equityCurve.length - 1].timestamp !== last.timestamp) {
+      equityCurve.push({ timestamp: last.timestamp, equity: finalEquity, price: last.close });
+    } else {
+      equityCurve[equityCurve.length - 1] = {
+        timestamp: last.timestamp,
+        equity: finalEquity,
+        price: last.close,
+      };
+    }
+    const accounting = buildAccountingSnapshot({
+      initialCapital: request.initialCapital,
+      trades,
+      unrealizedPnl: openPosition?.unrealizedPnl ?? 0,
+      finalEquity,
+      openPositionCount: openPosition ? 1 : 0,
+      syntheticForceCloseCount: trades.filter(
+        trade => trade.exitReason === V25_END_OF_DATA_EXIT_REASON,
+      ).length,
+      openPosition,
+    });
+    assertSingleEquityLedger(accounting, `${request.strategyKey} V2.5`);
 
     onProgress?.(95, "計算 V2.5 績效指標...");
     const metrics = calculatePerformance(
@@ -1500,6 +1749,8 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment,
+      endPositionPolicy,
+      accounting,
     };
   }
 
@@ -1644,6 +1895,9 @@ export class BacktestEngine {
     const trades: TradeRecord[] = [];
     const equityCurve: EquityPoint[] = [];
     let equity = request.initialCapital;
+    const endPositionPolicy = resolveEndPositionPolicy(
+      request.endPositionPolicy ?? config.Backtest_End_Position_Policy,
+    );
     let peakEquity = request.initialCapital;
     let position: OpenPosition | null = null;
     let tradeId = 0;
@@ -1652,7 +1906,13 @@ export class BacktestEngine {
 
     // === 平倉函數 ===
     let reentryCooldownCounter = 0; // 定義循環再入場冷卻計數器
-    const closePos = (exitPrice: number, exitTime: number, reason: string, idx: number): void => {
+    const closePos = (
+      exitPrice: number,
+      exitTime: number,
+      reason: string,
+      idx: number,
+      allowReentry = true,
+    ): void => {
       if (!position) return;
       const p = position;
       const effExit = p.side === "long" ? exitPrice * (1 - slippage) : exitPrice * (1 + slippage);
@@ -1661,9 +1921,9 @@ export class BacktestEngine {
           ? (effExit - p.avgPrice) * p.totalSize
           : (p.avgPrice - effExit) * p.totalSize;
       const fees = (p.avgPrice + effExit) * p.totalSize * commission;
-      const pnl = grossPnl - fees;
+      const pnl = roundBacktestMoney(grossPnl - fees);
       const pnlPct = p.avgPrice > 0 ? (grossPnl / (p.avgPrice * p.totalSize)) * 100 : 0;
-      equity += pnl;
+      equity = roundBacktestMoney(equity + pnl);
       trades.push({
         id: ++tradeId,
         entryTime: p.entryTime,
@@ -1672,7 +1932,7 @@ export class BacktestEngine {
         entryPrice: Math.round(p.avgPrice * 100) / 100,
         exitPrice: Math.round(effExit * 100) / 100,
         size: p.totalSize,
-        pnl: Math.round(pnl * 100) / 100,
+        pnl,
         pnlPct: Math.round(pnlPct * 100) / 100,
         exitReason: reason,
         martinLayer: p.layers.length - 1,
@@ -1686,7 +1946,7 @@ export class BacktestEngine {
       const reentryEnabled = config.Reentry_Enabled === true || config.Reentry_Enabled === "true";
       const cooldownBars = num(config.Reentry_Cooldown_Bars, 1);
 
-      if (reentryEnabled && cooldownBars === 0) {
+      if (allowReentry && reentryEnabled && cooldownBars === 0) {
         // 冷卻時間為 0，立即檢查是否可以重新入場
         const { shouldEnter: reentryShouldEnter, direction: reentryDirection } = checkEntry(idx, exitPrice);
         if (reentryShouldEnter) {
@@ -1700,7 +1960,7 @@ export class BacktestEngine {
             martinState.lossCount = 0;
           }
         }
-      } else if (reentryEnabled) {
+      } else if (allowReentry && reentryEnabled) {
         // 有冷卻時間，設定冷卻計數器，在主迴圈中遞減後再檢查入場
         reentryCooldownCounter = cooldownBars;
       }
@@ -1858,7 +2118,11 @@ export class BacktestEngine {
         const totalProfit = p.side === "long"
           ? (price - p.avgPrice) * p.totalSize
           : (p.avgPrice - price) * p.totalSize;
-        const currentEquity = equity + totalProfit;
+        const entryFees = p.layers.reduce(
+          (sum, layer) => sum + layer.price * layer.size * commission,
+          0,
+        );
+        const currentEquity = roundBacktestMoney(equity + totalProfit - entryFees);
         if (currentEquity > peakEquity) peakEquity = currentEquity;
 
         // --- 權益回撤止損（Max_Equity_Drawdown）---
@@ -1901,7 +2165,7 @@ export class BacktestEngine {
             // 持倉比例超限，拒絕加倉
           } else {
             addMartinLayer(price, now);
-            equityCurve.push({ timestamp: now, equity: equityWithUnrealized(equity, position!, price), price });
+            equityCurve.push({ timestamp: now, equity: equityWithUnrealized(equity, position!, price, commission), price });
             continue;
           }
         }
@@ -1933,17 +2197,46 @@ export class BacktestEngine {
 
       equityCurve.push({
         timestamp: now,
-        equity: position ? equityWithUnrealized(equity, position, price) : equity,
+        equity: position ? equityWithUnrealized(equity, position, price, commission) : equity,
         price,
       });
     }
 
-    // 回測結束：強制平倉
-    if (position) {
-      const last = candles[candles.length - 1];
-      closePos(last.close, last.timestamp, "回測結束強制平倉", candles.length - 1);
-      equityCurve.push({ timestamp: last.timestamp, equity, price: last.close });
+    const last = candles[candles.length - 1];
+    if (position && endPositionPolicy === "force_close") {
+      closePos(
+        last.close,
+        last.timestamp,
+        V25_END_OF_DATA_EXIT_REASON,
+        candles.length - 1,
+        false,
+      );
     }
+    const openPosition = position
+      ? buildOpenPositionSnapshot(position, last.close, commission)
+      : null;
+    const finalEquity = roundBacktestMoney(equity + (openPosition?.unrealizedPnl ?? 0));
+    if (equityCurve.length === 0 || equityCurve[equityCurve.length - 1].timestamp !== last.timestamp) {
+      equityCurve.push({ timestamp: last.timestamp, equity: finalEquity, price: last.close });
+    } else {
+      equityCurve[equityCurve.length - 1] = {
+        timestamp: last.timestamp,
+        equity: finalEquity,
+        price: last.close,
+      };
+    }
+    const accounting = buildAccountingSnapshot({
+      initialCapital: request.initialCapital,
+      trades,
+      unrealizedPnl: openPosition?.unrealizedPnl ?? 0,
+      finalEquity,
+      openPositionCount: openPosition ? 1 : 0,
+      syntheticForceCloseCount: trades.filter(
+        trade => trade.exitReason === V25_END_OF_DATA_EXIT_REASON,
+      ).length,
+      openPosition,
+    });
+    assertSingleEquityLedger(accounting, `${request.strategyKey} generic`);
 
     onProgress?.(95, "計算績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
@@ -1999,6 +2292,8 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment: envSnapshot,
+      endPositionPolicy,
+      accounting,
     };
   }
 
@@ -2098,6 +2393,9 @@ export class BacktestEngine {
     const trades: TradeRecord[] = [];
     const equityCurve: EquityPoint[] = [];
     let realizedPnl = 0;
+    const endPositionPolicy = resolveEndPositionPolicy(
+      request.endPositionPolicy ?? config.Backtest_End_Position_Policy,
+    );
     let position: OpenPosition | null = null;
     let maxProfitRate = 0; // 追蹤止盈用
 
@@ -2186,8 +2484,13 @@ export class BacktestEngine {
           const pnl = side === "long"
             ? (exitPrice - avgPrice) * position.totalSize
             : (avgPrice - exitPrice) * position.totalSize;
-          const pnlAfterFee = pnl - (exitPrice * position.totalSize * commission);
-          realizedPnl += pnlAfterFee;
+          const entryFees = position.layers.reduce(
+            (sum, layer) => sum + layer.price * layer.size * commission,
+            0,
+          );
+          const exitFee = exitPrice * position.totalSize * commission;
+          const pnlAfterFee = roundBacktestMoney(pnl - entryFees - exitFee);
+          realizedPnl = roundBacktestMoney(realizedPnl + pnlAfterFee);
 
           trades.push({
             id: trades.length + 1,
@@ -2197,7 +2500,7 @@ export class BacktestEngine {
             entryPrice: avgPrice,
             exitPrice,
             size: position.totalSize,
-            pnl: Math.round(pnlAfterFee * 100) / 100,
+            pnl: pnlAfterFee,
             pnlPct: Math.round((pnlAfterFee / request.initialCapital) * 10000) / 100,
             martinLayer: position.layers.length,
             exitReason,
@@ -2236,9 +2539,6 @@ export class BacktestEngine {
               const multiplier = getMultiplierForLayer(nextLayer);
               const addSize = (baseLotUsdt * leverage * multiplier) / price;
               const entryPrice = price * (1 + (side === "long" ? slippage : -slippage));
-              const fee = entryPrice * addSize * commission;
-              realizedPnl -= fee;
-
               position.layers.push({ price: entryPrice, size: addSize, time });
               const totalCost = position.layers.reduce((s, l) => s + l.price * l.size, 0);
               position.totalSize = position.layers.reduce((s, l) => s + l.size, 0);
@@ -2270,9 +2570,6 @@ export class BacktestEngine {
             const side: "long" | "short" = cross === 1 ? "long" : "short";
             const entryPrice = price * (1 + (side === "long" ? slippage : -slippage));
             const size = (baseLotUsdt * leverage) / entryPrice;
-            const fee = entryPrice * size * commission;
-            realizedPnl -= fee;
-
             position = {
               side,
               layers: [{ price: entryPrice, size, time }],
@@ -2290,7 +2587,7 @@ export class BacktestEngine {
 
       // 權益曲線
       const equity = position
-        ? equityWithUnrealized(request.initialCapital + realizedPnl, position, price)
+        ? equityWithUnrealized(request.initialCapital + realizedPnl, position, price, commission)
         : request.initialCapital + realizedPnl;
       if (i % 5 === 0 || i === candles.length - 1) {
         equityCurve.push({ timestamp: time, equity: Math.round(equity * 100) / 100, price });
@@ -2303,29 +2600,68 @@ export class BacktestEngine {
       }
     }
 
-    // 強制平倉未平持倉
-    if (position) {
-      const lastPrice = closes[closes.length - 1];
+    const lastCandle = candles[candles.length - 1];
+    if (position && endPositionPolicy === "force_close") {
       const side = position.side;
-      const pnl = side === "long"
-        ? (lastPrice - position.avgPrice) * position.totalSize
-        : (position.avgPrice - lastPrice) * position.totalSize;
-      const fee = lastPrice * position.totalSize * commission;
-      realizedPnl += pnl - fee;
+      const effectiveExitPrice = side === "long"
+        ? lastCandle.close * (1 - slippage)
+        : lastCandle.close * (1 + slippage);
+      const grossPnl = side === "long"
+        ? (effectiveExitPrice - position.avgPrice) * position.totalSize
+        : (position.avgPrice - effectiveExitPrice) * position.totalSize;
+      const entryFees = position.layers.reduce(
+        (sum, layer) => sum + layer.price * layer.size * commission,
+        0,
+      );
+      const exitFee = effectiveExitPrice * position.totalSize * commission;
+      const pnlAfterFee = roundBacktestMoney(grossPnl - entryFees - exitFee);
+      realizedPnl = roundBacktestMoney(realizedPnl + pnlAfterFee);
       trades.push({
         id: trades.length + 1,
         entryTime: position.entryTime,
-        exitTime: candles[candles.length - 1].timestamp,
+        exitTime: lastCandle.timestamp,
         side,
         entryPrice: position.avgPrice,
-        exitPrice: lastPrice,
+        exitPrice: effectiveExitPrice,
         size: position.totalSize,
-        pnl: Math.round((pnl - fee) * 100) / 100,
-        pnlPct: Math.round(((pnl - fee) / request.initialCapital) * 10000) / 100,
+        pnl: pnlAfterFee,
+        pnlPct: Math.round((pnlAfterFee / request.initialCapital) * 10000) / 100,
         martinLayer: position.layers.length,
-        exitReason: "回測結束強制平倉",
+        exitReason: V25_END_OF_DATA_EXIT_REASON,
       });
+      position = null;
     }
+    const openPosition = position
+      ? buildOpenPositionSnapshot(position, lastCandle.close, commission)
+      : null;
+    const finalEquity = roundBacktestMoney(
+      request.initialCapital + realizedPnl + (openPosition?.unrealizedPnl ?? 0),
+    );
+    if (equityCurve.length === 0 || equityCurve[equityCurve.length - 1].timestamp !== lastCandle.timestamp) {
+      equityCurve.push({
+        timestamp: lastCandle.timestamp,
+        equity: finalEquity,
+        price: lastCandle.close,
+      });
+    } else {
+      equityCurve[equityCurve.length - 1] = {
+        timestamp: lastCandle.timestamp,
+        equity: finalEquity,
+        price: lastCandle.close,
+      };
+    }
+    const accounting = buildAccountingSnapshot({
+      initialCapital: request.initialCapital,
+      trades,
+      unrealizedPnl: openPosition?.unrealizedPnl ?? 0,
+      finalEquity,
+      openPositionCount: openPosition ? 1 : 0,
+      syntheticForceCloseCount: trades.filter(
+        trade => trade.exitReason === V25_END_OF_DATA_EXIT_REASON,
+      ).length,
+      openPosition,
+    });
+    assertSingleEquityLedger(accounting, `${request.strategyKey} V7`);
 
     // 績效計算
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
@@ -2373,164 +2709,9 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment: envSnapshot,
+      endPositionPolicy,
+      accounting,
     };
-  }
-
-  /**
-   * 七彩虹線專用連續分片回測。
-   *
-   * 七天邊界只限制單次資料載入量；資金、持倉、馬丁層級、M30 聚合桶、
-   * 指標暖機、交易與權益曲線全部由同一 session 延續。只有全域最後一片
-   * 可以套用 Backtest_End_Position_Policy 並持久化結果。
-   */
-  private async runRainbowTrendLadderSegmentedBacktest(
-    request: BacktestRequest,
-    onProgress?: (pct: number, message: string) => void,
-  ): Promise<BacktestResult> {
-    const canonicalRequest: BacktestRequest = { ...request, timeframe: "30m" };
-    const startMs = toMs(request.startDate);
-    const endMs = toMs(request.endDate);
-    const segmentMs = 7 * 24 * 60 * 60 * 1000;
-    const segmentCount = Math.ceil((endMs - startMs + 1) / segmentMs);
-    const strategy = getStrategy(request.strategyKey);
-    if (!(strategy instanceof StrategyRainbowTrendLadder)) {
-      throw new Error("七彩虹線階梯連續分片回測引擎類型不一致");
-    }
-
-    const config: Record<string, unknown> = {
-      ...strategy.defaultConfig,
-      ...request.config,
-    };
-    const commission = request.commission ?? 0.0004;
-    const slippage = request.slippage ?? 0.0001;
-    let session: RainbowTrendLadderBacktestSession | undefined;
-    let finalResult: RainbowTrendLadderBacktestRunResult | undefined;
-
-    onProgress?.(5, `開始七彩虹線連續分片回測：共 ${segmentCount} 片；分片邊界不結算持倉`);
-
-    for (let index = 0; index < segmentCount; index += 1) {
-      const segmentStart = startMs + index * segmentMs;
-      // 減 1ms 避免前後資料片在邊界重複同一根 K 線。
-      const segmentEnd = Math.min(startMs + (index + 1) * segmentMs - 1, endMs);
-      const isFinalSegment = index === segmentCount - 1;
-      onProgress?.(
-        5 + (index / segmentCount) * 90,
-        `載入第 ${index + 1}/${segmentCount} 片資料（持倉與馬丁狀態連續）...`,
-      );
-
-      const candles = await ensureOHLCVData(
-        canonicalRequest.symbol,
-        canonicalRequest.timeframe,
-        segmentStart,
-        segmentEnd,
-        request.exchange ?? "okx",
-      );
-      if (candles.length === 0) {
-        throw new Error(`第 ${index + 1}/${segmentCount} 片沒有歷史 K 線，不能保證連續回測準確性`);
-      }
-
-      finalResult = runRainbowTrendLadderBacktest(
-        canonicalRequest,
-        strategy,
-        config,
-        candles,
-        segmentStart,
-        segmentEnd,
-        commission,
-        slippage,
-        (pct, message) => {
-          const overall = 5 + ((index + Math.max(0, Math.min(100, pct)) / 100) / segmentCount) * 90;
-          onProgress?.(Math.min(95, overall), `第 ${index + 1}/${segmentCount} 片：${message}`);
-        },
-        { session, finalize: isFinalSegment },
-      );
-      session = finalResult.session;
-    }
-
-    if (!finalResult) throw new Error("七彩虹線連續分片回測未產生結果");
-    onProgress?.(100, finalResult.summary);
-    return finalResult;
-  }
-
-  /**
-   * 舊版獨立分段聚合器：保留給尚未完成 session 化的其他策略。
-   */
-  private async runSegmentedBacktest(
-    request: BacktestRequest,
-    onProgress?: (pct: number, message: string) => void,
-  ): Promise<BacktestResult> {
-    const startMs = toMs(request.startDate);
-    const endMs = toMs(request.endDate);
-    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
-    
-    const totalSpanMs = endMs - startMs;
-    const segmentCount = Math.ceil(totalSpanMs / sevenDaysMs);
-    
-    onProgress?.(5, `開始分段回測：共 ${segmentCount} 段，每段 7 天...`);
-    
-    const allTrades: TradeRecord[] = [];
-    let currentEquity = request.initialCapital;
-    const allEquityPoints: EquityPoint[] = [];
-    
-    for (let i = 0; i < segmentCount; i++) {
-      const segmentStart = startMs + i * sevenDaysMs;
-      const segmentEnd = Math.min(segmentStart + sevenDaysMs, endMs);
-      
-      onProgress?.(5 + (i / segmentCount) * 90, `執行第 ${i + 1}/${segmentCount} 段回測...`);
-      
-      const segmentRequest: BacktestRequest = {
-        ...request,
-        startDate: segmentStart < 1e12 ? segmentStart / 1000 : segmentStart,
-        endDate: segmentEnd < 1e12 ? segmentEnd / 1000 : segmentEnd,
-        initialCapital: currentEquity,
-      };
-      
-      try {
-        const result = await this.runBacktest(segmentRequest, (pct, msg) => {
-          const segmentProgress = 5 + (i / segmentCount) * 90 + (pct / 100) * (90 / segmentCount);
-          onProgress?.(segmentProgress, `第 ${i + 1}/${segmentCount} 段：${msg}`);
-        });
-        
-        allTrades.push(...result.trades);
-        allEquityPoints.push(...result.equityCurve);
-        currentEquity = result.metrics.totalReturnUSDT + request.initialCapital;
-      } catch (e) {
-        throw new Error(`第 ${i + 1}/${segmentCount} 段回測失敗：${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
-    
-    const metrics = calculatePerformance(allTrades, allEquityPoints, request.initialCapital);
-    onProgress?.(95, "聚合結果中...");
-    
-    const strategy = getStrategy(request.strategyKey);
-    const runId = makeRunId(request.strategyKey, request.symbol);
-    const result: BacktestResult = {
-      runId,
-      strategyKey: request.strategyKey,
-      strategyName: strategy?.name ?? request.strategyKey,
-      trades: allTrades,
-      metrics,
-      equityCurve: downsample(allEquityPoints, 500),
-      config: request.config,
-      summary: `分段回測完成：${segmentCount} 段，共 ${allTrades.length} 筆交易，最終收益 ${metrics.totalReturn.toFixed(2)}%`,
-      candleCount: allEquityPoints.length,
-      environment: {
-        engineVersion: "5.7",
-        dataHash: `segmented_${segmentCount}`,
-        leverage: 1,
-        commission: request.commission ?? 0.0004,
-        slippage: request.slippage ?? 0.0001,
-        symbol: request.symbol,
-        timeframe: request.timeframe,
-        startDate: startMs,
-        endDate: endMs,
-        candleCount: allEquityPoints.length,
-        initialCapital: request.initialCapital,
-      },
-    };
-    
-    onProgress?.(100, "分段回測完成");
-    return result;
   }
 }
 
@@ -2581,12 +2762,21 @@ function calculateATRSeries(candles: OHLCVRow[], period: number): (number | null
 }
 
 /** 含未實現盈虧的權益 */
-function equityWithUnrealized(realized: number, p: OpenPosition, price: number): number {
-  const unrealized =
+function equityWithUnrealized(
+  realized: number,
+  p: OpenPosition,
+  price: number,
+  commission = 0,
+): number {
+  const unrealizedGross =
     p.side === "long"
       ? (price - p.avgPrice) * p.totalSize
       : (p.avgPrice - price) * p.totalSize;
-  return Math.round((realized + unrealized) * 100) / 100;
+  const entryFees = p.layers.reduce(
+    (sum, layer) => sum + layer.price * layer.size * commission,
+    0,
+  );
+  return roundBacktestMoney(realized + unrealizedGross - entryFees);
 }
 
 /** 權益曲線降採樣（保留首尾） */
