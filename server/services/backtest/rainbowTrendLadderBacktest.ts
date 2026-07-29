@@ -298,6 +298,7 @@ export function runRainbowTrendLadderBacktest(
     35,
     `數據就緒（${candles.length} 根 ${request.timeframe}），啟動七彩虹線階梯 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
   );
+  console.log(`[RainbowBacktest] Starting backtest for ${request.strategyKey} from ${new Date(startMs).toISOString()} to ${new Date(endMs).toISOString()} with ${candles.length} candles.`);
   const first = candles[0];
   if (!first) throw new Error("七彩虹線回測沒有可處理的 K 線");
   if (equityCurve.length === 0) {
@@ -307,6 +308,9 @@ export function runRainbowTrendLadderBacktest(
 
   for (let index = 0; index < candles.length; index += 1) {
     const candle = candles[index];
+    if (index > 0 && index % 100 === 0) {
+      console.log(`[RainbowBacktest] Progress: ${((index / candles.length) * 100).toFixed(2)}%, Candle: ${new Date(candle.timestamp).toISOString()}, Layer: ${state.currentLayer}, TotalSize: ${state.totalSize}, Equity: ${equity}`);
+    }
     updateEntryAggregation(candle);
     const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
     const closedManagementCandle = latestEntryBarClosed ? closedEntryCandles.at(-1) ?? null : null;

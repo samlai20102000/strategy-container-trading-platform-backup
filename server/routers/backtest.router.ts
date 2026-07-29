@@ -24,8 +24,8 @@ import { parameterSnapshots, strategies } from "../../drizzle/schema";
 import { eq, desc, and } from "drizzle-orm";
 import { attachSnapshotConfig } from "../services/strategySnapshotConfig";
 import {
-  createDeploymentPosition,
   deploymentPositionColumns,
+  finalizeDeploymentPosition,
 } from "../services/deploymentPosition";
 import {
   assertValidV25Config,
@@ -694,10 +694,10 @@ export const backtestRouter = router({
         snapshot.backtestSettings && typeof snapshot.backtestSettings === "object"
           ? (snapshot.backtestSettings as Record<string, unknown>)
           : {};
-      const deploymentPosition = createDeploymentPosition(
-        ladderConfig?.Base_Lot_Size.value ?? input.positionSize,
-        ladderConfig?.Base_Lot_Size.mode ?? input.positionMode,
-      );
+      const deploymentPosition = finalizeDeploymentPosition({
+        positionSize: input.positionSize,
+        positionMode: input.positionMode,
+      });
 
       // 生成 webhookSecret
       const { generateWebhookSecret } = await import('../lib/crypto');

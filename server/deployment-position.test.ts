@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDeploymentPosition,
   deploymentPositionColumns,
+  finalizeDeploymentPosition,
   resolveDeploymentPosition,
   withNumericDeploymentBaseLot,
   withObjectDeploymentBaseLot,
@@ -58,6 +59,50 @@ describe("實盤部署倉位契約", () => {
     });
   });
 
+  describe("finalizeDeploymentPosition", () => {
+    it("使用者最終提交 500 USDT 時必須覆蓋既有或快照預填的 100 USDT", () => {
+      expect(finalizeDeploymentPosition({
+        positionSize: 500,
+        positionMode: "usdt",
+      }, {
+        value: 100,
+        mode: "usdt",
+      })).toEqual({ value: 500, mode: "usdt" });
+    });
+
+    it("編輯策略只改倉位數值時沿用既有單位，不回讀策略專用配置", () => {
+      expect(finalizeDeploymentPosition({ positionSize: "500" }, {
+        value: 0.001,
+        mode: "quantity",
+      })).toEqual({ value: 500, mode: "quantity" });
+    });
+
+    it.each([
+      "RAINBOW_TREND_LADDER_V1",
+      "strategy_20415",
+      "20415_KAMA_MARTIN_V35",
+      "KAMA_3K_ULTIMATE_V50",
+      "KAMA_3K_HF_V61",
+      "KAMA_3K_TORNADO_V70",
+      "FUTURE_ENGINE_V99",
+    ])("策略 %s 均使用同一最終部署倉位契約", strategyKey => {
+      const finalPosition = finalizeDeploymentPosition({
+        positionSize: "500",
+        positionMode: "usdt",
+      }, {
+        value: 100,
+        mode: "usdt",
+      });
+
+      expect({ strategyKey, ...deploymentPositionColumns(finalPosition) }).toEqual({
+        strategyKey,
+        positionSize: "500",
+        positionMode: "usdt",
+        positionSizeObject: { value: 500, mode: "usdt" },
+      });
+    });
+  });
+
   it("持久化時同步 positionSize、positionMode 與 positionSizeObject", () => {
     expect(deploymentPositionColumns({ value: 35, mode: "usdt" })).toEqual({
       positionSize: "35",
@@ -89,6 +134,30 @@ describe("實盤部署倉位契約", () => {
       Position_Mode: "usdt",
       Position_Value: 100,
       Keep_Logic: true,
+    });
+  });
+
+  it("七彩虹快照底倉 100 USDT 不得覆蓋使用者最終部署 500 USDT", () => {
+    const rainbowSnapshot = {
+      Base_Lot_Size: 100,
+      Position_Mode: "usdt",
+      Position_Value: 100,
+      Lines: [{ period: 15 }, { period: 30 }, { period: 60 }],
+    };
+    const effective = withNumericDeploymentBaseLot(rainbowSnapshot, {
+      value: 500,
+      mode: "usdt",
+    });
+
+    expect(effective).toMatchObject({
+      Base_Lot_Size: 500,
+      Position_Mode: "usdt",
+      Position_Value: 500,
+    });
+    expect(rainbowSnapshot).toMatchObject({
+      Base_Lot_Size: 100,
+      Position_Mode: "usdt",
+      Position_Value: 100,
     });
   });
 

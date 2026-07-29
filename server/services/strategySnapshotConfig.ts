@@ -67,7 +67,9 @@ export function toLegacyCompatibleConfig(
  * 快照部署的不變條件：
  * 1. __snapshotConfig 完整保存快照原始配置，供所有未來策略使用；
  * 2. __snapshotMeta 保存不可由前端覆蓋的原 strategyKey；
- * 3. 已知舊引擎同步寫入版本化欄位，維持向後相容。
+ * 3. 已知舊引擎同步寫入版本化欄位，維持向後相容；
+ * 4. 此函式只更新 martinState，快照中的 Base_Lot_Size 永遠不得投影到
+ *    strategies.positionSize／positionMode；執行期由部署倉位契約覆寫。
  */
 export function attachSnapshotConfig(
   currentState: Record<string, unknown> | null | undefined,

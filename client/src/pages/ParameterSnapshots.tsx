@@ -66,6 +66,10 @@ export default function ParameterSnapshots() {
     leverage: "1",
     direction: "both" as "long" | "short" | "both",
   });
+  const [importSnapshotPosition, setImportSnapshotPosition] = useState<{
+    value: string;
+    mode: "usdt" | "quantity";
+  } | null>(null);
 
   // 查詢 - V4.2: 使用 registry 統一數據源
   const snapshotsQuery = trpc.backtest.getSnapshots.useQuery({
@@ -332,12 +336,30 @@ export default function ParameterSnapshots() {
                         const rainbowLadderConfig = s.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
                           ? normalizeRainbowTrendLadderConfig(cfg)
                           : null;
+                        const snapshotPositionValue = String(
+                          bs?.baseLotSize
+                            ?? bs?.tradeAmount
+                            ?? rainbowConfig?.Base_Lot_Size.value
+                            ?? rainbowLadderConfig?.Base_Lot_Size.value
+                            ?? cfg.Base_Lot_Size
+                            ?? 30,
+                        );
+                        const rawSnapshotPositionMode = rainbowConfig?.Base_Lot_Size.mode
+                          ?? rainbowLadderConfig?.Base_Lot_Size.mode
+                          ?? "usdt";
+                        const snapshotPositionMode: "usdt" | "quantity" = rawSnapshotPositionMode === "quantity"
+                          ? "quantity"
+                          : "usdt";
+                        setImportSnapshotPosition({
+                          value: snapshotPositionValue,
+                          mode: snapshotPositionMode,
+                        });
                         setImportForm(prev => ({
                           ...prev,
                           name: `${s.snapshotName || '快照'}_副本`,
                           symbol: (bs?.symbol || cfg.symbol || cfg.Symbol || prev.symbol).replace(/-/g, '').toUpperCase(),
-                          positionSize: String(bs?.baseLotSize ?? bs?.tradeAmount ?? rainbowConfig?.Base_Lot_Size.value ?? rainbowLadderConfig?.Base_Lot_Size.value ?? cfg.Base_Lot_Size ?? prev.positionSize),
-                          positionMode: rainbowConfig?.Base_Lot_Size.mode ?? rainbowLadderConfig?.Base_Lot_Size.mode ?? prev.positionMode,
+                          positionSize: snapshotPositionValue,
+                          positionMode: snapshotPositionMode,
                           leverage: String(cfg.leverage || prev.leverage),
                         }));
                         setImportDialogOpen(true);
@@ -434,7 +456,7 @@ export default function ParameterSnapshots() {
             <DialogHeader>
               <DialogTitle>複製為副本</DialogTitle>
               <DialogDescription>
-                以此快照參數建立一個全新的策略實例，請填寫基本信息。
+                快照只提供策略邏輯與倉位預填；建立前可獨立指定最終實盤部署倉位。
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -471,7 +493,7 @@ export default function ParameterSnapshots() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>倉位大小 ({importForm.positionMode === 'usdt' ? 'USDT' : '數量'})</Label>
+                  <Label>最終實盤部署倉位 ({importForm.positionMode === 'usdt' ? 'USDT' : '數量'})</Label>
                   <Input
                     type="number"
                     value={importForm.positionSize}
@@ -479,6 +501,25 @@ export default function ParameterSnapshots() {
                   />
                 </div>
               </div>
+              {importSnapshotPosition && (
+                <div className="rounded-md border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-xs leading-relaxed">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-cyan-100">
+                    <span className="font-medium">快照原始倉位</span>
+                    <span className="font-mono">
+                      {importSnapshotPosition.value} {importSnapshotPosition.mode === "usdt" ? "USDT" : "數量"}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-emerald-200">
+                    <span className="font-medium">建立後最終生效</span>
+                    <span className="font-mono font-semibold">
+                      {importForm.positionSize || "—"} {importForm.positionMode === "usdt" ? "USDT" : "數量"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    最終值會寫入策略頂層部署契約；快照、回測參數與策略專用 Base_Lot_Size 均不得覆蓋。
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-2">
                   <Label>倉位模式</Label>

@@ -5,6 +5,11 @@ export interface DeploymentPosition {
   mode: DeploymentPositionMode;
 }
 
+export interface FinalDeploymentPositionInput {
+  positionSize?: unknown;
+  positionMode?: unknown;
+}
+
 interface StoredPositionSource {
   positionSize?: unknown;
   positionMode?: unknown;
@@ -46,6 +51,23 @@ export function createDeploymentPosition(
     throw new Error("實盤倉位單位必須為 quantity 或 usdt");
   }
   return { value: normalizedValue, mode: normalizedMode };
+}
+
+/**
+ * 全系統唯一的實盤部署倉位決策點。
+ *
+ * 優先序固定為：本次使用者提交值 > 既有頂層部署值。此函式刻意不接受
+ * strategy config／snapshot config，避免 Base_Lot_Size 再次反向覆蓋實盤設定。
+ * 新增策略必須完整提交 value + mode；編輯策略可逐欄沿用 current。
+ */
+export function finalizeDeploymentPosition(
+  input: FinalDeploymentPositionInput,
+  current?: DeploymentPosition,
+): DeploymentPosition {
+  return createDeploymentPosition(
+    input.positionSize ?? current?.value,
+    input.positionMode ?? current?.mode,
+  );
 }
 
 /**

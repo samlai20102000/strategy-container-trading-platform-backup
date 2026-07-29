@@ -7,7 +7,12 @@ import {
   pickStrategyConfigState,
   resolveSnapshotPositionMode,
 } from "./strategySnapshotConfig";
-import { withObjectDeploymentBaseLot } from "./deploymentPosition";
+import {
+  deploymentPositionColumns,
+  finalizeDeploymentPosition,
+  withNumericDeploymentBaseLot,
+  withObjectDeploymentBaseLot,
+} from "./deploymentPosition";
 
 describe("通用快照部署契約", () => {
   it("未知未來策略應完整保存原始配置，而不錯誤回退到 V3.5", () => {
@@ -106,5 +111,44 @@ describe("通用快照部署契約", () => {
       .toEqual({ value: 35, mode: "usdt" });
     expect(effectiveConfig.Base_Lot_Size).toEqual({ value: 0.001, mode: "quantity" });
     expect(rawConfig.Base_Lot_Size).toEqual({ value: 35, mode: "usdt" });
+  });
+
+  it.each([
+    "RAINBOW_TREND_LADDER_V1",
+    "FUTURE_ENGINE_V99",
+  ])("%s 的快照 100 USDT 只作策略配置，最終部署 500 USDT 獨立持久化", strategyKey => {
+    const rawSnapshotConfig = {
+      Base_Lot_Size: 100,
+      Position_Mode: "usdt",
+      Position_Value: 100,
+      Keep_Future_Logic: true,
+    };
+    const state = attachSnapshotConfig({}, strategyKey, rawSnapshotConfig);
+    const finalPosition = finalizeDeploymentPosition({
+      positionSize: 500,
+      positionMode: "usdt",
+    }, {
+      value: 100,
+      mode: "usdt",
+    });
+    const effectiveConfig = withNumericDeploymentBaseLot(rawSnapshotConfig, finalPosition);
+
+    expect(deploymentPositionColumns(finalPosition)).toEqual({
+      positionSize: "500",
+      positionMode: "usdt",
+      positionSizeObject: { value: 500, mode: "usdt" },
+    });
+    expect(effectiveConfig).toMatchObject({
+      Base_Lot_Size: 500,
+      Position_Mode: "usdt",
+      Position_Value: 500,
+      Keep_Future_Logic: true,
+    });
+    expect(state[SNAPSHOT_CONFIG_STATE_KEY]).toEqual(rawSnapshotConfig);
+    expect(rawSnapshotConfig).toMatchObject({
+      Base_Lot_Size: 100,
+      Position_Mode: "usdt",
+      Position_Value: 100,
+    });
   });
 });

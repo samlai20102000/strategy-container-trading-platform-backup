@@ -40,8 +40,8 @@ import {
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../shared/strategies/rainbowTrendLadder";
 import {
-  createDeploymentPosition,
   deploymentPositionColumns,
+  finalizeDeploymentPosition,
   resolveDeploymentPosition,
 } from "./services/deploymentPosition";
 import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
@@ -565,10 +565,10 @@ const strategiesRouter = router({
       const firstRainbowTrendAddLayer = rainbowTrendLadderConfig?.Martin_Layers.find(
         (layer) => layer.enabled && layer.layer > 1,
       );
-      const deploymentPosition = createDeploymentPosition(
-        rainbowTrendLadderConfig?.Base_Lot_Size.value ?? input.positionSize,
-        rainbowTrendLadderConfig?.Base_Lot_Size.mode ?? input.positionMode,
-      );
+      const deploymentPosition = finalizeDeploymentPosition({
+        positionSize: input.positionSize,
+        positionMode: input.positionMode,
+      });
       const resolvedPositionSize = deploymentPosition.value;
       const webhookSecret = generateWebhookSecret();
       const insertResult: any = await db.createStrategy({
@@ -651,10 +651,10 @@ const strategiesRouter = router({
           value: 1,
           mode: "quantity",
         });
-        const deploymentPosition = createDeploymentPosition(
-          input.positionSize ?? currentDeploymentPosition.value,
-          input.positionMode ?? currentDeploymentPosition.mode,
-        );
+        const deploymentPosition = finalizeDeploymentPosition({
+          positionSize: input.positionSize,
+          positionMode: input.positionMode,
+        }, currentDeploymentPosition);
         Object.assign(data, deploymentPositionColumns(deploymentPosition));
       }
       if (input.leverage !== undefined) data.leverage = input.leverage;
@@ -772,13 +772,6 @@ const strategiesRouter = router({
         data.martinSpacingPct = String(firstAddLayer?.triggerSpacingPct ?? 0);
         data.kLinePeriod = rainbowTrendLadderConfig.Entry_Timeframe_Minutes;
         data.reentryEnabled = rainbowTrendLadderConfig.Reentry_Wait_Next_M30_Close;
-        Object.assign(
-          data,
-          deploymentPositionColumns(createDeploymentPosition(
-            rainbowTrendLadderConfig.Base_Lot_Size.value,
-            rainbowTrendLadderConfig.Base_Lot_Size.mode,
-          )),
-        );
       }
       // V6.1：更新 __v61Config（KAMA 3K 高頻掃射極致版）
       if (input.v61Config !== undefined) {

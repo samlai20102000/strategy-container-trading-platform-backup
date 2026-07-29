@@ -983,7 +983,7 @@ function StrategiesContent() {
 
                     <div className="grid grid-cols-4 gap-2 text-sm">
                       <div>
-                        <p className="text-xs text-muted-foreground">倉位</p>
+                        <p className="text-xs text-muted-foreground">最終部署倉位</p>
                         <p className="font-mono-nums">
                           {s.positionSize}{" "}
                           <span className="text-[11px] text-muted-foreground">
@@ -1691,9 +1691,9 @@ function StrategiesContent() {
               )}
               <div className="space-y-1.5 col-span-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <Label>實盤部署倉位</Label>
+                  <Label>最終實盤部署倉位</Label>
                   <Badge variant="outline" className="border-emerald-500/35 bg-emerald-500/8 text-emerald-300">
-                    可獨立覆寫
+                    使用者覆寫優先
                   </Badge>
                 </div>
                 <div className="flex gap-2">
@@ -1747,13 +1747,13 @@ function StrategiesContent() {
                       </span>
                     </div>
                     <p className="mt-1 text-muted-foreground">
-                      上方是本次實盤部署覆寫值；修改數值或單位不會改寫快照、回測報告或策略引擎配置。
+                      上方是本次最終實盤部署值；保存後策略卡、Webhook 與自動執行器都只讀取此值。修改數值或單位不會改寫快照、回測報告或策略引擎配置。
                     </p>
                   </div>
                 )}
                 {!snapshotImportSource && (
                   <p className="text-xs text-muted-foreground">
-                    此欄位只控制真正送往交易所的委託倉位；策略專用配置與回測參數會分開保存。
+                    此欄位是所有現有與未來策略的最終部署覆寫來源；策略專用配置與回測參數會分開保存，不得反向覆蓋。
                   </p>
                 )}
               </div>

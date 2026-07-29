@@ -324,6 +324,25 @@ describe("StrategyKama3kV35 五層驗證", () => {
     expect(decision.lotSize).toBeCloseTo(0.0006, 4); // 30 USDT / 50000 = 0.0006 BTC
   });
 
+  it("generateActionsV35：最終部署 500 USDT 會轉成實際委託數量", async () => {
+    const state = createInitialStrategyState();
+    const deploymentConfig = {
+      ...strategy.defaultConfig,
+      Base_Lot_Size: 500,
+      Position_Mode: "usdt",
+      Position_Value: 500,
+    };
+    const decision = await strategy.generateActionsV35(
+      { action: "BUY", symbol: "BTCUSDT", price: 50000 },
+      { ...instance, config: deploymentConfig, state },
+      { lastPrice: 50000 },
+      state,
+    );
+
+    expect(decision.action).toBe("OPEN_LONG");
+    expect(decision.lotSize).toBeCloseTo(0.01, 8);
+  });
+
   it("generateActionsV35：CLOSE 信號有持倉時返回 CLOSE_ALL", async () => {
     const state = {
       ...createInitialStrategyState(),

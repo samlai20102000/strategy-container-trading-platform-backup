@@ -125,7 +125,7 @@ export const RAINBOW_TREND_LADDER_DEFAULT_CONFIG: Readonly<RainbowTrendLadderCon
     ...layer,
     lotValue: layer.layer * 100, // 預設層級的 lotValue 根據 Base_Lot_Size 預設值計算
   })),
-  Max_Layers: 9, // 方案 A2 預設值；執行時永遠讀取使用者保存的 Max_Layers
+  Max_Layers: 9, // 預設執行至 L9；20 層表只供使用者明確調高上限時使用
   Max_Hold_Hours: 72, // V4.2: 預設最大持倉時間 72 小時（0 表示無限）
   Trailing_Activation_Pct: 1.1,
   Trailing_Callback_Pct: 0.1,

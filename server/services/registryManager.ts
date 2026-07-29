@@ -297,9 +297,6 @@ export class RegistryManager {
         snapshotName: snapshot.snapshotName,
       }),
       ...(v25Config ? {
-        positionSize: String(v25Config.Base_Lot_Size),
-        positionMode: "usdt" as const,
-        positionSizeObject: { value: v25Config.Base_Lot_Size, mode: "usdt" as const },
         stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
         takeProfitPct: String(v25Config.Take_Profit_Pct),
         martinMultiplier: String(firstV25Range?.multiplier ?? 1),
