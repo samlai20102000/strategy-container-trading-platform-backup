@@ -1,4 +1,4 @@
-import type { OrderResult } from "../exchanges/types";
+import type { ExchangeTruthSource, OrderResult, SettlementStatus } from "../exchanges/types";
 
 export type TradeFillSource = "exchange_fill" | "order_request" | "legacy_unknown";
 
@@ -9,9 +9,26 @@ export interface ResolvedTradeFill {
   sizeSource: TradeFillSource;
 }
 
+export interface ResolvedExecutionTruth extends ResolvedTradeFill {
+  grossRealizedPnl?: number;
+  netRealizedPnl?: number;
+  fee?: number;
+  fundingFee?: number;
+  pnlSource: ExchangeTruthSource;
+  feeSource: ExchangeTruthSource;
+  settlementStatus: SettlementStatus;
+  tradeId?: string;
+  filledAt?: number;
+}
+
 function positiveFinite(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function finite(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /**
@@ -33,6 +50,38 @@ export function resolveTradeFill(
     size: exchangeSize ?? fallbackSize ?? 0,
     priceSource: exchangePrice ? "exchange_fill" : fallbackPrice ? "order_request" : "legacy_unknown",
     sizeSource: exchangeSize ? "exchange_fill" : fallbackSize ? "order_request" : "legacy_unknown",
+  };
+}
+
+/**
+ * 把 adapter 的跨交易所回應正規化為唯一交易真相契約。
+ * realizedPnl 保留為毛值；列表與報告應優先使用 netRealizedPnl。
+ */
+export function resolveExecutionTruth(
+  result: OrderResult,
+  requestedPrice?: number,
+  requestedSize?: number,
+): ResolvedExecutionTruth {
+  const fill = resolveTradeFill(result, requestedPrice, requestedSize);
+  const gross = finite(result.grossRealizedPnl ?? result.realizedPnl);
+  const fee = finite(result.fee);
+  const fundingFee = finite(result.fundingFee);
+  const explicitNet = finite(result.netRealizedPnl);
+  const net = explicitNet ?? (gross !== undefined
+    ? gross - (fee ?? 0) - (fundingFee ?? 0)
+    : undefined);
+
+  return {
+    ...fill,
+    grossRealizedPnl: gross,
+    netRealizedPnl: net,
+    fee,
+    fundingFee,
+    pnlSource: result.pnlSource ?? "unavailable",
+    feeSource: result.feeSource ?? "unavailable",
+    settlementStatus: result.settlementStatus ?? "not_applicable",
+    tradeId: result.tradeId,
+    filledAt: result.filledAt,
   };
 }
 

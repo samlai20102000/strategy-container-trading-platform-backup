@@ -1,7 +1,6 @@
 import type { Strategy } from "../../drizzle/schema";
 import {
   createSignal,
-  createTrade,
   disableStrategySystem,
   getApiKeyById,
   listEnabledStrategies,
@@ -11,6 +10,7 @@ import {
   updateStrategyMartinState,
   updateTrade,
 } from "../db";
+import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter } from "../exchanges/types";
 import type { MartinState, StrategyState } from "../strategies/base";

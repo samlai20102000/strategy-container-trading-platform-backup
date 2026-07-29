@@ -19,6 +19,15 @@ export interface OrderParams {
   posSide?: "long" | "short" | "net";
 }
 
+export type ExchangeTruthSource =
+  | "exchange_order"
+  | "exchange_closed_pnl"
+  | "calculated"
+  | "unavailable";
+
+export type SettlementStatus = "final" | "pending" | "not_applicable";
+export type FillQuality = "exact" | "partial" | "requested" | "unknown";
+
 export interface OrderResult {
   success: boolean;
   orderId?: string;
@@ -29,6 +38,29 @@ export interface OrderResult {
   filledPrice?: number;
   /** 實際成交數量（base 幣種單位，如 BTC） */
   filledSize?: number;
+  /** 交易所成交／交易識別碼（如可取得） */
+  tradeId?: string;
+  /** 交易所成交時間（Unix 毫秒） */
+  filledAt?: number;
+  /** 未扣交易費前的已實現盈虧（USDT） */
+  grossRealizedPnl?: number;
+  /** 相容欄位：已實現盈虧（USDT） */
+  realizedPnl?: number;
+  /** 扣除交易費與資金費後的淨已實現盈虧（USDT） */
+  netRealizedPnl?: number;
+  /** 交易費，統一為正數成本（USDT） */
+  fee?: number;
+  /** 資金費，正數代表成本、負數代表收入（USDT） */
+  fundingFee?: number;
+  /** PnL 與費用的權威來源 */
+  pnlSource?: ExchangeTruthSource;
+  feeSource?: ExchangeTruthSource;
+  /** 平倉 PnL 是否已完成交易所結算 */
+  settlementStatus?: SettlementStatus;
+  /** 成交價量完整性 */
+  fillQuality?: FillQuality;
+  /** 多方向／多持倉平倉時的逐筆權威結果 */
+  childResults?: OrderResult[];
 }
 
 export interface Balance {
@@ -98,4 +130,10 @@ export interface ExchangeAdapter {
 
   /** 查詢已實現盈虧記錄（用於統計） */
   getClosedPnl(symbol?: string, startTime?: number): Promise<{ symbol: string; pnl: number; time: number }[]>;
+
+  /**
+   * 只讀查詢指定訂單的成交與結算真相。
+   * 不會下單、撤單或改變持倉，供延遲盈虧對帳使用。
+   */
+  getOrderExecutionTruth(symbol: string, orderId: string, expectPnl?: boolean): Promise<Partial<OrderResult>>;
 }

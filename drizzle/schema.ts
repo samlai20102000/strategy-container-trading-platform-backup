@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   decimal,
+  index,
   int,
   json,
   mysqlEnum,
@@ -155,38 +156,50 @@ export type InsertStrategy = typeof strategies.$inferInsert;
 /**
  * Webhook 訊號日誌：記錄每筆 TradingView 訊號的原始內容、解析結果、下單狀態與交易所回應
  */
-export const signals = mysqlTable("signals", {
-  id: int("id").autoincrement().primaryKey(),
-  strategyId: int("strategyId"),
-  userId: int("userId"),
-  /** 原始 payload（JSON 字串） */
-  rawPayload: text("rawPayload").notNull(),
-  /** 解析後的動作：buy / sell / close */
-  parsedAction: varchar("parsedAction", { length: 20 }),
-  parsedSymbol: varchar("parsedSymbol", { length: 32 }),
-  parsedPrice: decimal("parsedPrice", { precision: 20, scale: 8 }),
-  /** 處理狀態 */
-  status: mysqlEnum("status", [
-    "received",
-    "executed",
-    "failed",
-    "rejected",
-    "skipped",
-  ])
-    .default("received")
-    .notNull(),
-  /** 錯誤或說明訊息 */
-  message: text("message"),
-  /** 交易所回傳原始訊息 */
-  exchangeResponse: text("exchangeResponse"),
-  /** 下單訂單 ID */
-  orderId: varchar("orderId", { length: 100 }),
-  /** 執行耗時 ms */
-  latencyMs: int("latencyMs"),
-  /** 信號來源：webhook / auto / manual */
-  source: mysqlEnum("source", ["webhook", "auto", "manual"]).default("webhook").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+export const signals = mysqlTable(
+  "signals",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    strategyId: int("strategyId"),
+    userId: int("userId"),
+    /** 全系統唯一執行識別；新交易由共用記錄服務生成，支援冪等重試 */
+    executionId: varchar("executionId", { length: 128 }).unique(),
+    /** 同一開倉至全部退出的交易循環；部分平倉共用同一 cycleId */
+    cycleId: varchar("cycleId", { length: 128 }),
+    /** 原始 payload（JSON 字串） */
+    rawPayload: text("rawPayload").notNull(),
+    /** 解析後的動作：buy / sell / close */
+    parsedAction: varchar("parsedAction", { length: 20 }),
+    parsedSymbol: varchar("parsedSymbol", { length: 32 }),
+    parsedPrice: decimal("parsedPrice", { precision: 20, scale: 8 }),
+    /** 處理狀態 */
+    status: mysqlEnum("status", [
+      "received",
+      "executed",
+      "failed",
+      "rejected",
+      "skipped",
+    ])
+      .default("received")
+      .notNull(),
+    /** 錯誤或說明訊息 */
+    message: text("message"),
+    /** 交易所回傳原始訊息 */
+    exchangeResponse: text("exchangeResponse"),
+    /** 下單訂單 ID */
+    orderId: varchar("orderId", { length: 100 }),
+    /** 執行耗時 ms */
+    latencyMs: int("latencyMs"),
+    /** 信號來源：webhook / auto / manual */
+    source: mysqlEnum("source", ["webhook", "auto", "manual"]).default("webhook").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("signals_strategy_created_idx").on(table.strategyId, table.createdAt),
+    index("signals_order_idx").on(table.orderId),
+    index("signals_cycle_idx").on(table.cycleId),
+  ]
+);
 
 export type Signal = typeof signals.$inferSelect;
 export type InsertSignal = typeof signals.$inferInsert;
@@ -194,39 +207,101 @@ export type InsertSignal = typeof signals.$inferInsert;
 /**
  * 交易執行記錄（用於績效統計）
  */
-export const trades = mysqlTable("trades", {
-  id: int("id").autoincrement().primaryKey(),
-  strategyId: int("strategyId").notNull(),
-  userId: int("userId").notNull(),
-  signalId: int("signalId"),
-  exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
-  symbol: varchar("symbol", { length: 32 }).notNull(),
-  side: mysqlEnum("side", ["buy", "sell"]).notNull(),
-  orderType: mysqlEnum("orderType", ["market", "limit"]).notNull(),
-  orderId: varchar("orderId", { length: 100 }),
-  size: decimal("size", { precision: 20, scale: 8 }).notNull(),
-  price: decimal("price", { precision: 20, scale: 8 }),
-  /** 價格真值來源：交易所實際成交／下單請求回退／歷史未知 */
-  priceSource: mysqlEnum("priceSource", ["exchange_fill", "order_request", "legacy_unknown"])
-    .default("legacy_unknown")
-    .notNull(),
-  /** 數量真值來源：交易所實際成交／下單請求回退／歷史未知 */
-  sizeSource: mysqlEnum("sizeSource", ["exchange_fill", "order_request", "legacy_unknown"])
-    .default("legacy_unknown")
-    .notNull(),
-  /** 是否為平倉單 */
-  reduceOnly: boolean("reduceOnly").default(false).notNull(),
-  /** 已實現盈虧（平倉時記錄） */
-  realizedPnl: decimal("realizedPnl", { precision: 20, scale: 8 }),
-  status: mysqlEnum("status", ["submitted", "filled", "failed", "cancelled"])
-    .default("submitted")
-    .notNull(),
-  /** 觸發來源：webhook / risk_stop_loss / risk_take_profit / risk_daily_loss / manual */
-  triggerSource: varchar("triggerSource", { length: 30 })
-    .default("webhook")
-    .notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+export const trades = mysqlTable(
+  "trades",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    strategyId: int("strategyId").notNull(),
+    userId: int("userId").notNull(),
+    signalId: int("signalId"),
+    /** 與 signal.executionId 一致；新成交必填且全表唯一 */
+    executionId: varchar("executionId", { length: 128 }).unique(),
+    /** 部分平倉與最終平倉共用同一交易循環 */
+    cycleId: varchar("cycleId", { length: 128 }),
+    exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
+    symbol: varchar("symbol", { length: 32 }).notNull(),
+    side: mysqlEnum("side", ["buy", "sell"]).notNull(),
+    orderType: mysqlEnum("orderType", ["market", "limit"]).notNull(),
+    orderId: varchar("orderId", { length: 100 }),
+    /** 交易所成交 ID；與 orderId 分開保存，便於一單多成交與對帳 */
+    exchangeTradeId: varchar("exchangeTradeId", { length: 128 }),
+    /** 下單時要求數量／價格；size／price 保留為最終採用成交真值 */
+    requestedSize: decimal("requestedSize", { precision: 20, scale: 8 }),
+    requestedPrice: decimal("requestedPrice", { precision: 20, scale: 8 }),
+    size: decimal("size", { precision: 20, scale: 8 }).notNull(),
+    price: decimal("price", { precision: 20, scale: 8 }),
+    /** 價格真值來源：交易所實際成交／下單請求回退／歷史未知 */
+    priceSource: mysqlEnum("priceSource", ["exchange_fill", "order_request", "legacy_unknown"])
+      .default("legacy_unknown")
+      .notNull(),
+    /** 數量真值來源：交易所實際成交／下單請求回退／歷史未知 */
+    sizeSource: mysqlEnum("sizeSource", ["exchange_fill", "order_request", "legacy_unknown"])
+      .default("legacy_unknown")
+      .notNull(),
+    /** 是否為平倉單 */
+    reduceOnly: boolean("reduceOnly").default(false).notNull(),
+    /** 已實現毛利、費用、資金費與淨利；realizedPnl 一律代表最終淨利 */
+    grossPnl: decimal("grossPnl", { precision: 20, scale: 8 }),
+    fee: decimal("fee", { precision: 20, scale: 8 }),
+    fundingFee: decimal("fundingFee", { precision: 20, scale: 8 }),
+    realizedPnl: decimal("realizedPnl", { precision: 20, scale: 8 }),
+    /** 舊資料庫已使用的淨利欄位；新寫入與 realizedPnl 同步，讀取時作相容後備 */
+    netRealizedPnl: decimal("netRealizedPnl", { precision: 20, scale: 8 }),
+    realizedPnlPct: decimal("realizedPnlPct", { precision: 12, scale: 6 }),
+    pnlCurrency: varchar("pnlCurrency", { length: 16 }),
+    /** PnL 真值來源與可稽核品質；禁止以自然語言訊息反推金額 */
+    pnlSource: mysqlEnum("pnlSource", [
+      "exchange",
+      "local_estimate",
+      "legacy",
+      "unavailable",
+      "exchange_settlement",
+      "fill_calculation",
+      "position_snapshot",
+      "legacy_time_match",
+      "legacy_existing",
+      "unknown",
+    ]).default("unknown").notNull(),
+    dataQuality: mysqlEnum("dataQuality", [
+      "exchange_confirmed",
+      "calculated",
+      "pending_reconciliation",
+      "legacy_time_matched",
+      "legacy_unresolved",
+      "not_applicable",
+    ]).default("legacy_unresolved").notNull(),
+    reconciliationStatus: mysqlEnum("reconciliationStatus", [
+      "not_required",
+      "pending",
+      "confirmed",
+      "failed",
+      "unresolved",
+    ]).default("not_required").notNull(),
+    reconciliationAttempts: int("reconciliationAttempts").default(0).notNull(),
+    lastReconciledAt: timestamp("lastReconciledAt"),
+    reconciliationError: text("reconciliationError"),
+    filledAt: timestamp("filledAt"),
+    status: mysqlEnum("status", ["submitted", "filled", "failed", "cancelled"])
+      .default("submitted")
+      .notNull(),
+    /** 觸發來源：webhook / risk_stop_loss / risk_take_profit / risk_daily_loss / manual */
+    triggerSource: varchar("triggerSource", { length: 30 })
+      .default("webhook")
+      .notNull(),
+    /** 交易當下的策略顯示名稱與穩定 key 快照，避免策略改名／刪除後報告失真 */
+    strategyName: varchar("strategyName", { length: 100 }),
+    strategyKey: varchar("strategyKey", { length: 100 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("trades_signal_idx").on(table.signalId),
+    index("trades_order_idx").on(table.orderId),
+    index("trades_strategy_created_idx").on(table.strategyId, table.createdAt),
+    index("trades_cycle_idx").on(table.cycleId),
+    index("trades_reconciliation_idx").on(table.reconciliationStatus, table.createdAt),
+  ]
+);
 
 export type Trade = typeof trades.$inferSelect;
 export type InsertTrade = typeof trades.$inferInsert;

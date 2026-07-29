@@ -15,11 +15,11 @@
 import {
   createRiskEvent,
   createSignal,
-  createTrade,
   disableStrategySystem,
   getApiKeyById,
   listEnabledStrategies,
 } from "../db";
+import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import type { Strategy } from "../../drizzle/schema";

@@ -127,6 +127,20 @@
       "when": 1785291392494,
       "tag": "0017_redundant_wrecker",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1785306062661,
+      "tag": "0018_minor_sheva_callister",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1785306254910,
+      "tag": "0019_robust_prism",
+      "breakpoints": true
     }
   ]
 }

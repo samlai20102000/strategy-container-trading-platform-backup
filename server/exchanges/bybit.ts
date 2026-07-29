@@ -225,10 +225,14 @@ export class BybitAdapter implements ExchangeAdapter {
           if (attempt > 0) {
             console.log(`${TAG} ✅ 重試第 ${attempt} 次成功！orderId=${data.result?.orderId}`);
           }
+          const fillTruth = data.result?.orderId
+            ? await this.queryOrderFillDetails(symbol, String(data.result.orderId), Boolean(params.reduceOnly))
+            : {};
           return {
             success: true,
             orderId: data.result?.orderId,
             rawResponse: JSON.stringify(data),
+            ...fillTruth,
           };
         }
 
@@ -258,6 +262,78 @@ export class BybitAdapter implements ExchangeAdapter {
       };
     } catch (e: any) {
       return { success: false, rawResponse: "{}", errorMessage: e.message };
+    }
+  }
+
+  async getOrderExecutionTruth(
+    symbol: string,
+    orderId: string,
+    expectPnl = true,
+  ): Promise<Partial<OrderResult>> {
+    return this.queryOrderFillDetails(this.normalizeSymbol(symbol), orderId, expectPnl);
+  }
+
+  private async queryOrderFillDetails(symbol: string, orderId: string, expectPnl: boolean): Promise<Partial<OrderResult>> {
+    const finite = (value: unknown): number | undefined => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    try {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const orderData = await this.request("GET", "/v5/order/realtime", {
+        category: "linear",
+        symbol,
+        orderId,
+      });
+      const detail = orderData.result?.list?.[0];
+      const avgPrice = finite(detail?.avgPrice);
+      const filledSize = finite(detail?.cumExecQty);
+      const orderFee = finite(detail?.cumExecFee);
+      const filledAt = finite(detail?.updatedTime ?? detail?.createdTime);
+
+      let closed: any;
+      if (expectPnl) {
+        const closedData = await this.request("GET", "/v5/position/closed-pnl", {
+          category: "linear",
+          symbol,
+          limit: 50,
+        });
+        closed = closedData.result?.list?.find(
+          (row: any) => String(row.orderId ?? row.closedPnlId ?? "") === orderId,
+        );
+      }
+
+      const closedNet = finite(closed?.closedPnl);
+      const openFee = finite(closed?.openFee);
+      const closeFee = finite(closed?.closeFee);
+      const fee = openFee !== undefined || closeFee !== undefined
+        ? Math.abs(openFee ?? 0) + Math.abs(closeFee ?? 0)
+        : orderFee !== undefined ? Math.abs(orderFee) : undefined;
+      const gross = closedNet !== undefined ? closedNet + (fee ?? 0) : undefined;
+      const hasExactFill = avgPrice !== undefined && avgPrice > 0 && filledSize !== undefined && filledSize > 0;
+
+      return {
+        filledPrice: avgPrice !== undefined && avgPrice > 0 ? avgPrice : undefined,
+        filledSize: filledSize !== undefined && filledSize > 0 ? filledSize : undefined,
+        filledAt,
+        tradeId: detail?.orderLinkId || undefined,
+        grossRealizedPnl: gross,
+        realizedPnl: gross,
+        netRealizedPnl: closedNet,
+        fee,
+        pnlSource: closedNet !== undefined ? "exchange_closed_pnl" : "unavailable",
+        feeSource: fee !== undefined ? (closed ? "exchange_closed_pnl" : "exchange_order") : "unavailable",
+        settlementStatus: expectPnl ? (closedNet !== undefined ? "final" : "pending") : "not_applicable",
+        fillQuality: hasExactFill ? "exact" : avgPrice !== undefined || filledSize !== undefined ? "partial" : "unknown",
+      };
+    } catch (error) {
+      console.warn(`[Bybit][queryOrderFillDetails] orderId=${orderId} 查詢失敗:`, (error as Error).message);
+      return {
+        settlementStatus: expectPnl ? "pending" : "not_applicable",
+        pnlSource: "unavailable",
+        feeSource: "unavailable",
+        fillQuality: "unknown",
+      };
     }
   }
 
@@ -340,6 +416,7 @@ export class BybitAdapter implements ExchangeAdapter {
         };
       }
       let lastResult: OrderResult = { success: true, rawResponse: "{}" };
+      const childResults: OrderResult[] = [];
       for (const pos of positions) {
         lastResult = await this.placeOrder({
           symbol,
@@ -348,8 +425,27 @@ export class BybitAdapter implements ExchangeAdapter {
           size: pos.size,
           reduceOnly: true,
         });
+        childResults.push(lastResult);
       }
-      return lastResult;
+      const successful = childResults.filter(result => result.success);
+      return {
+        ...lastResult,
+        success: successful.length === childResults.length,
+        childResults,
+        grossRealizedPnl: successful.some(result => result.grossRealizedPnl !== undefined)
+          ? successful.reduce((sum, result) => sum + (result.grossRealizedPnl ?? 0), 0)
+          : undefined,
+        realizedPnl: successful.some(result => result.realizedPnl !== undefined)
+          ? successful.reduce((sum, result) => sum + (result.realizedPnl ?? 0), 0)
+          : undefined,
+        netRealizedPnl: successful.some(result => result.netRealizedPnl !== undefined)
+          ? successful.reduce((sum, result) => sum + (result.netRealizedPnl ?? 0), 0)
+          : undefined,
+        fee: successful.some(result => result.fee !== undefined)
+          ? successful.reduce((sum, result) => sum + (result.fee ?? 0), 0)
+          : undefined,
+        settlementStatus: successful.every(result => result.settlementStatus !== "pending") ? "final" : "pending",
+      };
     } catch (e: any) {
       return { success: false, rawResponse: "{}", errorMessage: e.message };
     }

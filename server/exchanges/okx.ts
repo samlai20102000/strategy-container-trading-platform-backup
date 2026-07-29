@@ -448,8 +448,7 @@ export class OKXAdapter implements ExchangeAdapter {
             }
 
             // 市價單查詢實際成交數據
-            let filledPrice: number | undefined;
-            let filledSize: number | undefined;
+            let fillTruth: Partial<OrderResult> = {};
             if (params.orderType === "market") {
               try {
                 await new Promise((r) => setTimeout(r, 300));
@@ -459,18 +458,7 @@ export class OKXAdapter implements ExchangeAdapter {
                 });
                 const orderDetail = orderInfo.data?.[0];
                 if (orderDetail) {
-                  const avgPx = parseFloat(orderDetail.avgPx || "0");
-                  const accFillSz = parseFloat(orderDetail.accFillSz || "0");
-                  if (avgPx > 0) filledPrice = avgPx;
-                  if (accFillSz > 0) {
-                    const specs = await getOKXContractSpecs(this.isTestnet);
-                    const specForInst = specs.get(instId);
-                    const ctVal = specForInst
-                      ? specForInst.ctVal
-                      : parseFloat(orderDetail.ctVal || "0.01");
-                    filledSize = accFillSz * ctVal;
-                    console.log(`${TAG} 成交詳情: ${accFillSz} 張 × ctVal=${ctVal} = ${filledSize} ${instId.split("-")[0]}`);
-                  }
+                  fillTruth = await this.normalizeOrderFill(instId, orderDetail, Boolean(params.reduceOnly));
                 }
               } catch (e) {
                 console.log(`${TAG} 查詢訂單詳情失敗，使用理論值: ${(e as Error).message}`);
@@ -480,8 +468,7 @@ export class OKXAdapter implements ExchangeAdapter {
               success: true,
               orderId: detail.ordId,
               rawResponse: JSON.stringify(data),
-              filledPrice,
-              filledSize,
+              ...fillTruth,
             };
           }
 
@@ -734,9 +721,8 @@ export class OKXAdapter implements ExchangeAdapter {
           console.log(`[OKX closePosition] 平倉成功 ${instId} ${posDir} orderId=${detail.ordId}`);
           // 查詢成交明細以獲取 filledPrice（修復 PnL 顯示為空）
           if (detail.ordId) {
-            const fillDetails = await this.queryOrderFillDetails(instId, detail.ordId);
-            if (fillDetails.filledPrice) lastResult.filledPrice = fillDetails.filledPrice;
-            if (fillDetails.filledSize) lastResult.filledSize = fillDetails.filledSize;
+            const fillDetails = await this.queryOrderFillDetails(instId, detail.ordId, true);
+            Object.assign(lastResult, fillDetails);
           }
                 } else {
           const errCode = detail?.sCode || orderData.code;
@@ -807,7 +793,48 @@ export class OKXAdapter implements ExchangeAdapter {
    * 查詢訂單成交明細（filledPrice / filledSize / pnl）
    * 用於市價平倉後補充成交資訊，解決 PnL 顯示為空的問題
    */
-  private async queryOrderFillDetails(instId: string, orderId: string): Promise<{ filledPrice?: number; filledSize?: number; pnl?: number }> {
+  private async normalizeOrderFill(instId: string, detail: any, expectPnl: boolean): Promise<Partial<OrderResult>> {
+    const finite = (value: unknown): number | undefined => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    const avgPx = finite(detail.avgPx);
+    const accFillSz = finite(detail.accFillSz);
+    const specs = await getOKXContractSpecs(this.isTestnet);
+    const specForInst = specs.get(instId);
+    const ctVal = specForInst ? specForInst.ctVal : finite(detail.ctVal) ?? 0.01;
+    const filledSize = accFillSz !== undefined && accFillSz > 0 ? accFillSz * ctVal : undefined;
+    const grossPnl = expectPnl ? finite(detail.pnl) : undefined;
+    const signedFee = finite(detail.fee);
+    const fee = signedFee !== undefined ? Math.abs(signedFee) : undefined;
+    const filledAt = finite(detail.fillTime ?? detail.uTime ?? detail.cTime);
+    const hasExactFill = avgPx !== undefined && avgPx > 0 && filledSize !== undefined;
+
+    return {
+      filledPrice: avgPx !== undefined && avgPx > 0 ? avgPx : undefined,
+      filledSize,
+      tradeId: detail.tradeId ? String(detail.tradeId) : undefined,
+      filledAt,
+      grossRealizedPnl: grossPnl,
+      realizedPnl: grossPnl,
+      netRealizedPnl: grossPnl !== undefined ? grossPnl - (fee ?? 0) : undefined,
+      fee,
+      pnlSource: grossPnl !== undefined ? "exchange_order" : "unavailable",
+      feeSource: fee !== undefined ? "exchange_order" : "unavailable",
+      settlementStatus: expectPnl ? (grossPnl !== undefined ? "final" : "pending") : "not_applicable",
+      fillQuality: hasExactFill ? "exact" : avgPx !== undefined || filledSize !== undefined ? "partial" : "unknown",
+    };
+  }
+
+  async getOrderExecutionTruth(
+    symbol: string,
+    orderId: string,
+    expectPnl = true,
+  ): Promise<Partial<OrderResult>> {
+    return this.queryOrderFillDetails(this.normalizeSymbol(symbol), orderId, expectPnl);
+  }
+
+  private async queryOrderFillDetails(instId: string, orderId: string, expectPnl = true): Promise<Partial<OrderResult>> {
     try {
       await new Promise(resolve => setTimeout(resolve, 800));
       const orderInfo = await this.request("GET", "/api/v5/trade/order", { instId, ordId: orderId });
@@ -820,25 +847,13 @@ export class OKXAdapter implements ExchangeAdapter {
         const retry = await this.request("GET", "/api/v5/trade/order", { instId, ordId: orderId });
         const retryDetail = retry.data?.[0];
         if (!retryDetail || (retryDetail.state !== "filled" && retryDetail.state !== "partially_filled")) return {};
-        const avgPx = parseFloat(retryDetail.avgPx || "0");
-        const accFillSz = parseFloat(retryDetail.accFillSz || "0");
-        const pnl = parseFloat(retryDetail.pnl || "0");
-        const specs = await getOKXContractSpecs(this.isTestnet);
-        const specForInst = specs.get(instId);
-        const ctVal = specForInst ? specForInst.ctVal : parseFloat(retryDetail.ctVal || "0.01");
-        const filledSize = accFillSz * ctVal;
-        console.log(`[OKX queryOrderFillDetails] 重試成功 orderId=${orderId} avgPx=${avgPx} size=${filledSize} pnl=${pnl}`);
-        return { filledPrice: avgPx || undefined, filledSize: filledSize || undefined, pnl: pnl || undefined };
+        const normalized = await this.normalizeOrderFill(instId, retryDetail, expectPnl);
+        console.log(`[OKX queryOrderFillDetails] 重試成功 orderId=${orderId} avgPx=${normalized.filledPrice} size=${normalized.filledSize} pnl=${normalized.netRealizedPnl}`);
+        return normalized;
       }
-      const avgPx = parseFloat(detail.avgPx || "0");
-      const accFillSz = parseFloat(detail.accFillSz || "0");
-      const pnl = parseFloat(detail.pnl || "0");
-      const specs = await getOKXContractSpecs(this.isTestnet);
-      const specForInst = specs.get(instId);
-      const ctVal = specForInst ? specForInst.ctVal : parseFloat(detail.ctVal || "0.01");
-      const filledSize = accFillSz * ctVal;
-      console.log(`[OKX queryOrderFillDetails] orderId=${orderId} avgPx=${avgPx} size=${filledSize} pnl=${pnl}`);
-      return { filledPrice: avgPx || undefined, filledSize: filledSize || undefined, pnl: pnl || undefined };
+      const normalized = await this.normalizeOrderFill(instId, detail, expectPnl);
+      console.log(`[OKX queryOrderFillDetails] orderId=${orderId} avgPx=${normalized.filledPrice} size=${normalized.filledSize} pnl=${normalized.netRealizedPnl}`);
+      return normalized;
     } catch (e: any) {
       console.warn(`[OKX queryOrderFillDetails] 查詢失敗:`, e?.message);
       return {};
@@ -871,9 +886,8 @@ export class OKXAdapter implements ExchangeAdapter {
         const result: OrderResult = { success: true, orderId: data.data?.[0]?.ordId, rawResponse: JSON.stringify(data) };
         // 查詢成交明細以獲取 filledPrice
         if (result.orderId) {
-          const fillDetails = await this.queryOrderFillDetails(instId, result.orderId);
-          if (fillDetails.filledPrice) result.filledPrice = fillDetails.filledPrice;
-          if (fillDetails.filledSize) result.filledSize = fillDetails.filledSize;
+          const fillDetails = await this.queryOrderFillDetails(instId, result.orderId, true);
+          Object.assign(result, fillDetails);
         }
         return result;
       }

@@ -1,13 +1,13 @@
 import {
   createRiskEvent,
   createSignal,
-  createTrade,
   disableStrategySystem,
   getApiKeyById,
   getTodayRealizedPnl,
   listEnabledStrategies,
   updateStrategy,
 } from "../db";
+import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createInitialStrategyState } from "../strategies/base";
 import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter, Position } from "../exchanges/types";

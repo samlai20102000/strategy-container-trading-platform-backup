@@ -17,8 +17,8 @@ import {
   disableStrategySystem,
   updateStrategy,
   createSignal,
-  createTrade,
 } from "../db";
+import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import { loadStrategyState, saveStrategyState } from "./strategyStateManager";

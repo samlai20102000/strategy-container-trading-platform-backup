@@ -69,6 +69,24 @@ async function startServer() {
       });
     }
   });
+  app.post("/api/scheduled/trade-reconciliation", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user || !user.isCron) {
+        return res.status(403).json({ error: "cron-only" });
+      }
+      const { runTradePnlReconciliation } = await import("../services/tradePnlReconciliation");
+      const result = await runTradePnlReconciliation();
+      return res.json({ ok: true, ...result });
+    } catch (e: any) {
+      return res.status(500).json({
+        error: e?.message ?? "unknown",
+        stack: e?.stack,
+        context: { url: req.originalUrl },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
   // 24/7 自動交易 Heartbeat 回調端點
   // 每次 K 線週期觸發（例如 5 分鐘）產生信號並執行交易
   app.post("/api/scheduled/auto-trade", async (req, res) => {
@@ -404,6 +422,10 @@ async function startServer() {
     startV61Monitor();
   } else {
     console.log("[Monitor] Production process-local loops disabled; scheduled Heartbeat is the single runner");
+    void import("../services/tradeReconciliationHeartbeat")
+      .then(({ ensureTradeReconciliationHeartbeat }) => ensureTradeReconciliationHeartbeat())
+      .then(result => console.log(`[TradeReconciliation] Heartbeat ${result.action}: ${result.taskUid}`))
+      .catch(error => console.warn("[TradeReconciliation] Heartbeat 註冊失敗:", error?.message || error));
   }
   // 策略工作室：註冊內建策略 + 從 DB 重載自訂策略（冷啟動自動重建）
   initStrategyStudio().catch((e) =>

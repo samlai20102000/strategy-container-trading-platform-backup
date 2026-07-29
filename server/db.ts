@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   apiKeys,
@@ -347,6 +347,123 @@ export async function updateTrade(id: number, data: Partial<InsertTrade>) {
   const db = await getDb();
   if (!db) throw new Error("資料庫不可用");
   return db.update(trades).set(data).where(eq(trades.id, id));
+}
+
+function affectedRows(result: unknown): number {
+  const raw = result as
+    | { affectedRows?: number; rowsAffected?: number }
+    | [{ affectedRows?: number; rowsAffected?: number }, ...unknown[]];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  return header?.affectedRows ?? header?.rowsAffected ?? 0;
+}
+
+/**
+ * 取得可安全重試的待對帳平倉成交。
+ * lastReconciledAt 同時作為跨實例租約時間戳，避免 Autoscale 重複處理同一筆資料。
+ */
+export async function listPendingTradeReconciliations(options: {
+  limit?: number;
+  minimumAgeMs?: number;
+  leaseMs?: number;
+  now?: Date;
+} = {}) {
+  const db = await getDb();
+  if (!db) return [];
+  const now = options.now ?? new Date();
+  const minimumAgeMs = options.minimumAgeMs ?? 20_000;
+  const leaseMs = options.leaseMs ?? 55_000;
+  const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+  const createdBefore = new Date(now.getTime() - minimumAgeMs);
+  const leaseBefore = new Date(now.getTime() - leaseMs);
+
+  return db
+    .select()
+    .from(trades)
+    .where(and(
+      eq(trades.reduceOnly, true),
+      eq(trades.reconciliationStatus, "pending"),
+      isNotNull(trades.orderId),
+      lte(trades.createdAt, createdBefore),
+      or(isNull(trades.lastReconciledAt), lte(trades.lastReconciledAt, leaseBefore)),
+    ))
+    .orderBy(asc(trades.createdAt), asc(trades.id))
+    .limit(limit);
+}
+
+/** 原子取得單筆對帳租約並增加嘗試次數。 */
+export async function claimTradeReconciliation(
+  tradeId: number,
+  leaseBefore: Date,
+  claimedAt = new Date(),
+): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  const result = await db
+    .update(trades)
+    .set({
+      lastReconciledAt: claimedAt,
+      reconciliationAttempts: sql`${trades.reconciliationAttempts} + 1`,
+      reconciliationError: null,
+    })
+    .where(and(
+      eq(trades.id, tradeId),
+      eq(trades.reconciliationStatus, "pending"),
+      or(isNull(trades.lastReconciledAt), lte(trades.lastReconciledAt, leaseBefore)),
+    ));
+  return affectedRows(result) > 0;
+}
+
+/** 以交易所權威結果完成對帳，並同步更新訊號日誌的人類可讀訊息。 */
+export async function completeTradeReconciliation(input: {
+  tradeId: number;
+  signalId: number | null;
+  values: Partial<InsertTrade>;
+  message: string;
+}): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  return db.transaction(async tx => {
+    const result = await tx
+      .update(trades)
+      .set({
+        ...input.values,
+        reconciliationStatus: "confirmed",
+        reconciliationError: null,
+        lastReconciledAt: new Date(),
+      })
+      .where(and(
+        eq(trades.id, input.tradeId),
+        eq(trades.reconciliationStatus, "pending"),
+      ));
+    const changed = affectedRows(result) > 0;
+    if (changed && input.signalId) {
+      await tx.update(signals).set({ message: input.message }).where(eq(signals.id, input.signalId));
+    }
+    return changed;
+  });
+}
+
+/** 保留待對帳狀態，或在多次無權威結果後轉為明確未解。 */
+export async function markTradeReconciliationIncomplete(input: {
+  tradeId: number;
+  error: string;
+  terminal: boolean;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  await db
+    .update(trades)
+    .set({
+      reconciliationStatus: input.terminal ? "unresolved" : "pending",
+      dataQuality: input.terminal ? "legacy_unresolved" : "pending_reconciliation",
+      pnlSource: input.terminal ? "unavailable" : "unknown",
+      reconciliationError: input.error.slice(0, 2_000),
+      lastReconciledAt: new Date(),
+    })
+    .where(and(
+      eq(trades.id, input.tradeId),
+      eq(trades.reconciliationStatus, "pending"),
+    ));
 }
 
 export async function listTrades(

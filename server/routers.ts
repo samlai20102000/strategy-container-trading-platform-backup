@@ -20,6 +20,7 @@ import { exchangeRouter } from "./routers/exchange.router";
 import { backtestRouter } from "./routers/backtest.router";
 import { autoTradeRouter } from "./routers/autoTrade.router";
 import { rainbowTrendLadderAiRouter } from "./routers/rainbowTrendLadderAi.router";
+import { tradeJournalRouter } from "./routers/tradeJournal.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
 import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
@@ -45,6 +46,7 @@ import {
   resolveDeploymentPosition,
 } from "./services/deploymentPosition";
 import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
+import { recordExistingTradeExecution } from "./services/tradeExecutionLedger";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -1037,7 +1039,7 @@ const strategiesRouter = router({
       let lastError = "";
       if (result.success) {
         closedSides.push(posSide);
-        await db.createTrade({
+        await recordExistingTradeExecution({
           strategyId: strategy.id,
           userId: ctx.user.id,
           exchange: strategy.exchange,
@@ -1046,6 +1048,7 @@ const strategiesRouter = router({
           orderType: "market",
           orderId: result.orderId,
           size: String(strategyTotalSize),
+          exchangeResult: result,
           reduceOnly: true,
           status: "filled",
           triggerSource: "manual",
@@ -1177,7 +1180,7 @@ const strategiesRouter = router({
             console.log(`[emergencyCloseAll] 策略 ${strategy.id} 平倉 ${strategy.symbol} posSide=${posSide}`);
             const result = await adapter.closePositionSmart(strategy.symbol, posSide);
             if (result.success) {
-              await db.createTrade({
+              await recordExistingTradeExecution({
                 strategyId: strategy.id,
                 userId: ctx.user.id,
                 exchange: strategy.exchange,
@@ -1186,6 +1189,7 @@ const strategiesRouter = router({
                 orderType: "market",
                 orderId: result.orderId,
                 size: String(pos.size),
+                exchangeResult: result,
                 reduceOnly: true,
                 status: "filled",
                 triggerSource: "manual",
@@ -1596,7 +1600,7 @@ const signalsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      return db.listSignals(ctx.user.id, input);
+      return tradeJournalRouter.createCaller(ctx).list(input);
     }),
 
   /** 任務 3.4：發送測試信號，驗證訊號接收鏈（不實際下單） */
@@ -2195,6 +2199,7 @@ export const appRouter = router({
   apiKeys: apiKeysRouter,
   strategies: strategiesRouter,
   signals: signalsRouter,
+  tradeJournal: tradeJournalRouter,
   dashboard: dashboardRouter,
   performance: performanceRouter,
   studio: studioRouter,

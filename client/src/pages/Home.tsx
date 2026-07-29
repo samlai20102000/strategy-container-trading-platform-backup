@@ -8,6 +8,16 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -103,6 +113,7 @@ function UnifiedDashboard() {
   // Issue 4: Date range filter
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
 
   // ─── Position-Signal Linkage (P0-3) ───────────────────────────
   const [selectedPositionSymbol, setSelectedPositionSymbol] = useState<string | null>(null);
@@ -236,86 +247,34 @@ function UnifiedDashboard() {
     () => ({
       status: signalStatusFilter === "all" ? undefined : (signalStatusFilter as any),
       source: signalSourceFilter === "all" ? undefined : (signalSourceFilter as any),
-      strategyId: strategyFilter === "all" ? undefined : parseInt(strategyFilter),
+      strategyIds: strategyFilter === "all" ? undefined : [parseInt(strategyFilter)],
+      symbol: selectedPositionSymbol
+        ? selectedPositionSymbol
+        : symbolFilter === "all"
+          ? undefined
+          : symbolFilter,
       limit: signalPageSize,
       offset: signalPage * signalPageSize,
       startTime: dateStart ? new Date(dateStart) : undefined,
       endTime: dateEnd ? new Date(dateEnd) : undefined,
     }),
-    [signalStatusFilter, signalSourceFilter, strategyFilter, signalPage, signalPageSize, dateStart, dateEnd],
+    [
+      signalStatusFilter,
+      signalSourceFilter,
+      strategyFilter,
+      symbolFilter,
+      selectedPositionSymbol,
+      signalPage,
+      signalPageSize,
+      dateStart,
+      dateEnd,
+    ],
   );
 
-  const { data: signalData, isLoading: signalLoading } = trpc.signals.list.useQuery(
+  const { data: signalData, isLoading: signalLoading } = trpc.tradeJournal.list.useQuery(
     signalQueryInput,
     { refetchInterval: 10000 },
   );
-
-  // ─── Export CSV ────────────────────────────────────────────────
-  const [exportPending, setExportPending] = useState(false);
-
-  const handleExportCSV = async () => {
-    const targetStrategyId = strategyFilter !== "all" ? parseInt(strategyFilter) : (strategies?.[0]?.id ?? 0);
-    if (!targetStrategyId) {
-      toast.error("請先選擇策略再匯出");
-      return;
-    }
-    setExportPending(true);
-    try {
-      const result = await utils.client.strategies.exportData.query({
-        strategyId: targetStrategyId,
-        format: "csv",
-        status: signalStatusFilter === "all" ? undefined : signalStatusFilter,
-        source: signalSourceFilter === "all" ? undefined : signalSourceFilter,
-        side: sideFilter === "all" ? undefined : sideFilter,
-        startTime: dateStart ? new Date(dateStart) : undefined,
-        endTime: dateEnd ? new Date(dateEnd) : undefined,
-      });
-      const csvContent = typeof result.data === "string" ? result.data : JSON.stringify(result.data);
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `signals_export_${Date.now()}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success("CSV 匯出成功");
-    } catch (e: any) {
-      toast.error(`匯出失敗：${e?.message ?? "未知錯誤"}`);
-    } finally {
-      setExportPending(false);
-    }
-  };
-
-  // P2-2: Export cycle report (CSV format with cycle pairing)
-  const handleExportCycleReport = async () => {
-    const targetStrategyId = strategyFilter !== "all" ? parseInt(strategyFilter) : (strategies?.[0]?.id ?? 0);
-    if (!targetStrategyId) {
-      toast.error("請先選擇策略再匯出");
-      return;
-    }
-    setExportPending(true);
-    try {
-      const result = await utils.client.strategies.exportData.query({
-        strategyId: targetStrategyId,
-        format: "cycle_report",
-        startTime: dateStart ? new Date(dateStart) : undefined,
-        endTime: dateEnd ? new Date(dateEnd) : undefined,
-      });
-      const csvContent = typeof result.data === "string" ? result.data : JSON.stringify(result.data, null, 2);
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `cycle_report_${Date.now()}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success("循環報告匯出成功");
-    } catch (e: any) {
-      toast.error(`匯出失敗：${e?.message ?? "未知錯誤"}`);
-    } finally {
-      setExportPending(false);
-    }
-  };
 
   // ─── P0-3: Position click → filter signals + open drawer ──────
   const handlePositionClick = useCallback((pos: any) => {
@@ -520,12 +479,24 @@ function UnifiedDashboard() {
         setDateEnd={(v) => { setDateEnd(v); setSignalPage(0); }}
         strategies={strategies ?? []}
         uniqueSymbols={uniqueSymbols}
-        onExportCSV={handleExportCSV}
-        onExportCycleReport={handleExportCycleReport}
-        exportPending={exportPending}
+        onGenerateReport={() => setReportDialogOpen(true)}
         selectedPositionSymbol={selectedPositionSymbol}
         onClearPositionFilter={() => { setSelectedPositionSymbol(null); setDrawerPosition(null); }}
       />
+
+      {reportDialogOpen && (
+        <TradeReportDialog
+          open={reportDialogOpen}
+          onOpenChange={setReportDialogOpen}
+          strategies={strategies ?? []}
+          initialStrategyId={strategyFilter === "all" ? null : parseInt(strategyFilter)}
+          initialStatus={signalStatusFilter}
+          initialSource={signalSourceFilter}
+          initialSymbol={selectedPositionSymbol ?? (symbolFilter === "all" ? "" : symbolFilter)}
+          initialStartTime={dateStart}
+          initialEndTime={dateEnd}
+        />
+      )}
 
       {/* ═══ Block D: Position Dashboard (P1-1, P1-2, P1-3, P2-3) ═══ */}
       <BlockD_Positions
@@ -1001,9 +972,7 @@ function BlockC_Filter({
   setDateEnd,
   strategies,
   uniqueSymbols,
-  onExportCSV,
-  onExportCycleReport,
-  exportPending,
+  onGenerateReport,
   selectedPositionSymbol,
   onClearPositionFilter,
 }: {
@@ -1027,9 +996,7 @@ function BlockC_Filter({
   setDateEnd: (v: string) => void;
   strategies: any[];
   uniqueSymbols: string[];
-  onExportCSV: () => void;
-  onExportCycleReport: () => void;
-  exportPending: boolean;
+  onGenerateReport: () => void;
   selectedPositionSymbol: string | null;
   onClearPositionFilter: () => void;
 }) {
@@ -1178,36 +1145,314 @@ function BlockC_Filter({
             </Badge>
           )}
 
-          {/* Export buttons */}
-          <div className="ml-auto flex gap-2">
+          {/* Report generation */}
+          <div className="ml-auto">
             <Button
-              variant="outline"
               size="sm"
-              className="h-8 text-xs border-sky-500/40 text-sky-400 hover:bg-sky-500/10"
-              disabled={exportPending}
-              onClick={onExportCSV}
+              className="h-8 text-xs bg-sky-600 text-white hover:bg-sky-500"
+              onClick={onGenerateReport}
             >
-              {exportPending ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-              ) : (
-                <Download className="h-3.5 w-3.5 mr-1" />
-              )}
-              📥 CSV
-            </Button>
-            {/* P2-2: Cycle Report Export */}
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
-              disabled={exportPending}
-              onClick={onExportCycleReport}
-            >
-              📊 循環報告
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              生成交易報告
             </Button>
           </div>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function TradeReportDialog({
+  open,
+  onOpenChange,
+  strategies,
+  initialStrategyId,
+  initialStatus,
+  initialSource,
+  initialSymbol,
+  initialStartTime,
+  initialEndTime,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  strategies: any[];
+  initialStrategyId: number | null;
+  initialStatus: string;
+  initialSource: string;
+  initialSymbol: string;
+  initialStartTime: string;
+  initialEndTime: string;
+}) {
+  const utils = trpc.useUtils();
+  const [strategyIds, setStrategyIds] = useState<number[]>(initialStrategyId ? [initialStrategyId] : []);
+  const [status, setStatus] = useState(initialStatus);
+  const [source, setSource] = useState(initialSource);
+  const [action, setAction] = useState("all");
+  const [symbol, setSymbol] = useState(initialSymbol);
+  const [pnlState, setPnlState] = useState("all");
+  const [startTime, setStartTime] = useState(initialStartTime);
+  const [endTime, setEndTime] = useState(initialEndTime);
+  const [format, setFormat] = useState<"xlsx" | "csv">("xlsx");
+  const [preflight, setPreflight] = useState<any | null>(null);
+  const [preflightPending, setPreflightPending] = useState(false);
+  const [largeExportConfirmed, setLargeExportConfirmed] = useState(false);
+  const generateMutation = trpc.tradeJournal.generateReport.useMutation();
+
+  const invalidatePreflight = () => {
+    setPreflight(null);
+    setLargeExportConfirmed(false);
+  };
+
+  const filters = () => ({
+    strategyIds: strategyIds.length > 0 ? strategyIds : undefined,
+    status: status === "all" ? undefined : (status as any),
+    source: source === "all" ? undefined : (source as any),
+    action: action === "all" ? undefined : (action as any),
+    symbol: symbol.trim() || undefined,
+    pnlState: pnlState === "all" ? undefined : (pnlState as any),
+    startTime: startTime ? new Date(startTime) : undefined,
+    endTime: endTime ? new Date(endTime) : undefined,
+  });
+
+  const runPreflight = async () => {
+    setPreflightPending(true);
+    try {
+      const result = await utils.client.tradeJournal.preflight.query(filters());
+      setPreflight(result);
+      setLargeExportConfirmed(false);
+      if (result.totalRows === 0) {
+        toast.error("目前篩選條件沒有可匯出的資料，系統不會建立空白檔案。");
+      } else {
+        toast.success(`預檢完成：共 ${result.totalRows.toLocaleString()} 筆`);
+      }
+    } catch (error: any) {
+      toast.error(`預檢失敗：${error?.message ?? "未知錯誤"}`);
+    } finally {
+      setPreflightPending(false);
+    }
+  };
+
+  const generateReport = async () => {
+    if (!preflight || preflight.totalRows === 0) return;
+    try {
+      const result = await generateMutation.mutateAsync({
+        ...filters(),
+        format,
+        confirmLargeExport: Boolean(preflight.requiresConfirmation && largeExportConfirmed),
+        confirmationToken: preflight.confirmationToken,
+      });
+      const anchor = document.createElement("a");
+      anchor.href = result.report.url;
+      anchor.download = result.report.filename;
+      anchor.rel = "noopener";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      toast.success(
+        `報告已生成：${result.report.rowCount.toLocaleString()} 筆、${result.report.cycleCount.toLocaleString()} 個交易循環`,
+      );
+      onOpenChange(false);
+    } catch (error: any) {
+      toast.error(`生成失敗：${error?.message ?? "未知錯誤"}`);
+    }
+  };
+
+  const toggleStrategy = (strategyId: number, checked: boolean) => {
+    invalidatePreflight();
+    setStrategyIds(current => checked
+      ? Array.from(new Set([...current, strategyId])).sort((a, b) => a - b)
+      : current.filter(id => id !== strategyId));
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>生成交易報告</DialogTitle>
+          <DialogDescription>
+            設定篩選後先執行預檢；確認真實筆數、資料品質與預估大小後才會生成檔案。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          <section className="rounded-lg border bg-card p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">策略範圍</p>
+                <p className="text-xs text-muted-foreground">未勾選個別策略時代表全部策略。</p>
+              </div>
+              <label className="flex items-center gap-2 text-xs">
+                <Checkbox
+                  checked={strategyIds.length === 0}
+                  onCheckedChange={() => { invalidatePreflight(); setStrategyIds([]); }}
+                />
+                全部策略
+              </label>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {strategies.map(strategy => (
+                <label key={strategy.id} className="flex items-center gap-2 rounded-md border p-2 text-xs">
+                  <Checkbox
+                    checked={strategyIds.includes(strategy.id)}
+                    onCheckedChange={checked => toggleStrategy(strategy.id, checked === true)}
+                  />
+                  <span className="min-w-0 truncate">{strategy.name}</span>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label>檔案格式</Label>
+              <Select value={format} onValueChange={value => setFormat(value as "xlsx" | "csv")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="xlsx">Excel（四工作表）</SelectItem>
+                  <SelectItem value="csv">CSV（交易明細）</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>訊號狀態</Label>
+              <Select value={status} onValueChange={value => { invalidatePreflight(); setStatus(value); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部</SelectItem>
+                  <SelectItem value="received">已接收</SelectItem>
+                  <SelectItem value="executed">已執行</SelectItem>
+                  <SelectItem value="failed">失敗</SelectItem>
+                  <SelectItem value="rejected">已拒絕</SelectItem>
+                  <SelectItem value="skipped">已跳過</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>來源</Label>
+              <Select value={source} onValueChange={value => { invalidatePreflight(); setSource(value); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部</SelectItem>
+                  <SelectItem value="webhook">Webhook</SelectItem>
+                  <SelectItem value="auto">自動交易</SelectItem>
+                  <SelectItem value="manual">手動觸發</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>動作</Label>
+              <Select value={action} onValueChange={value => { invalidatePreflight(); setAction(value); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部</SelectItem>
+                  <SelectItem value="buy">買入／開多</SelectItem>
+                  <SelectItem value="sell">賣出／開空</SelectItem>
+                  <SelectItem value="close">平倉</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>盈虧狀態</Label>
+              <Select value={pnlState} onValueChange={value => { invalidatePreflight(); setPnlState(value); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部</SelectItem>
+                  <SelectItem value="known">已確認</SelectItem>
+                  <SelectItem value="pending">待對帳</SelectItem>
+                  <SelectItem value="unresolved">未解</SelectItem>
+                  <SelectItem value="not_applicable">不適用</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>交易對</Label>
+              <Input
+                value={symbol}
+                onChange={event => { invalidatePreflight(); setSymbol(event.target.value.toUpperCase()); }}
+                placeholder="全部，例如 BTCUSDT"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>開始時間</Label>
+              <Input type="datetime-local" value={startTime} onChange={event => { invalidatePreflight(); setStartTime(event.target.value); }} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>結束時間</Label>
+              <Input type="datetime-local" value={endTime} onChange={event => { invalidatePreflight(); setEndTime(event.target.value); }} />
+            </div>
+          </section>
+
+          <section className="rounded-lg border bg-secondary/20 p-4">
+            {!preflight ? (
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium">尚未預檢</p>
+                  <p className="text-xs text-muted-foreground">修改篩選後必須重新預檢，避免下載範圍與畫面不一致。</p>
+                </div>
+                <Button onClick={runPreflight} disabled={preflightPending} variant="outline">
+                  {preflightPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  執行預檢
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div><p className="text-xs text-muted-foreground">真實筆數</p><p className="font-mono font-semibold">{preflight.totalRows.toLocaleString()}</p></div>
+                  <div><p className="text-xs text-muted-foreground">已確認盈虧</p><p className="font-mono font-semibold text-emerald-500">{preflight.pnlKnownRows.toLocaleString()}</p></div>
+                  <div><p className="text-xs text-muted-foreground">待對帳</p><p className="font-mono font-semibold text-amber-500">{preflight.pnlPendingRows.toLocaleString()}</p></div>
+                  <div><p className="text-xs text-muted-foreground">未解</p><p className="font-mono font-semibold text-red-500">{preflight.pnlUnresolvedRows.toLocaleString()}</p></div>
+                </div>
+                <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                  <p>資料範圍：{preflight.firstTimestamp ? formatTime(preflight.firstTimestamp) : "—"} 至 {preflight.lastTimestamp ? formatTime(preflight.lastTimestamp) : "—"}</p>
+                  <p>預估大小：{formatBytes(format === "xlsx" ? preflight.estimatedXlsxBytes : preflight.estimatedCsvBytes)}</p>
+                  <p>策略範圍：{strategyIds.length === 0 ? "全部策略" : `${strategyIds.length} 個已選策略`}</p>
+                  <p>淨已實現盈虧：{preflight.totalRealizedPnl.toFixed(6)} USDT</p>
+                </div>
+                {preflight.totalRows === 0 && (
+                  <p className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500">
+                    此篩選沒有資料，不會建立空白報告。
+                  </p>
+                )}
+                {preflight.requiresConfirmation && (
+                  <label className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+                    <Checkbox checked={largeExportConfirmed} onCheckedChange={checked => setLargeExportConfirmed(checked === true)} />
+                    <span>此報告資料量較大，我已確認筆數與預估大小並同意生成。</span>
+                  </label>
+                )}
+                <div className="flex justify-end">
+                  <Button variant="ghost" size="sm" onClick={runPreflight} disabled={preflightPending}>
+                    {preflightPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    重新預檢
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+          <Button
+            onClick={generateReport}
+            disabled={
+              !preflight
+              || preflight.totalRows === 0
+              || generateMutation.isPending
+              || (preflight.requiresConfirmation && !largeExportConfirmed)
+            }
+          >
+            {generateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            生成並下載
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1464,6 +1709,42 @@ function CloseButtons({
   );
 }
 
+function JournalPnlCell({ signal }: { signal: any }) {
+  const value = signal.realizedPnl === null || signal.realizedPnl === undefined
+    ? null
+    : Number(signal.realizedPnl);
+  const sourceLabels: Record<string, string> = {
+    exchange: "交易所",
+    calculated: "系統計算",
+    legacy_import: "歷史匯入",
+    manual: "人工",
+    unavailable: "未提供",
+  };
+
+  if (signal.pnlState === "known" && value !== null && Number.isFinite(value)) {
+    return (
+      <div className="flex flex-col items-end gap-0.5">
+        <PnlValue
+          value={value}
+          suffix={` ${signal.pnlCurrency ?? "USDT"}`}
+          className="text-xs font-semibold"
+        />
+        <span className="text-[10px] text-muted-foreground">
+          {sourceLabels[signal.pnlSource] ?? signal.pnlSource ?? "來源未提供"}
+        </span>
+      </div>
+    );
+  }
+
+  if (signal.pnlState === "pending") {
+    return <Badge variant="outline" className="border-amber-500/40 text-[10px] text-amber-500">待對帳</Badge>;
+  }
+  if (signal.pnlState === "unresolved") {
+    return <Badge variant="outline" className="border-red-500/40 text-[10px] text-red-500">未解</Badge>;
+  }
+  return <span className="text-[10px] text-muted-foreground">不適用</span>;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // BLOCK E: Signal Logs (P1-4: Cycle Grouping, P1-5: Message Compression)
 // ═══════════════════════════════════════════════════════════════════
@@ -1488,7 +1769,7 @@ function BlockE_Signals({
   selectedPositionSymbol: string | null;
   onSignalClick: (symbol: string) => void;
 }) {
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<number | string | null>(null);
 
   const strategyName = (id: number | null) => {
     if (!id) return "—";
@@ -1548,12 +1829,15 @@ function BlockE_Signals({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredItems.map((sig: any) => (
-                    <Fragment key={sig.id}>
+                  {filteredItems.map((sig: any) => {
+                    const rowKey = sig.signalId ?? `orphan-${sig.tradeId}`;
+                    const isOrphanTrade = sig.signalId === null && sig.linkage === "orphan_trade";
+                    return (
+                    <Fragment key={rowKey}>
                       <tr
                         className="border-b border-border/50 last:border-0 cursor-pointer hover:bg-secondary/30 transition-colors"
                         onClick={() => {
-                          setExpandedId(expandedId === sig.id ? null : sig.id);
+                          setExpandedId(expandedId === rowKey ? null : rowKey);
                           if (sig.parsedSymbol) onSignalClick(sig.parsedSymbol);
                         }}
                       >
@@ -1561,7 +1845,7 @@ function BlockE_Signals({
                           <ChevronDown
                             className={cn(
                               "h-3.5 w-3.5 text-muted-foreground transition-transform",
-                              expandedId === sig.id && "rotate-180",
+                              expandedId === rowKey && "rotate-180",
                             )}
                           />
                         </td>
@@ -1571,18 +1855,27 @@ function BlockE_Signals({
                         <td className="py-2 pr-3 text-xs">{strategyName(sig.strategyId)}</td>
                         <td className="py-2 pr-3"><SourceBadge source={(sig as any).source} /></td>
                         <td className="py-2 pr-3 text-xs">
-                          <ActionBadge action={sig.parsedAction} />
+                          {isOrphanTrade ? (
+                            <Badge variant="outline" className="border-cyan-500/40 text-[10px] text-cyan-400">
+                              歷史成交
+                            </Badge>
+                          ) : (
+                            <ActionBadge action={sig.parsedAction} />
+                          )}
                         </td>
                         <td className="py-2 pr-3 font-mono text-xs">{sig.parsedSymbol ?? "—"}</td>
-                        <td className="py-2 pr-3 text-right font-mono text-xs">{sig.parsedPrice ?? "—"}</td>
-                        <td className="py-2 pr-3"><SignalStatusBadge status={sig.status} /></td>
-                        {/* Issue 5: PnL column */}
-                        <td className="py-2 pr-3 text-right font-mono text-xs">
-                          {sig.realizedPnl && parseFloat(sig.realizedPnl) !== 0 ? (
-                            <PnlValue value={parseFloat(sig.realizedPnl)} suffix=" U" className="text-xs font-semibold" />
+                        <td className="py-2 pr-3 text-right font-mono text-xs">{sig.filledPrice ?? sig.parsedPrice ?? "—"}</td>
+                        <td className="py-2 pr-3">
+                          {isOrphanTrade ? (
+                            <Badge variant="outline" className="border-amber-500/40 text-[10px] text-amber-500">
+                              孤兒成交
+                            </Badge>
                           ) : (
-                            <span className="text-muted-foreground">—</span>
+                            <SignalStatusBadge status={sig.status} />
                           )}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono text-xs">
+                          <JournalPnlCell signal={sig} />
                         </td>
                         {/* P1-5: Compressed message */}
                         <td className="py-2 text-xs text-muted-foreground max-w-60">
@@ -1592,7 +1885,7 @@ function BlockE_Signals({
                         </td>
                       </tr>
                       {/* Expanded detail (tech details folded by default) */}
-                      {expandedId === sig.id && (
+                      {expandedId === rowKey && (
                         <tr className="border-b border-border/50">
                           <td colSpan={10} className="py-3 px-4 bg-secondary/20">
                             <div className="space-y-3 text-xs">
@@ -1614,12 +1907,24 @@ function BlockE_Signals({
                                 {sig.orderId && <span>訂單 ID：{sig.orderId}</span>}
                                 {sig.latencyMs !== null && <span>處理耗時：{sig.latencyMs}ms</span>}
                               </div>
+                              <div className="grid gap-2 rounded-md border bg-background p-2.5 text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+                                <span>訊號 ID：{sig.signalId ?? "無（歷史孤兒成交）"}</span>
+                                <span>執行 ID：{sig.executionId ?? "—"}</span>
+                                <span>交易循環：{sig.cycleId ?? "—"}</span>
+                                <span>成交 ID：{sig.exchangeTradeId ?? "—"}</span>
+                                <span>成交量：{sig.filledSize ?? "—"}</span>
+                                <span>盈虧來源：{sig.pnlSource ?? "—"}</span>
+                                <span>資料品質：{isOrphanTrade ? "孤兒成交（未猜測關聯）" : (sig.dataQuality ?? "—")}</span>
+                                <span>對帳狀態：{sig.reconciliationStatus ?? "—"}</span>
+                                <span>平倉類型：{sig.reduceOnly ? "平倉／部分平倉（依同循環累計）" : "開倉／加倉"}</span>
+                              </div>
                             </div>
                           </td>
                         </tr>
                       )}
                     </Fragment>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -2,7 +2,7 @@ import { Strategy } from "../../drizzle/schema";
 import { ExchangeAdapter } from "../exchanges/types";
 import type { V4Config, StrategyState } from "./martingaleEngine";
 import { getFirstOrderValue } from "./martingaleEngine";
-import { createTrade } from "../db";
+import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { saveStrategyState } from "./strategyStateManager";
 import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
 
