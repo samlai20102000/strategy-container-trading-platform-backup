@@ -304,6 +304,91 @@ export const KAMA_3K_SCHEMA: SchemaConfig = {
   },
 };
 
+// ===== V4.1 KAMA+3K 三條件 AND／OR 動態馬丁策略 Schema =====
+const {
+  threeKPatternMode: _v40ThreeKPatternMode,
+  enableKamaDirectionLock: _v40KamaDirectionLock,
+  ...V41_BASE_FIELDS
+} = KAMA_3K_SCHEMA.fields;
+
+export const KAMA_3K_V41_SCHEMA: SchemaConfig = {
+  groups: [
+    {
+      name: "01｜V4.1 入場條件合併",
+      fields: [
+        "entryConditionLogic",
+        "enableThreeKFilter",
+        "threeKMode",
+        "enableKamaFastSlowCross",
+        "enableKamaPriceVsSlow",
+        "enableSameDirectionReentry",
+      ],
+    },
+    { name: "02｜資金管理", fields: ["Initial_Capital", "Base_Lot_Size", "First_Order_Pct", "Max_Loss_Pct"] },
+    { name: "03｜KAMA 指標", fields: ["KAMA_Fast_Length", "p2_fastest", "p3_slowest", "KAMA_Slow_Length", "q2_fastest", "q3_slowest"] },
+    { name: "04｜馬丁格爾", fields: ["Martin_Multiplier", "Max_Layers", "Martin_Step_Pct", "Martin_Layers"] },
+    { name: "05｜止盈止損", fields: ["Target_TP_Pct", "Callback_Pct", "K_Line_Period"] },
+  ],
+  fields: {
+    ...V41_BASE_FIELDS,
+    entryConditionLogic: {
+      key: "entryConditionLogic",
+      type: "select",
+      label: "入場邏輯",
+      default: "and",
+      options: [
+        { label: "AND｜全部已啟用條件同向", value: "and" },
+        { label: "OR｜任一有效方向票；衝突則 HOLD", value: "or" },
+      ],
+      description: "只影響新決策；已完成的舊回測保留當時凍結邏輯",
+    },
+    enableThreeKFilter: {
+      ...KAMA_3K_SCHEMA.fields.enableThreeKFilter,
+      default: false,
+      label: "條件 1｜三 K 方向",
+      description: "新空白表單預設關閉；啟用後依下方二選一形態投票",
+    },
+    threeKMode: {
+      key: "threeKMode",
+      type: "select",
+      label: "三 K 判定模式",
+      default: "breakout",
+      options: [
+        { label: "前兩根同向＋第三根收盤破位", value: "breakout" },
+        { label: "三根 K 線實體全部連續同向", value: "three_body_same_direction" },
+      ],
+      description: "僅在條件 1 啟用時生效；只讀取已收盤 K 棒",
+    },
+    enableKamaFastSlowCross: {
+      key: "enableKamaFastSlowCross",
+      type: "boolean",
+      label: "條件 2｜Fast KAMA vs Slow KAMA",
+      default: false,
+      description: "持續方向：Fast > Slow 做多，Fast < Slow 做空，相等無訊號",
+    },
+    enableKamaPriceVsSlow: {
+      key: "enableKamaPriceVsSlow",
+      type: "boolean",
+      label: "條件 3｜決策 K close vs Slow KAMA",
+      default: false,
+      description: "只使用最新已收盤決策 K 的 close；不使用即時 ticker",
+    },
+    enableSameDirectionReentry: {
+      ...KAMA_3K_SCHEMA.fields.enableSameDirectionReentry,
+      default: false,
+      description: "不計入 n/3；至少啟用一項 KAMA 持續方向條件才可使用",
+    },
+    Martin_Layers: {
+      ...KAMA_3K_SCHEMA.fields.Martin_Layers,
+      default: JSON.stringify([
+        { start: 1, end: 4, multiplier: 1.5 },
+        { start: 5, end: 9, multiplier: 1.1 },
+        { start: 10, end: 11, multiplier: 1.0 },
+      ]),
+    },
+  },
+};
+
 // ===== 通用策略 Schema（用於自訂策略的預設結構） =====
 export const GENERIC_STRATEGY_SCHEMA: SchemaConfig = {
   groups: [
@@ -682,6 +767,9 @@ export function getSchemaForStrategy(key: string): SchemaConfig {
   }
   if (key === "KAMA_3K_ULTIMATE_V50") {
     return KAMA_3K_V50_SCHEMA;
+  }
+  if (key === "20415_KAMA_MARTIN_V41") {
+    return KAMA_3K_V41_SCHEMA;
   }
   if (key === "20415_KAMA_MARTIN_V35" || key.includes("KAMA")) {
     return KAMA_3K_SCHEMA;

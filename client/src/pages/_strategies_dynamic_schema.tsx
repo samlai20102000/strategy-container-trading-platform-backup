@@ -39,6 +39,36 @@ export const STRATEGIES_DYNAMIC_SCHEMA: SchemaConfig = {
   ],
 };
 
+/** V4.1 KAMA+3K 三條件策略：只包含 canonical 非入場路由欄位。 */
+export const STRATEGIES_V41_SCHEMA: SchemaConfig = {
+  groups: [
+    { name: "資金與風控", fields: ["Initial_Capital", "Base_Lot_Size", "First_Order_Pct", "Max_Loss_Pct"] },
+    { name: "KAMA 指標", fields: ["KAMA_Fast_Length", "p2_fastest", "p3_slowest", "KAMA_Slow_Length", "q2_fastest", "q3_slowest"] },
+    { name: "馬丁設定", fields: ["Martin_Step_Pct", "Martin_Multiplier", "Max_Layers", "martinLayersJson"] },
+    { name: "止盈與反轉", fields: ["Target_TP_Pct", "Callback_Pct", "K_Line_Period", "Kama_Reversal_Min_Layer"] },
+  ],
+  fields: [
+    { key: "Initial_Capital", type: "number", label: "初始本金 (USDT)", default: 10000, min: 100, max: 10_000_000, step: 100, description: "策略專屬本金；canonical 單位為 USDT。" },
+    { key: "Base_Lot_Size", type: "number", label: "首單金額 (USDT)", default: 30, min: 1, max: 100_000, step: 1, description: "固定金本位首單；不與百分比模式混用。" },
+    { key: "First_Order_Pct", type: "number", label: "首單佔本金 (%)", default: 0.3, min: 0.01, max: 10, step: 0.01, description: "相容報表欄位；實際首單仍以 Base_Lot_Size 為準。" },
+    { key: "Max_Loss_Pct", type: "number", label: "極限止損 (%)", default: 5, min: 0.5, max: 50, step: 0.5, description: "總浮虧達本金此比例時強制止損。" },
+    { key: "KAMA_Fast_Length", type: "number", label: "KAMA 快線長度", default: 50, min: 5, max: 200, step: 1 },
+    { key: "p2_fastest", type: "number", label: "快線 fastest", default: 10, min: 2, max: 50, step: 1 },
+    { key: "p3_slowest", type: "number", label: "快線 slowest", default: 2, min: 1, max: 30, step: 1 },
+    { key: "KAMA_Slow_Length", type: "number", label: "KAMA 慢線長度", default: 50, min: 5, max: 200, step: 1 },
+    { key: "q2_fastest", type: "number", label: "慢線 fastest", default: 10, min: 2, max: 50, step: 1 },
+    { key: "q3_slowest", type: "number", label: "慢線 slowest", default: 6, min: 1, max: 30, step: 1, description: "必須大於快線 slowest。" },
+    { key: "Martin_Step_Pct", type: "number", label: "加倉間距 (%)", default: 2, min: 0.1, max: 20, step: 0.1 },
+    { key: "Martin_Multiplier", type: "number", label: "馬丁倍率", default: 1.5, min: 1, max: 5, step: 0.1 },
+    { key: "Max_Layers", type: "number", label: "最大層數", default: 11, min: 1, max: 20, step: 1, description: "必須等於最後一個分層的結束層。" },
+    { key: "martinLayersJson", type: "martinLayers", label: "階梯式馬丁分層設定", description: "分層必須由第 1 層開始、連續且不可重疊。" },
+    { key: "Target_TP_Pct", type: "number", label: "止盈觸發 (%)", default: 1, min: 0.1, max: 20, step: 0.1 },
+    { key: "Callback_Pct", type: "number", label: "回撤平倉 (%)", default: 0.1, min: 0.01, max: 5, step: 0.01 },
+    { key: "K_Line_Period", type: "number", label: "K 線週期 (分鐘)", default: 30, min: 1, max: 1440, step: 1 },
+    { key: "Kama_Reversal_Min_Layer", type: "number", label: "KAMA 反轉最小層級", default: 3, min: 0, max: 20, step: 1, description: "達此層級後才允許 KAMA 反轉風控介入。" },
+  ],
+};
+
 
 /** V5.0 KAMA+3K 極致優化馬丁策略 schema */
 export const STRATEGIES_V50_SCHEMA: SchemaConfig = {
@@ -183,6 +213,7 @@ export const STRATEGIES_V61_SCHEMA: SchemaConfig = {
 
 /** 根據 strategyKey 選擇對應 schema */
 export function getSchemaForStrategy(strategyKey: string | null | undefined): SchemaConfig {
+  if (strategyKey === "20415_KAMA_MARTIN_V41") return STRATEGIES_V41_SCHEMA;
   if (strategyKey === "KAMA_3K_HF_V61") return STRATEGIES_V61_SCHEMA;
   if (strategyKey === "KAMA_3K_ULTIMATE_V50") return STRATEGIES_V50_SCHEMA;
   return STRATEGIES_DYNAMIC_SCHEMA;

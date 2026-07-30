@@ -73,6 +73,17 @@ import {
   type V40EntryDirection,
 } from "../strategies/v35/entryGate";
 import { fetchKLineData } from "./autoTradeSignalGenerator";
+import {
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+  getV41ConfigHash,
+  validateV41Config,
+} from "../../shared/strategies/kama3kMartinV41";
+import { StrategyKama3kV41 } from "../strategies/v41/strategy_kama_3k_v41";
+import {
+  verifyV41TrustedEntrySeal,
+  type V41TrustedEntrySeal,
+} from "./v41TrustedEntrySeal";
 
 /**
  * 策略執行引擎
@@ -103,6 +114,8 @@ export interface ParsedSignal {
   v40EntryGateValidated?: true;
   v40EntryGateDirection?: V40EntryDirection;
   v40EntryGateBarTimestamp?: number;
+  /** V4.1 HMAC 可信封印；只可由 auto generator 注入，parseSignalPayload 永不映射。 */
+  v41TrustedEntrySeal?: V41TrustedEntrySeal;
   /** 新七彩虹階梯策略內部決策封印；外部 webhook 解析器永不映射。 */
   rainbowTrendLadderDecision?: boolean;
   rainbowTrendLadderAction?: RainbowTrendLadderCoreAction;
@@ -1040,26 +1053,44 @@ async function executeSignalV35(
 ): Promise<ExecutionResult> {
   const state = loadStrategyState(strategy);
   const cfg = (strategy as unknown as { config?: Record<string, unknown> }).config ?? {};
+  const isV41 = strategy.strategyKey === V41_STRATEGY_KEY;
   
   // 🔥 修復：讀取 V4.0 完整配置（__v35Config）
   const v35Config = (strategy.martinState && typeof strategy.martinState === 'object' 
     ? (strategy.martinState as Record<string, unknown>).__v35Config 
     : null) as Record<string, unknown> | null;
-  const rawFallbackMode = v35Config?.Position_Mode ?? cfg.Position_Mode;
-  const rawFallbackValue = v35Config?.Position_Value ?? cfg.Position_Value ?? engine.defaultConfig.Base_Lot_Size;
+  const boundV41Config = isV41
+    ? getBoundStrategyConfig(strategy.martinState, V41_STRATEGY_KEY)
+    : null;
+  const v41Validation = isV41 ? validateV41Config(boundV41Config) : null;
+  if (isV41 && (!v41Validation?.valid || !v41Validation.config)) {
+    return {
+      status: "skipped",
+      message: `V4.1 canonical 配置無效（fail-closed）：${v41Validation?.issues.map((issue) => `${issue.path}: ${issue.message}`).join("；") || "缺少完整 __v41Config"}`,
+    };
+  }
+  const v41Config = v41Validation?.config ?? null;
+  const rawFallbackMode = (isV41 ? cfg.Position_Mode : v35Config?.Position_Mode) ?? cfg.Position_Mode;
+  const rawFallbackValue = (isV41 ? v41Config?.Base_Lot_Size : v35Config?.Position_Value)
+    ?? cfg.Position_Value
+    ?? engine.defaultConfig.Base_Lot_Size;
   const deploymentPosition = resolveDeploymentPosition(strategy, {
     value: Number(rawFallbackValue) > 0 ? Number(rawFallbackValue) : 0.01,
     mode: rawFallbackMode === "usdt" ? "usdt" : "quantity",
   });
   
-  const mergedCfg: Record<string, number | string | boolean> = {
-    ...engine.defaultConfig,
+  const strategyColumnOverrides = {
     Martin_Multiplier: parseFloat(strategy.martinMultiplier) || Number(engine.defaultConfig.Martin_Multiplier),
     Max_Layers: strategy.maxMartinLevel || Number(engine.defaultConfig.Max_Layers),
     Martin_Step_Pct: parseFloat(strategy.martinSpacingPct) || Number(engine.defaultConfig.Martin_Step_Pct),
+  };
+  const mergedCfg: Record<string, any> = {
+    ...engine.defaultConfig,
+    ...strategyColumnOverrides,
     ...(typeof cfg === "object" ? (cfg as Record<string, number | string | boolean>) : {}),
     // 🔥 V4.0 配置優先級最高（覆蓋默認值和頂層字段）
-    ...(v35Config ? (v35Config as Record<string, number | string | boolean>) : {}),
+    ...(isV41 && v41Config ? v41Config : v35Config ?? {}),
+    ...(isV41 && v41Config ? { [V41_CONFIG_KEY]: v41Config } : {}),
     // 實盤部署邊界最高優先；不回寫、不污染快照原始配置。
     Base_Lot_Size: deploymentPosition.value,
     Position_Mode: deploymentPosition.mode,
@@ -1140,6 +1171,90 @@ async function executeSignalV35(
     }
   }
 
+  if (isV41 && isInitialEntry) {
+    if (!(engine instanceof StrategyKama3kV41) || !v41Config) {
+      return { status: "skipped", message: "V4.1 策略引擎或 canonical 配置未載入（fail-closed）" };
+    }
+    const requestedDirection = engineSignal.action === "BUY" ? "long" : "short";
+    const configuredPeriod = Number(v41Config.K_Line_Period);
+    const kLinePeriod = Number.isFinite(configuredPeriod) && configuredPeriod > 0
+      ? configuredPeriod
+      : 30;
+
+    if (signal.v41TrustedEntrySeal) {
+      let verification;
+      try {
+        verification = verifyV41TrustedEntrySeal({
+          seal: signal.v41TrustedEntrySeal,
+          strategyId: strategy.id,
+          action: signal.action as "buy" | "sell",
+          barTimestamp: signal.barTimestamp,
+          expectedConfigHash: getV41ConfigHash(v41Config),
+          maxAgeMs: Math.max(5 * 60_000, kLinePeriod * 2 * 60_000),
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return { status: "skipped", message: `V4.1 可信封印驗證失敗（fail-closed）：${detail}` };
+      }
+      if (!verification.valid || !verification.claims) {
+        return { status: "skipped", message: `V4.1 可信封印無效（fail-closed）：${verification.reason}` };
+      }
+      engineSignal.price = verification.claims.decisionClose;
+      engineSignal.barTimestamp = verification.claims.barTimestamp;
+      marketData = {
+        candles: [],
+        lastPrice: verification.claims.decisionClose,
+        kamaValue: verification.claims.slowKama ?? undefined,
+      };
+      console.log(
+        `[Executor][V4.1] HMAC 封印驗證通過 strategy=${strategy.id} direction=${requestedDirection} bar=${verification.claims.barTimestamp}`,
+      );
+    } else {
+      try {
+        const closedCandles = await fetchKLineData(
+          adapter,
+          strategy.symbol,
+          kLinePeriod,
+          100,
+          true,
+        );
+        const latestClosed = closedCandles.at(-1);
+        if (!latestClosed) {
+          return { status: "skipped", message: "V4.1 Raw Webhook 無已收盤 K 線（fail-closed）" };
+        }
+        const rawMarketData = {
+          candles: closedCandles,
+          lastPrice: latestClosed.close,
+          kamaValue: undefined,
+        };
+        const evaluation = engine.evaluateEntryConditions(
+          {
+            ...engineSignal,
+            price: latestClosed.close,
+            barTimestamp: latestClosed.timestamp,
+          },
+          rawMarketData,
+          instance,
+        );
+        if (!evaluation.passed || evaluation.direction !== requestedDirection) {
+          return {
+            status: "skipped",
+            message: `V4.1 Raw Webhook closed-bar evaluator 未通過：${evaluation.primaryReasonCode}｜${evaluation.reason}`,
+          };
+        }
+        engineSignal.price = evaluation.decisionClose ?? latestClosed.close;
+        engineSignal.barTimestamp = evaluation.decisionBarTimestamp;
+        marketData = rawMarketData;
+        console.log(
+          `[Executor][V4.1] Raw Webhook 已現場重驗 strategy=${strategy.id} direction=${requestedDirection} bar=${evaluation.decisionBarTimestamp}`,
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return { status: "skipped", message: `V4.1 Raw Webhook 行情重驗失敗（fail-closed）：${detail}` };
+      }
+    }
+  }
+
   // === 1. Bar-Lock 查詢（僅限初始開倉：currentLayer === 0 且非 CLOSE）===
   // 改為「只查詢不鎖定」，下單成功後才真正鎖定
   const { checkBarLock } = await import("./barLock");
@@ -1154,8 +1269,16 @@ async function executeSignalV35(
   }
 
   // === 2. 五層驗證 ===
-  // V4.0 永遠保留狀態／冷卻驗證；只有 entry gate 能以內部封印避免重抓行情。
-  if (isV40) {
+  // V4.1 evaluator／封印與非行情狀態檢查分離，避免再套用 V4.0 Price／slow KAMA 隱性 gate。
+  if (isV41) {
+    if (!(engine instanceof StrategyKama3kV41)) {
+      return { status: "skipped", message: "V4.1 策略引擎型別不符（fail-closed）" };
+    }
+    const validation = engine.validateExecutionState(engineSignal, instance);
+    if (!validation.valid) {
+      return { status: "skipped", message: `V4.1 狀態驗證未通過：${validation.reason}` };
+    }
+  } else if (isV40) {
     const validation = await engine.validateSignal(engineSignal, marketData, instance);
     if (!validation.valid) {
       return { status: "skipped", message: `V4.0 驗證未通過：${validation.reason}` };
@@ -1235,7 +1358,7 @@ async function executeSignalV35(
 
   // === 5. 開倉/加倉（OPEN_LONG / OPEN_SHORT）===
   const isLong = decision.action === "OPEN_LONG";
-  const entryPrice = signal.price ?? 0;
+  const entryPrice = engineSignal.price ?? 0;
 
   // 方向限制檢查
   if (isLong && strategy.direction === "short") {
@@ -1292,10 +1415,10 @@ async function executeSignalV35(
   }
 
   // 下單成功後才鎖定 Bar-Lock（確保只有真正成功的交易才會被鎖）
-  if (signal.barTimestamp && state.currentLayer === 0) {
+  if (engineSignal.barTimestamp && state.currentLayer === 0) {
     const kLinePeriod = Number(mergedCfg.K_Line_Period) || 30;
-    await acquireBarLock(strategy.id, signal.barTimestamp, kLinePeriod);
-    console.log(`[Executor][V3.5] 下單成功，Bar-Lock 已鎖定 K 線 ${signal.barTimestamp}`);
+    await acquireBarLock(strategy.id, engineSignal.barTimestamp, kLinePeriod);
+    console.log(`[Executor][${isV41 ? "V4.1" : "V3.5"}] 下單成功，Bar-Lock 已鎖定 K 線 ${engineSignal.barTimestamp}`);
   }
 
   // === 6. 馬丁引擎狀態更新（加層 + 均價；O1 支援階梯式乘數）===
@@ -1326,8 +1449,8 @@ async function executeSignalV35(
     console.log(`[Executor][V3.5] 使用實際成交數據: 價=${realPrice}, 量=${realSize}`);
   }
   // 記錄 Bar-Lock 時間戳（防同 K 線重複）
-  if (signal.barTimestamp) {
-    newState.lockedBarTimestamp = signal.barTimestamp;
+  if (engineSignal.barTimestamp) {
+    newState.lockedBarTimestamp = engineSignal.barTimestamp;
   }
   // O2/O3：首單開倉時記錄入場 KAMA 方向（payload 可選提供 kamaFast/kamaSlow，否則以交易方向近似）
   if (newState.currentLayer === 1) {

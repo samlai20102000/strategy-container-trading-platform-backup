@@ -92,4 +92,24 @@ describe("martingaleCapability", () => {
       reason: "enabled",
     });
   });
+
+  it("V4.1 私有配置鍵可提供 Max_Layers 且不依賴 V4.0 鍵", () => {
+    expect(evaluateMartingaleStrategyInstance({
+      strategyKey: "MARTIN",
+      martinState: {
+        __v41Config: {
+          Martin_Enabled: true,
+          Max_Layers: 11,
+          Martin_Layers: [
+            { start: 1, end: 4, multiplier: 1.5 },
+            { start: 5, end: 11, multiplier: 1.1 },
+          ],
+        },
+      },
+    })).toMatchObject({
+      isMartingale: true,
+      maxLayers: 11,
+      reason: "enabled",
+    });
+  });
 });

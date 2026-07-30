@@ -2300,3 +2300,48 @@
 - [x] 新增四組 gate、兩種三 K 模式、原地重入 ON／OFF、舊資料 fallback、CRUD／快照 round-trip、Webhook 與 V5/V6.1/V7/七彩虹隔離契約測試
 - [x] 執行全量 Vitest、TypeScript、production build、桌面與 390px 響應式視覺驗收；不建立測試訂單、不主動觸發交易
 - [x] 完成 todo 核對、保存 checkpoint 並交付已自動發布版本與驗收報告
+
+## V4.0 三 K 關閉但 KAMA 開啟仍為零交易—根因排查（本輪只分析）
+- [x] 鎖定圖片所示回測設定與預期語義：圖片與背景任務其實都是三 K 關閉、KAMA 方向鎖關閉、特殊原地重入開啟；若改為三 K 關／KAMA 開，才會由 price／slow KAMA 單獨推導首單方向
+- [x] 核對回測中心提交 payload、背景任務快照、boolean／enum 正規化與 `20415_KAMA_MARTIN_V35` 專屬分流：兩個 gate 的獨立 `false` 均正確送達且未被覆蓋
+- [x] 排查 slow KAMA 計算參數、歷史資料暖機長度、已收盤 K 線切片、price 來源、方向限制及 evaluator HOLD 分支：slow KAMA 以 50／10／6 計算，第 50 根起有效；主迴圈第 52 根開始並傳入當根 close／slow KAMA／三根已收盤 K，KAMA-only 分支可直接推導 long／short
+- [x] 以現有真實回測資料無交易副作用重現，統計每類 HOLD／拒絕原因與可進場 K 線數，定位零交易首個阻塞點：完整 27,625 根資料自 index 52 起共 27,573 個可評估位置，保存設定均在首單方向閘 HOLD；任務已存 2,001 點真實價格樣本中，KAMA-only 於 1,949 個暖機後位置全數通過（long 962／short 987）
+- [x] 提出只限 V4.0 的可選修正方案、推薦語義、UI 診斷提示與回歸驗收矩陣；推薦保留獨立 gate 與 fail-safe、禁止 0/2 提交、加入 HOLD 統計與零交易原因卡，等待使用者確認後才修改或發布
+
+## V4.1 三方向條件全鏈路優化方案（本輪只規劃，確認後才生產）
+- [x] 鎖定 V4.1 語義：保留三 K 的 breakout／three_body_same_direction 二選一；新增 KAMA 快慢線方向與 Price／slow KAMA 方向；至少啟用一項，多項啟用時採 AND，方向衝突時 HOLD；建立新 V4.1 並保持 V4.0 不變
+- [x] 盤點 V4.0／V4.1 在策略 registry、設定正規化、回測中心、背景任務、策略交易新增與編輯、參數快照庫、快照導入、實盤 evaluator、Webhook／告警及結果展示的全部觸點；另確認 executor 二次 validateSignal 會形成隱性 Price／slow KAMA 鎖，且 v35Monitor／Heartbeat／狀態重置需納入 V4.1 策略族但保持配置隔離
+- [x] 設計獨立 V4.1 strategy key、canonical config、三條件 evaluator、三 K 雙模式、方向限制、診斷原因碼及舊 V4.0 快照相容政策；採 key `20415_KAMA_MARTIN_V41`、`__v41Config`、closed-bar 單一 evaluator、V4.0 不遷移及明確複製為 V4.1 草稿
+- [x] 制定分批實作順序、資料庫／快照遷移、單元與整合測試矩陣、真實資料驗收、發布前閘門及一鍵回滾方案；採八批本地實作、預期零 schema migration、A／B 雙確認閘門、V4.1 預設停用及先停用再回滾程序
+- [x] 交付詳細優化執行方案供使用者確認；本輪不修改功能、不建立回測、不發布生產版本
+
+## V4.1 全域 AND／OR 入場邏輯修訂（本輪只修訂方案）
+- [x] 鎖定 `entryConditionLogic: "and" | "or"` 語義、預設 AND、零條件非法及 OR 方向衝突處理：OR 的 no_signal 不阻擋有效票、long／short 同時出現則 HOLD、任一已啟用條件 data_unavailable 均 fail-closed
+- [x] 修訂 canonical config、三條件 evaluator、UI 公式、原因碼、可信封印、回測／策略交易／快照／實盤交付矩陣
+- [x] 擴充 AND／OR 條件組合測試、V4.0→V4.1 草稿預設、舊回測保真與發布回滾驗收
+- [x] 交付修訂版完整方案供使用者最終確認；本輪不修改功能、不建立回測、不發布生產版本
+
+## V4.1 方案 B 圖片對照與全鏈路最終修改計畫（本輪只規劃）
+- [x] 逐圖記錄目前回測 UI 缺口：仍為 V4.0、ENTRY GATES 2/2、缺少 KAMA 快慢線方向開關、全域 AND／OR 選擇及 V4.1 公式摘要；並鎖定 V4.1 的身份列、邏輯列、三方向條件、獨立重入控制與診斷列驗收畫面
+- [x] 重新核對回測中心、策略交易新增／編輯、從快照導入、參數快照庫、策略工作室、背景任務、auto／Webhook／executor、Heartbeat／監控的實際程式觸點；確認 33 個直接引用檔案及 `ParameterSnapshots.tsx`、`server/_core/index.ts`、背景任務三個間接入口
+- [x] 設計 V4.1 每個畫面的欄位、狀態、禁用規則、公式摘要、錯誤提示、手機版配置及與 canonical config 的一對一映射
+- [x] 設計三條件 AND／OR evaluator、原因碼、可信封印、回測／實盤一致性、V4.0 隔離與 V4.0→V4.1 草稿相容規則
+- [x] 編排逐檔實作批次、測試矩陣、快照 round-trip、真實資料驗證、零下單證據、發布閘門及回滾程序
+- [x] 交付最詳盡修改計畫供使用者確認；本輪不修改功能程式碼、不建立回測、不下單、不發布
+
+## V4.1 KAMA+3K 三條件 AND／OR 全鏈路本地實作（已獲批准；未批准發布）
+- [x] 記錄目前工作樹、V4.0 fixture、基線 `pnpm test`／`pnpm check`／`pnpm build` 與非預期失敗，禁止在基線不明時修改核心（66 test files／662 tests 通過；check、build 通過；外部 OKX／Bybit 憑證過期僅為既有警告）
+- [x] 新建 V4.1 canonical 配置契約：`20415_KAMA_MARTIN_V41`、`__v41Config`、Zod schema、normalizer、validator、stable hash、0/3 fail-closed 與 V4.0→V4.1 顯式草稿轉換（8 項契約測試與 `pnpm check` 通過）
+- [x] 新建無副作用 V4.1 evaluator：三 K 兩模式、Fast／Slow 持續方向、Price／Slow closed-bar、AND／OR、衝突 HOLD、原因碼、方向限制與重入安全規則（18 項 evaluator／重入測試、26 項累計 V4.1 測試與 `pnpm check` 通過）
+- [x] 新建獨立 V4.1 策略類別並接入策略工作室、schema dispatch、預設配置、馬丁／報表／symbol 能力集合，確認 V4.0 檔案及語義不變（32 項累計 V4.1 測試、`pnpm check`、重啟載入與註冊日誌均通過）
+- [x] 貫通策略 create／update、回測 run、快照 save／load／apply／clone 的嚴格 `__v41Config` 契約、同 key 身份鎖、hash round-trip 與新策略預設停用（API／快照 strict 契約與 round-trip 測試通過）
+- [x] 貫通回測引擎與背景 job：凍結完整配置、最新已收盤 K 對齊、三票／最終原因統計、歷史 V4.0 結果保真及不因目前表單切換而重算（離線 160 根 closed-bar 主引擎 runtime、診斷持久化、V2.5／V4.0 連續回歸與 50 項回測相關測試通過）
+- [x] 新建 `V41EntryConditionsPanel`：三開關、AND／OR、ENTRY CONDITIONS n/3、三 K A／B、獨立重入、公式／錯誤摘要、唯讀模式及桌面／手機無溢出（直接共用 canonical 型別與 normalizer；`pnpm check` 通過，三頁接線與跨尺寸視覺證據另列）
+- [x] 貫通 `Backtest.tsx`、`Strategies.tsx`、`ParameterSnapshots.tsx` 的新增／編輯／導入／預覽／複製流程，0/3 前端禁用且所有欄位完整 round-trip（`pnpm check` 0 錯誤；三頁 UI 接線 4 項契約測試通過）
+- [x] 貫通 auto、Raw Webhook、executor、Heartbeat、V35 馬丁監控與 generic risk 排除：共用 evaluator、HMAC 可信封印、既有跨 revision DB process lease、無 V4.1 隱性 Price gate、無重複監控（8 項實盤安全契約測試與 `pnpm check` 通過）
+- [x] 新增並通過配置、evaluator、API、快照、UI、parity、可信封印、執行安全、V4.0 與其他策略隔離測試；5 項 fail-closed 案例的交易所下單／平倉／撤單 mock 呼叫均為 0（Phase 10 聚焦矩陣 15 檔／104 項全通過）
+- [x] 執行全量 `pnpm test`、`pnpm check`、`pnpm build`、schema diff、round-trip JSON、真實歷史行情只讀驗證、日誌檢查及桌面／390px 視覺驗收（77 個測試檔：76 通過、1 跳過；734 項：730 通過、4 跳過；0 型別錯誤；production build 成功；無 schema 變更；99 根 OKX 公開已收盤 30m K 純 evaluator 驗證；V4.1 下單／執行日誌 0；DB strategy／signal／trade 皆 0；桌面與 390px 無溢出）
+- [x] 交付 V4.1 本地完成證據包供使用者第二次確認；在確認前不建立 checkpoint、不發布、不啟用任何 V4.1 策略、不下單（證據檔 SHA-256 清單與 ZIP 完整性檢查均通過）
+- [x] 記錄使用者於 2026-07-31 的第二次發布確認，執行 checkpoint 前最終核對：77 個測試檔中 76 通過、1 條件式跳過；734 項中 730 通過、4 條件式跳過、0 失敗；TypeScript／production build 通過；只讀 SQL 為 `strategy=0;enabled=0;signal=0;trade=0`
+- [x] 建立本次唯一 V4.1 checkpoint；依專案 auto-publish 設定立即發布，但不建立或啟用 V4.1 策略（已獲第二次明確確認，進入 checkpoint 操作）
+- [ ] 驗證發布版本、production runtime 與資料庫零副作用，確認 V4.1 strategy／signal／trade 仍為 0 後交付版本連結

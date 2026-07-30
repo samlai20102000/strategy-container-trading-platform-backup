@@ -37,10 +37,18 @@ import { fetchOKXCandles, fetchBybitCandles } from "./backtest/dataFetcher";
 import { getTimeframeMilliseconds } from "./backtest/timeframeParser";
 import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
 import { normalizeV40EntryGateConfig } from "../strategies/v35/entryGate";
+import {
+  V41_STRATEGY_KEY,
+  validateV41Config,
+  type NormalizedV41Config,
+} from "../../shared/strategies/kama3kMartinV41";
+import { getBoundStrategyConfig } from "./strategySnapshotConfig";
+import { evaluateV41SameDirectionReentry } from "../strategies/v41/entryConditions";
+import { fetchKLineData } from "./autoTradeSignalGenerator";
 
 export const V35_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
 export function isV35StrategyKey(strategyKey: unknown): boolean {
-  return strategyKey === V35_STRATEGY_KEY;
+  return strategyKey === V35_STRATEGY_KEY || strategyKey === V41_STRATEGY_KEY;
 }
 
 export type V35PostCloseAction = "retry_close" | "reenter" | "cooldown" | "none";
@@ -147,7 +155,13 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     return false;
   }
 
-  const { config: cfg, audit: configAudit } = readV4Config(strategy);
+  const {
+    config: cfg,
+    audit: configAudit,
+    allowExpansion,
+    v41Config,
+  } = readV4Config(strategy);
+  const isV41 = strategy.strategyKey === V41_STRATEGY_KEY;
 
   // 馬丁層數（文件語義，首單 = 第 0 層）= currentLayer - 1
   const martinDepth = state.currentLayer; // V4.0 currentLayer 直接表示層數
@@ -192,27 +206,42 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
   console.log(`[V35Monitor] 策略 #${strategy.id} 止盈檢查: price=${currentPrice}, avg=${state.avgPrice}, isLong=${state.isLong}, leverage=${leverage}x, activated=${state.isTrailingActivated}, highestPrice=${state.highestPrice}, TP=${cfg.Target_TP_Pct}%, CB=${cfg.Callback_Pct}% | result: shouldClose=${trailing.shouldClose}, reason=${trailing.reason}`);
 
   if (trailing.shouldClose) {
-    // === O3 平倉分流（統一純函數 decideCloseSplit）===
-    // 分流 A：無馬丁（馬丁層數 0）+ 止盈 + KAMA 方向未變 → 立即市價重入
-    // 分流 B：有馬丁（馬丁層數 >= 1）→ 強制冷卻
-    const kama = await computeLiveKama(strategy, cfg);
-    const split = decideCloseSplit({
-      martinDepth,
-      exitReason: "trailing_stop",
-      entryTrendBull: state.entryTrendBull,
-      currentKamaFast: kama?.fast ?? 0,
-      currentKamaSlow: kama?.slow ?? 0,
-      kLinePeriod: cfg.K_Line_Period,
-      cooldownBars: 2,
-      reentryEnabled: cfg.enableSameDirectionReentry,
-    });
+    // V4.1 原地重入只接受同一 closed-bar evaluator 的「持續方向條件」；事件型 3K 不可重複當票。
+    const hasMartinLayer = state.currentLayer > 1;
+    const kama = isV41 ? null : await computeLiveKama(strategy, cfg);
+    const v41Reentry = isV41 && !hasMartinLayer && allowExpansion && v41Config
+      ? await evaluateV41LiveReentry(strategy, adapter, state, v41Config)
+      : null;
+    const split = isV41
+      ? {
+          action: hasMartinLayer
+            ? "cooldown" as const
+            : v41Reentry?.allowed
+              ? "reenter" as const
+              : "none" as const,
+          reason: hasMartinLayer
+            ? "V4.1 曾發生馬丁加倉，止盈後強制冷卻"
+            : v41Reentry?.reason ?? "V4.1 原地重入未通過或未啟用",
+        }
+      : decideCloseSplit({
+          martinDepth,
+          exitReason: "trailing_stop",
+          entryTrendBull: state.entryTrendBull,
+          currentKamaFast: kama?.fast ?? 0,
+          currentKamaSlow: kama?.slow ?? 0,
+          kLinePeriod: cfg.K_Line_Period,
+          cooldownBars: 2,
+          reentryEnabled: cfg.enableSameDirectionReentry,
+        });
 
     const closeResult = await executeFullClose(strategy, adapter, state, "trailing_take_profit", trailing.reason, {
       disable: false,
       cooldownMinutes: split.action === "cooldown" ? cfg.K_Line_Period * 2 : 0,
     });
 
-    const requestedAction = split.action === "reenter" && !kama ? "none" : split.action;
+    const requestedAction = !isV41 && split.action === "reenter" && !kama
+      ? "none"
+      : split.action;
     const postCloseAction = decideV35PostCloseAction(closeResult.positionClosed, requestedAction);
     if (postCloseAction === "retry_close") {
       await notifyOwner(
@@ -222,9 +251,10 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       return true;
     }
 
-    if (postCloseAction === "reenter" && kama) {
+    if (postCloseAction === "reenter" && (isV41 ? v41Reentry?.allowed : !!kama)) {
       // ✅ O3：第 0 層順勢重入（立即市價重入首單）
-      const reentered = await executeReentry(strategy, adapter, state, currentPrice, kama.fast > kama.slow, cfg);
+      const reentryDirectionBull = isV41 ? state.isLong : (kama?.fast ?? 0) > (kama?.slow ?? 0);
+      const reentered = await executeReentry(strategy, adapter, state, currentPrice, reentryDirectionBull, cfg);
       await notifyOwner(
         `⚡ 移動止盈 + 順勢重入 - 策略 #${strategy.id} ${strategy.name}`,
         `${trailing.reason}\n${split.reason}\n${reentered ? "已市價重入首單，新一輪開始" : "重入下單失敗，等待新 3K 信號"}`,
@@ -232,7 +262,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     } else {
       await notifyOwner(
         `✅ 移動止盈觸發 - 策略 #${strategy.id} ${strategy.name}`,
-        `${trailing.reason}\n${postCloseAction === "cooldown" ? `馬丁解套（第 ${martinDepth} 層馬丁），進入冷卻期 ${cfg.K_Line_Period * 2} 分鐘` : kama ? split.reason : "KAMA 行情暫時不可用，本輪不執行順勢重入"}`,
+        `${trailing.reason}\n${postCloseAction === "cooldown" ? `馬丁解套（第 ${martinDepth} 層馬丁），進入冷卻期 ${cfg.K_Line_Period * 2} 分鐘` : split.reason}`,
       );
     }
     return true; // 已觸發平倉（止盈）
@@ -247,7 +277,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
   }
 
   // ===== 3. 馬丁加倉判斷（O1：支援階梯式乘數）=====
-  if (shouldAddLayer(state, currentPrice, cfg, leverage).shouldAdd) {
+  if (allowExpansion && shouldAddLayer(state, currentPrice, cfg, leverage).shouldAdd) {
     const nextLayer = state.currentLayer + 1;
     const lotSize = getLayerSize(nextLayer, currentPrice, cfg);
 
@@ -358,10 +388,12 @@ export function normalizeV4MaxLossPct(
   return { value: parsed, status: "configured", rawDisplay };
 }
 
-/** 讀取策略的 V4.0 合併配置，並保留硬止損原始值供稽核。 */
+/** 讀取 V35-family 合併配置，並保留硬止損原始值與 V4.1 曝險擴張權限供稽核。 */
 function readV4Config(strategy: Strategy): {
   config: V4Config;
   audit: ReturnType<typeof normalizeV4MaxLossPct>;
+  allowExpansion: boolean;
+  v41Config: NormalizedV41Config | null;
 } {
   // 從 strategy.martinState JSON 中讀取擴展配置（__v35Config 鍵，由策略設定 UI 寫入）
   // 🔥 固定金本位馬丁預設值
@@ -383,6 +415,44 @@ function readV4Config(strategy: Strategy): {
   };
 
   const defaultAudit = normalizeV4MaxLossPct(undefined, defaults.Max_Loss_Pct);
+
+  if (strategy.strategyKey === V41_STRATEGY_KEY) {
+    const rawV41Config = getBoundStrategyConfig(strategy.martinState, V41_STRATEGY_KEY);
+    const validation = validateV41Config(rawV41Config);
+    if (validation.valid && validation.config) {
+      const canonical = validation.config;
+      const maxLossAudit = normalizeV4MaxLossPct(canonical.Max_Loss_Pct, defaults.Max_Loss_Pct);
+      return {
+        config: {
+          Initial_Capital: canonical.Initial_Capital,
+          First_Order_Pct: canonical.First_Order_Pct,
+          Max_Loss_Pct: maxLossAudit.value,
+          Martin_Step_Pct: canonical.Martin_Step_Pct,
+          Martin_Layers: canonical.Martin_Layers.map((layer) => ({ ...layer })),
+          Max_Layers: canonical.Max_Layers,
+          Target_TP_Pct: canonical.Target_TP_Pct,
+          Callback_Pct: canonical.Callback_Pct,
+          K_Line_Period: canonical.K_Line_Period,
+          enableThreeKFilter: canonical.enableThreeKFilter,
+          threeKPatternMode: canonical.threeKMode,
+          enableKamaDirectionLock: canonical.enableKamaFastSlowCross || canonical.enableKamaPriceVsSlow,
+          enableSameDirectionReentry: canonical.enableSameDirectionReentry,
+        },
+        audit: maxLossAudit,
+        allowExpansion: true,
+        v41Config: canonical,
+      };
+    }
+    console.error(
+      `[V35Monitor][V4.1] 策略 #${strategy.id} canonical 配置無效；保留防守性止損／止盈，禁止加倉與重入：${validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("；")}`,
+    );
+    return {
+      config: defaults,
+      audit: normalizeV4MaxLossPct(rawV41Config, defaults.Max_Loss_Pct),
+      allowExpansion: false,
+      v41Config: null,
+    };
+  }
 
   try {
     const ms = strategy.martinState;
@@ -411,13 +481,61 @@ function readV4Config(strategy: Strategy): {
           Callback_Pct: Number.isFinite(Number(c.Callback_Pct)) ? Number(c.Callback_Pct) : defaults.Callback_Pct,
           K_Line_Period: Number.isFinite(Number(c.K_Line_Period)) && Number(c.K_Line_Period) > 0 ? Number(c.K_Line_Period) : defaults.K_Line_Period,
           ...entryGates,
-        }, audit: maxLossAudit };
+        }, audit: maxLossAudit, allowExpansion: true, v41Config: null };
       }
     }
   } catch {
     // 解析失敗使用預設
   }
-  return { config: defaults, audit: defaultAudit };
+  return { config: defaults, audit: defaultAudit, allowExpansion: true, v41Config: null };
+}
+
+async function evaluateV41LiveReentry(
+  strategy: Strategy,
+  adapter: ExchangeAdapter,
+  state: StrategyState,
+  config: NormalizedV41Config,
+): Promise<{ allowed: boolean; reason: string }> {
+  try {
+    const closedBars = await fetchKLineData(
+      adapter,
+      strategy.symbol,
+      config.K_Line_Period,
+      100,
+      true,
+    );
+    const latest = closedBars.at(-1);
+    if (!latest) return { allowed: false, reason: "V4.1 原地重入缺少已收盤 K 線" };
+    const closes = closedBars.map((bar) => bar.close);
+    const fastKama = calculateKAMA(
+      closes,
+      config.KAMA_Fast_Length,
+      config.p2_fastest,
+      config.p3_slowest,
+    );
+    const slowKama = calculateKAMA(
+      closes,
+      config.KAMA_Slow_Length,
+      config.q2_fastest,
+      config.q3_slowest,
+    );
+    const originalDirection = state.isLong ? "long" as const : "short" as const;
+    const result = evaluateV41SameDirectionReentry({
+      config,
+      closedBars,
+      decisionBarTimestamp: latest.timestamp,
+      decisionClose: latest.close,
+      fastKama,
+      slowKama,
+      allowedDirection: strategy.direction as "long" | "short" | "both",
+      requestedDirection: originalDirection,
+      originalDirection,
+    });
+    return { allowed: result.allowed, reason: `${result.reasonCode}｜${result.reason}` };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { allowed: false, reason: `V4.1 原地重入行情／判定失敗（fail-closed）：${detail}` };
+  }
 }
 
 /**

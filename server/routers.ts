@@ -53,6 +53,16 @@ import {
   normalizeV40EntryGateConfig,
   V40_STRATEGY_KEY,
 } from "./strategies/v35/entryGate";
+import {
+  V41_CONFIG_SCHEMA,
+  V41_STRATEGY_KEY,
+} from "../shared/strategies/kama3kMartinV41";
+import {
+  assertV41ConfigIsolation,
+  attachV41StrategyConfig,
+  deriveV41StrategyColumns,
+  resolveV41ConfigForStrategy,
+} from "./services/v41StrategyConfig";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -478,6 +488,8 @@ const strategyInputSchema = z.object({
       martin_layers: z.string().max(3000).default('').optional(),
     })
     .optional(),
+  // V4.1：完整 canonical 配置；API 寫入仍會再執行同 key 與 0/3 fail-closed 驗證。
+  v41Config: V41_CONFIG_SCHEMA.optional(),
 });
 
 /** O1：伺服器端驗證 Martin_Layers JSON（重疊/非法値），回傳錯誤訊息或 null */
@@ -590,6 +602,26 @@ const strategiesRouter = router({
             ...normalizeV40EntryGateConfig(input.v35Config as Record<string, unknown> | undefined),
           }
         : input.v35Config;
+      let v41Config: ReturnType<typeof resolveV41ConfigForStrategy>;
+      try {
+        assertV41ConfigIsolation(input.strategyKey ?? "", {
+          v25Config: input.v25Config,
+          v35Config: input.v35Config,
+          v50Config: input.v50Config,
+          v61Config: input.v61Config,
+          v70Config: input.v70Config,
+          v2_0Config: input.v2_0Config,
+          rainbowTrendLadderConfig: input.rainbowTrendLadderConfig,
+        });
+        v41Config = resolveV41ConfigForStrategy(input.strategyKey ?? "", input.v41Config, {
+          required: input.strategyKey === V41_STRATEGY_KEY,
+        });
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `V4.1 參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
       // O1：伺服器端驗證階梯式分層
       if (v40Config?.Martin_Layers) {
         const layersErr = validateMartinLayersJson(v40Config.Martin_Layers);
@@ -641,6 +673,22 @@ const strategiesRouter = router({
       });
       const resolvedPositionSize = deploymentPosition.value;
       const webhookSecret = generateWebhookSecret();
+      const initialMartinState: Record<string, unknown> = {
+        lossCount: 0,
+        currentLot: resolvedPositionSize,
+        lastEntryPrice: 0,
+        ...(v40Config ? { __v35Config: v40Config } : {}),
+        ...(input.v50Config ? { __v50Config: input.v50Config } : {}),
+        ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
+        ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
+        ...(rainbowTrendLadderConfig ? { __rainbowTrendLadderConfig: rainbowTrendLadderConfig } : {}),
+        ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
+        ...(v25Config ? { __v25Config: v25Config } : {}),
+      };
+      const v41Columns = v41Config ? deriveV41StrategyColumns(v41Config) : undefined;
+      const martinState = v41Config
+        ? attachV41StrategyConfig(initialMartinState, v41Config, "策略建立配置")
+        : initialMartinState;
       const insertResult: any = await db.createStrategy({
         userId: ctx.user.id,
         name: input.name,
@@ -652,33 +700,27 @@ const strategiesRouter = router({
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
-        enabled: input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY ? false : true,
+        enabled: input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY || input.strategyKey === V41_STRATEGY_KEY
+          ? false
+          : true,
+        ...(input.strategyKey === V41_STRATEGY_KEY ? {
+          disabledReason: "V4.1 新策略預設停用，請人工覆核後啟用",
+        } : {}),
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
-        stopLossPct: String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
-        takeProfitPct: String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
+        stopLossPct: v41Columns?.stopLossPct ?? String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
+        takeProfitPct: v41Columns?.takeProfitPct ?? String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
-        maxMartinLevel: v25Config
+        martinMultiplier: v41Columns?.martinMultiplier ?? String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
+        maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbow20415Config
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges))
             : rainbowTrendLadderConfig
               ? rainbowTrendLadderConfig.Max_Layers
-              : input.maxMartinLevel,
-        martinSpacingPct: String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
-        martinState: {
-          lossCount: 0,
-          currentLot: resolvedPositionSize,
-          lastEntryPrice: 0,
-          ...(v40Config ? { __v35Config: v40Config } : {}),
-          ...(input.v50Config ? { __v50Config: input.v50Config } : {}),
-          ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
-          ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
-          ...(rainbowTrendLadderConfig ? { __rainbowTrendLadderConfig: rainbowTrendLadderConfig } : {}),
-          ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
-          ...(v25Config ? { __v25Config: v25Config } : {}),
-        },
+              : input.maxMartinLevel),
+        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
+        martinState,
         strategyKey: input.strategyKey || null,
         ...(v25Config ? {
           kLinePeriod: v25Config.K_Line_Period,
@@ -687,6 +729,10 @@ const strategiesRouter = router({
         ...(input.strategyKey === V40_STRATEGY_KEY ? {
           kLinePeriod: Number(v40Config?.K_Line_Period ?? 15),
           reentryEnabled: v40Config?.enableSameDirectionReentry ?? true,
+        } : {}),
+        ...(v41Columns ? {
+          kLinePeriod: v41Columns.kLinePeriod,
+          reentryEnabled: v41Columns.reentryEnabled,
         } : {}),
         ...(rainbow20415Config ? {
           kLinePeriod: rainbow20415Config.Entry_Timeframe_Minutes,
@@ -716,6 +762,34 @@ const strategiesRouter = router({
       if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "策略不存在" });
       }
+      const targetStrategyKey = input.strategyKey ?? existing.strategyKey ?? "";
+      if (
+        (existing.strategyKey === V41_STRATEGY_KEY || targetStrategyKey === V41_STRATEGY_KEY)
+        && existing.strategyKey !== targetStrategyKey
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "V4.1 策略引擎身份不可在既有實例上切換；請以顯式轉換草稿建立新實例",
+        });
+      }
+      let v41Config: ReturnType<typeof resolveV41ConfigForStrategy>;
+      try {
+        assertV41ConfigIsolation(targetStrategyKey, {
+          v25Config: input.v25Config,
+          v35Config: input.v35Config,
+          v50Config: input.v50Config,
+          v61Config: input.v61Config,
+          v70Config: input.v70Config,
+          v2_0Config: input.v2_0Config,
+          rainbowTrendLadderConfig: input.rainbowTrendLadderConfig,
+        });
+        v41Config = resolveV41ConfigForStrategy(targetStrategyKey, input.v41Config);
+      } catch (error) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `V4.1 參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
       const data: Record<string, unknown> = {};
       if (input.name !== undefined) data.name = input.name;
       if (input.description !== undefined) data.description = input.description;
@@ -742,6 +816,13 @@ const strategiesRouter = router({
       if (input.maxMartinLevel !== undefined) data.maxMartinLevel = input.maxMartinLevel;
       if (input.martinSpacingPct !== undefined) data.martinSpacingPct = String(input.martinSpacingPct);
       if (input.strategyKey !== undefined) data.strategyKey = input.strategyKey || null;
+      if (v41Config) {
+        const currentState = existing.martinState && typeof existing.martinState === "object"
+          ? existing.martinState as Record<string, unknown>
+          : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
+        data.martinState = attachV41StrategyConfig(currentState, v41Config, "策略編輯配置");
+        Object.assign(data, deriveV41StrategyColumns(v41Config));
+      }
       // V2.5：編輯時重用新增／回測／快照的同一嚴格契約，並保留既有持倉運行狀態。
       if (input.v25Config !== undefined) {
         let v25Config: ReturnType<typeof assertValidV25Config>;

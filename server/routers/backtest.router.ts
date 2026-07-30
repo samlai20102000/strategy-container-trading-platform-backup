@@ -41,6 +41,12 @@ import {
   assertValidRainbowTrendLadderConfig,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../../shared/strategies/rainbowTrendLadder";
+import {
+  assertValidV41Config,
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+} from "../../shared/strategies/kama3kMartinV41";
+import { deriveV41StrategyColumns } from "../services/v41StrategyConfig";
 
 function assertRegisteredStrategy(strategyKey: string): void {
   const isRegistered = listRegisteredStrategies().some((strategy) => strategy.key === strategyKey);
@@ -51,11 +57,12 @@ function assertRegisteredStrategy(strategyKey: string): void {
   }
 }
 
-function normalizeSnapshotConfigForStrategy(
+export function normalizeSnapshotConfigForStrategy(
   strategyKey: string,
   rawConfig: Record<string, unknown>,
 ): Record<string, unknown> {
   try {
+    if (strategyKey === V41_STRATEGY_KEY) return { ...assertValidV41Config(rawConfig) };
     if (strategyKey === V25_STRATEGY_KEY) return { ...assertValidV25Config(rawConfig) };
     if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
       return { ...assertValidRainbow20415Config(rawConfig) };
@@ -65,11 +72,13 @@ function normalizeSnapshotConfigForStrategy(
     }
     return { ...rawConfig };
   } catch (error) {
-    const label = strategyKey === RAINBOW_20415_STRATEGY_KEY
-      ? "20415 七彩虹"
-      : strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
-        ? "七彩虹線趨勢跟蹤階梯馬丁"
-        : "V2.5";
+    const label = strategyKey === V41_STRATEGY_KEY
+      ? "V4.1"
+      : strategyKey === RAINBOW_20415_STRATEGY_KEY
+        ? "20415 七彩虹"
+        : strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+          ? "七彩虹線趨勢跟蹤階梯馬丁"
+          : "V2.5";
     throw new Error(
       `${label}快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
     );
@@ -129,7 +138,7 @@ export const backtestSettingsSchema = z.object({
   baseLotSizeMode: z.string().optional(),
 });
 
-function validateRequest(input: z.infer<typeof backtestRequestSchema>): BacktestRequest {
+export function validateBacktestRequest(input: z.infer<typeof backtestRequestSchema>): BacktestRequest {
   if (!isValidTimeframe(input.timeframe)) {
     throw new Error(`無效的時間框架：${input.timeframe}（正確格式如 15m、1h、4h、1d）`);
   }
@@ -146,7 +155,11 @@ function validateRequest(input: z.infer<typeof backtestRequestSchema>): Backtest
   const spanDays = (endMs - startMs) / 86400000;
   if (spanDays > 1830) throw new Error("回測區間最長支持 5 年，請縮短日期範圍");
   if (input.config && typeof input.config === "object") {
-    if (input.strategyKey === RAINBOW_20415_STRATEGY_KEY) {
+    if (input.strategyKey === V41_STRATEGY_KEY) {
+      const nestedConfig = input.config[V41_CONFIG_KEY];
+      const config = assertValidV41Config(nestedConfig ?? input.config);
+      input.config = { ...config };
+    } else if (input.strategyKey === RAINBOW_20415_STRATEGY_KEY) {
       const config = assertValidRainbow20415Config(input.config);
       input.config = { ...config };
     } else if (input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
@@ -209,7 +222,7 @@ export const backtestRouter = router({
       const userId = ctx.user?.id;
       if (!userId) throw new Error("請先登入");
       const { timeout, strategyName, tradeAmount, ...rest } = input;
-      const request = validateRequest(rest);
+      const request = validateBacktestRequest(rest);
       const jobId = await backtestJobManager.submit(request, userId, {
         timeoutSeconds: timeout,
         strategyName,
@@ -408,8 +421,15 @@ export const backtestRouter = router({
       const storedBacktestSettings = input.backtestSettings
         ? {
             ...input.backtestSettings,
-            ...(input.strategyKey === V25_STRATEGY_KEY
+            ...(input.strategyKey === V41_STRATEGY_KEY
               ? {
+                  tradeAmount: Number(storedConfig.Base_Lot_Size),
+                  baseLotSize: Number(storedConfig.Base_Lot_Size),
+                  baseLotSizeMode: "usdt",
+                  configJson: storedConfig,
+                }
+              : input.strategyKey === V25_STRATEGY_KEY
+                ? {
                   tradeAmount: Number(storedConfig.Base_Lot_Size),
                   baseLotSize: Number(storedConfig.Base_Lot_Size),
                   baseLotSizeMode: "usdt",
@@ -574,6 +594,10 @@ export const backtestRouter = router({
         snapshotId: snapshot.id,
         snapshotName: snapshot.snapshotName,
       });
+      const v41Config = snapshotKey === V41_STRATEGY_KEY
+        ? assertValidV41Config(config)
+        : undefined;
+      const v41Columns = v41Config ? deriveV41StrategyColumns(v41Config) : undefined;
       const v25Config = snapshotKey === V25_STRATEGY_KEY
         ? assertValidV25Config(config)
         : undefined;
@@ -595,21 +619,26 @@ export const backtestRouter = router({
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
-          maxMartinLevel: v25Config
+          martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
+          maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
               : ladderConfig
                 ? ladderConfig.Max_Layers
-                : config.Max_Layers ?? (strategy as any).maxMartinLevel,
-          martinSpacingPct: String(
+                : config.Max_Layers ?? (strategy as any).maxMartinLevel),
+          martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
             nextLadderRange?.triggerSpacingPct
               ?? (firstRainbowRange
                 ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
                 : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct),
           ),
-          ...(v25Config ? {
+          ...(v41Columns ? {
+            stopLossPct: v41Columns.stopLossPct,
+            takeProfitPct: v41Columns.takeProfitPct,
+            kLinePeriod: v41Columns.kLinePeriod,
+            reentryEnabled: v41Columns.reentryEnabled,
+          } : v25Config ? {
             stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
             takeProfitPct: String(v25Config.Take_Profit_Pct),
             kLinePeriod: v25Config.K_Line_Period,
@@ -673,6 +702,10 @@ export const backtestRouter = router({
         snapshotKey,
         (snapshot.config as Record<string, unknown>) || {},
       );
+      const v41Config = snapshotKey === V41_STRATEGY_KEY
+        ? assertValidV41Config(config)
+        : undefined;
+      const v41Columns = v41Config ? deriveV41StrategyColumns(v41Config) : undefined;
       const v25Config = snapshotKey === V25_STRATEGY_KEY
         ? assertValidV25Config(config)
         : undefined;
@@ -718,20 +751,23 @@ export const backtestRouter = router({
         orderType: input.orderType,
         // 快照導入只建立配置，不得在尚未人工覆核實盤倉位前自動啟用或觸發交易。
         enabled: false,
+        disabledReason: snapshotKey === V41_STRATEGY_KEY
+          ? "V4.1 快照導入後預設停用，請人工覆核後啟用"
+          : "快照導入後預設停用，請人工覆核後啟用",
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
-        stopLossPct: String(rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
-        takeProfitPct: String(ladderConfig?.Trailing_Activation_Pct ?? rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
+        stopLossPct: v41Columns?.stopLossPct ?? String(rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
+        takeProfitPct: v41Columns?.takeProfitPct ?? String(ladderConfig?.Trailing_Activation_Pct ?? rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
         maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
-        martinMultiplier: String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
-        maxMartinLevel: v25Config
+        martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
+        maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbowConfig
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
             : ladderConfig
               ? ladderConfig.Max_Layers
-              : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1))),
-        martinSpacingPct: String(
+              : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1)))),
+        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
           nextLadderRange?.triggerSpacingPct
             ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
@@ -752,8 +788,8 @@ export const backtestRouter = router({
         ),
         strategyKey: snapshotKey,
         tradeMode: 'webhook',
-        kLinePeriod: ladderConfig?.Entry_Timeframe_Minutes ?? rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
-        reentryEnabled: ladderConfig?.Reentry_Wait_Next_M30_Close ?? rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
+        kLinePeriod: v41Columns?.kLinePeriod ?? ladderConfig?.Entry_Timeframe_Minutes ?? rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
+        reentryEnabled: v41Columns?.reentryEnabled ?? ladderConfig?.Reentry_Wait_Next_M30_Close ?? rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
       });
 
       const newId = insertResult?.[0]?.insertId;
@@ -814,6 +850,10 @@ export const backtestRouter = router({
       const updatedState = attachSnapshotConfig(prevState, snapshotKey, config, {
         snapshotName: "直接套用配置",
       });
+      const v41Config = snapshotKey === V41_STRATEGY_KEY
+        ? assertValidV41Config(config)
+        : undefined;
+      const v41Columns = v41Config ? deriveV41StrategyColumns(v41Config) : undefined;
       const v25Config = snapshotKey === V25_STRATEGY_KEY
         ? assertValidV25Config(config)
         : undefined;
@@ -835,21 +875,26 @@ export const backtestRouter = router({
       await db.update(strategies)
         .set({
           martinState: updatedState,
-          martinMultiplier: String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
-          maxMartinLevel: v25Config
+          martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
+          maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
               : ladderConfig
                 ? ladderConfig.Max_Layers
-                : config.Max_Layers ?? (instance as any).maxMartinLevel,
-          martinSpacingPct: String(
+                : config.Max_Layers ?? (instance as any).maxMartinLevel),
+          martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
             nextLadderRange?.triggerSpacingPct
               ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct),
           ),
-          ...(v25Config ? {
+          ...(v41Columns ? {
+            stopLossPct: v41Columns.stopLossPct,
+            takeProfitPct: v41Columns.takeProfitPct,
+            kLinePeriod: v41Columns.kLinePeriod,
+            reentryEnabled: v41Columns.reentryEnabled,
+          } : v25Config ? {
             stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
             takeProfitPct: String(v25Config.Take_Profit_Pct),
             kLinePeriod: v25Config.K_Line_Period,
@@ -1217,7 +1262,7 @@ export const backtestRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const baseRequest = validateRequest(input.baseRequest);
+      const baseRequest = validateBacktestRequest(input.baseRequest);
       return runOptimization({
         baseRequest,
         parameterRanges: input.parameterRanges,
@@ -1235,7 +1280,7 @@ export const backtestRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const base = validateRequest({ ...input.baseRequest, symbol: input.symbols[0] });
+      const base = validateBacktestRequest({ ...input.baseRequest, symbol: input.symbols[0] });
       const { symbol: _s, ...baseWithoutSymbol } = base;
       return runMultiSymbolBacktest(input.symbols, baseWithoutSymbol);
     }),

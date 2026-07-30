@@ -47,6 +47,13 @@ import {
   evaluateV40EntryGates,
   V40_STRATEGY_KEY,
 } from "../strategies/v35/entryGate";
+import {
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+  validateV41Config,
+} from "../../shared/strategies/kama3kMartinV41";
+import { StrategyKama3kV41 } from "../strategies/v41/strategy_kama_3k_v41";
+import { createV41TrustedEntrySeal } from "./v41TrustedEntrySeal";
 
 
 
@@ -477,7 +484,7 @@ export async function generateTradingSignal(
       strategy.symbol,
       kLinePeriod,
       100,
-      strategy.strategyKey === V40_STRATEGY_KEY,
+      strategy.strategyKey === V40_STRATEGY_KEY || strategy.strategyKey === V41_STRATEGY_KEY,
     );
     
     if (klines.length === 0) {
@@ -849,7 +856,103 @@ export async function generateTradingSignal(
         }
       }
     }
-    // Handle V3.5 strategies (KAMA) separately due to async generateActionsV35
+    // V4.1 嚴格使用 canonical closed-bar evaluator，通過後才簽發伺服器內部 HMAC 封印。
+    else if (strategy.strategyKey === V41_STRATEGY_KEY && engine instanceof StrategyKama3kV41) {
+      const configValidation = validateV41Config(boundSnapshotConfig);
+      if (!configValidation.valid || !configValidation.config) {
+        holdDetail = {
+          type: "validation_failed",
+          detail: `V4.1 canonical 配置無效（fail-closed）：${configValidation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("；")}`,
+        };
+      } else {
+        const v41RuntimeConfig: Record<string, any> = {
+          ...engine.defaultConfig,
+          ...configValidation.config,
+          [V41_CONFIG_KEY]: configValidation.config,
+          martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || "1"),
+          maxMartinLevel: strategy.maxMartinLevel,
+          martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || "0"),
+          reentryEnabled: strategy.reentryEnabled,
+          reentryCooldownBars: strategy.reentryCooldownBars,
+          ...(typeof strategy.positionSizeObject === "object" && strategy.positionSizeObject !== null
+            ? strategy.positionSizeObject as Record<string, unknown>
+            : {}),
+          Base_Lot_Size: deploymentPosition.value,
+          Position_Mode: deploymentPosition.mode,
+          Position_Value: deploymentPosition.value,
+        };
+        const v41Instance: StrategyInstanceConfig = {
+          ...strategy,
+          positionSize: parseFloat(strategy.positionSize || "0"),
+          config: v41RuntimeConfig,
+          state: strategyState,
+        };
+        const isInitialEntry = Number(strategyState.currentLayer ?? 0) === 0
+          || Number(strategyState.totalSize ?? 0) <= 0;
+
+        if (!isInitialEntry) {
+          holdDetail = {
+            type: "strategy_hold",
+            detail: "V4.1 已有持倉；入場 evaluator 不重複觸發，持倉管理交由單一 V35-family monitor",
+          };
+        } else {
+          const evaluation = engine.evaluateEntryConditions(initialSignal, marketData, v41Instance);
+          if (!evaluation.passed || !evaluation.direction) {
+            holdDetail = {
+              type: "validation_failed",
+              detail: `${evaluation.primaryReasonCode}｜${evaluation.reason}`,
+            };
+          } else {
+            const v41InputSignal: StrategySignal = {
+              ...initialSignal,
+              action: evaluation.direction === "long" ? "BUY" : "SELL",
+              price: evaluation.decisionClose ?? marketData.lastPrice,
+              barTimestamp: evaluation.decisionBarTimestamp,
+            };
+            const stateValidation = engine.validateExecutionState(v41InputSignal, v41Instance);
+            if (!stateValidation.valid) {
+              holdDetail = {
+                type: "validation_failed",
+                detail: `V4.1 狀態驗證未通過：${stateValidation.reason}`,
+              };
+            } else {
+              const v41Action = await engine.generateActionsV35(
+                v41InputSignal,
+                v41Instance,
+                marketData,
+                strategyState,
+              );
+              if (v41Action.action === "OPEN_LONG" || v41Action.action === "OPEN_SHORT") {
+                const parsedAction = v41Action.action === "OPEN_LONG" ? "buy" : "sell";
+                const trustedSeal = createV41TrustedEntrySeal({
+                  strategyId: strategy.id,
+                  action: parsedAction,
+                  evaluation,
+                });
+                signal = {
+                  action: parsedAction,
+                  symbol: strategy.symbol,
+                  price: evaluation.decisionClose ?? marketData.lastPrice,
+                  barTimestamp: evaluation.decisionBarTimestamp,
+                  reason: `${evaluation.primaryReasonCode}｜${evaluation.reason}；${v41Action.reason || "首單開倉"}`,
+                  confidence: 1,
+                  v41TrustedEntrySeal: trustedSeal,
+                };
+                console.log(
+                  `[AutoTradeSignalGenerator][V4.1] ✅ sealed ${parsedAction} strategy=${strategy.id} bar=${evaluation.decisionBarTimestamp} hash=${evaluation.configHash}`,
+                );
+              } else {
+                holdDetail = {
+                  type: "strategy_hold",
+                  detail: `V4.1 策略判斷觀望：${v41Action.reason || "條件未滿足"}`,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+    // Handle V3.5/V4.0 strategies (KAMA) separately due to async generateActionsV35
     else if (engine instanceof BaseStrategyV35) {
       const v35RuntimeConfig: Record<string, number | string | boolean> = {
         // 快照原始配置覆蓋引擎預設；身份不一致時不會回傳配置。

@@ -15,6 +15,7 @@ import { Strategy20415 } from "../strategies/builtin/strategy20415";
 import { StrategyRainbowTrendLadder } from "../strategies/builtin/strategyRainbowTrendLadder";
 import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
 import { StrategyKama3kV35 } from "../strategies/v35/strategy_kama_3k_v35";
+import { StrategyKama3kV41 } from "../strategies/v41/strategy_kama_3k_v41";
 import { StrategyKama3kV50 } from "../strategies/v50/strategy_kama_3k_v50";
 import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
@@ -31,6 +32,7 @@ export const BUILT_IN_KEYS = [
   "RAINBOW_TREND_LADDER_V1",
   "KAMA_3K_BREAKOUT_V25",
   "20415_KAMA_MARTIN_V35",
+  "20415_KAMA_MARTIN_V41",
   "KAMA_3K_ULTIMATE_V50",
   "KAMA_3K_HF_V61",
   "KAMA_3K_TORNADO_V70",
@@ -48,6 +50,7 @@ const BUILT_IN_CAPABILITIES: Readonly<Record<
   RAINBOW_TREND_LADDER_V1: Object.freeze({ martingaleLayers: true }),
   KAMA_3K_BREAKOUT_V25: Object.freeze({ martingaleLayers: true }),
   "20415_KAMA_MARTIN_V35": Object.freeze({ martingaleLayers: true }),
+  "20415_KAMA_MARTIN_V41": Object.freeze({ martingaleLayers: true }),
   KAMA_3K_ULTIMATE_V50: Object.freeze({ martingaleLayers: true }),
   KAMA_3K_HF_V61: Object.freeze({ martingaleLayers: true }),
   KAMA_3K_TORNADO_V70: Object.freeze({ martingaleLayers: true }),
@@ -307,10 +310,11 @@ export async function initStrategyStudio(): Promise<void> {
   register(new StrategyRainbowTrendLadder());
   register(new StrategyKama3kBreakoutV25());
   register(new StrategyKama3kV35());
+  register(new StrategyKama3kV41());
   register(new StrategyKama3kV50());
   register(new StrategyKama3kV61());
   register(new StrategyKama3kV70());
-  console.log("[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70");
+  console.log("[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, 20415_KAMA_MARTIN_V41, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70");
 
   // 2. 從 DB 重載所有啟用中的自訂策略
   try {

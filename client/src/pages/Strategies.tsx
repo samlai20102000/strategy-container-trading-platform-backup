@@ -38,6 +38,7 @@ import {
   normalizeV40EntryGateValue,
   type V40ThreeKPatternMode,
 } from "@/components/V40EntryGatePanel";
+import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
 import { trpc } from "@/lib/trpc";
 import {
   getStrategyApiIdentity,
@@ -69,6 +70,14 @@ import {
   validateRainbowTrendLadderConfig,
   type RainbowTrendLadderConfig,
 } from "@shared/strategies/rainbowTrendLadder";
+import {
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+  createV41DefaultConfig,
+  normalizeV41Config,
+  validateV41Config,
+  type NormalizedV41Config,
+} from "@shared/strategies/kama3kMartinV41";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -208,6 +217,8 @@ type StrategyForm = {
   v6_1?: Record<string, any>;
   // V2.5：KAMA 三K突破｜階梯式馬丁完整配置
   v2_5?: V25StrategyConfig;
+  // V4.1：三方向條件 AND／OR 的唯一 canonical 配置。
+  v4_1?: NormalizedV41Config;
 };
 
 type SnapshotImportSource = {
@@ -273,6 +284,7 @@ const emptyForm: StrategyForm = {
   v2_5: createV25DefaultConfig(),
   v2_0: createRainbow20415DefaultConfig(),
   rainbowTrendLadder: createRainbowTrendLadderDefaultConfig(),
+  v4_1: createV41DefaultConfig(),
 };
 
 function StrategiesContent() {
@@ -424,6 +436,10 @@ function StrategiesContent() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<StrategyForm>(emptyForm);
+  const v41FormValidation = useMemo(
+    () => form.strategyKey === V41_STRATEGY_KEY ? validateV41Config(form.v4_1) : null,
+    [form.strategyKey, form.v4_1],
+  );
 
   // V5.3: 從回測報告「以參數建立新策略」跳轉過來時自動讀取 sessionStorage 預填參數
   useEffect(() => {
@@ -442,9 +458,11 @@ function StrategiesContent() {
       const isV25Import = imported.definitionKey === V25_STRATEGY_KEY;
       const isRainbowImport = imported.definitionKey === RAINBOW_20415_STRATEGY_KEY;
       const isTrendLadderImport = imported.definitionKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+      const isV41Import = imported.definitionKey === V41_STRATEGY_KEY;
       const v25Config = normalizeV25Config(cfg);
       const rainbowConfig = normalizeRainbow20415Config(cfg);
       const trendLadderConfig = normalizeRainbowTrendLadderConfig(cfg);
+      const v41Config = normalizeV41Config(cfg);
       const v40EntryGate = normalizeV40EntryGateValue(cfg);
       const firstRainbowRange = rainbowConfig.Martin_Ranges.find((range) => range.enabled);
       const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find(
@@ -455,29 +473,30 @@ function StrategiesContent() {
         name: imported.suggestedName || `${imported.definitionKey || '未知策略'}_導入`,
         symbol: (cfg.symbol || cfg.Symbol || 'BTCUSDT').toUpperCase(),
         strategyKey: imported.definitionKey || 'none',
-        positionValue: isTrendLadderImport ? trendLadderConfig.Base_Lot_Size.value : isRainbowImport ? rainbowConfig.Base_Lot_Size.value : isV25Import ? v25Config.Base_Lot_Size : (cfg.Base_Lot_Size ?? cfg.First_Order_Pct ?? 0.01),
-        positionMode: isTrendLadderImport ? trendLadderConfig.Base_Lot_Size.mode : isRainbowImport ? rainbowConfig.Base_Lot_Size.mode : isV25Import ? "usdt" : emptyForm.positionMode,
+        positionValue: isV41Import ? v41Config.Base_Lot_Size : isTrendLadderImport ? trendLadderConfig.Base_Lot_Size.value : isRainbowImport ? rainbowConfig.Base_Lot_Size.value : isV25Import ? v25Config.Base_Lot_Size : (cfg.Base_Lot_Size ?? cfg.First_Order_Pct ?? 0.01),
+        positionMode: isV41Import ? "usdt" : isTrendLadderImport ? trendLadderConfig.Base_Lot_Size.mode : isRainbowImport ? rainbowConfig.Base_Lot_Size.mode : isV25Import ? "usdt" : emptyForm.positionMode,
         leverage: String(cfg.Leverage || 1),
         direction: cfg.Direction || 'both',
-        stopLossPct: isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
-        takeProfitPct: isTrendLadderImport ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
-        martinMultiplier: String(isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
-        maxMartinLevel: String(isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
-        martinSpacingPct: String(isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
-        martinLayersJson,
-        maxLossPct: String(cfg.Max_Loss_Pct || 6),
-        callbackPct: String(isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
-        kLinePeriod: String(isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
-        reentryOnTrend: isTrendLadderImport ? trendLadderConfig.Reentry_Wait_Next_M30_Close : isRainbowImport ? rainbowConfig.Reentry_Enabled : isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
+        stopLossPct: isV41Import ? String(v41Config.Max_Loss_Pct) : isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
+        takeProfitPct: isV41Import ? String(v41Config.Target_TP_Pct) : isTrendLadderImport ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
+        martinMultiplier: String(isV41Import ? v41Config.Martin_Multiplier : isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
+        maxMartinLevel: String(isV41Import ? v41Config.Max_Layers : isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
+        martinSpacingPct: String(isV41Import ? v41Config.Martin_Step_Pct : isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
+        martinLayersJson: isV41Import ? JSON.stringify(v41Config.Martin_Layers) : martinLayersJson,
+        maxLossPct: String(isV41Import ? v41Config.Max_Loss_Pct : (cfg.Max_Loss_Pct || 6)),
+        callbackPct: String(isV41Import ? v41Config.Callback_Pct : isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
+        kLinePeriod: String(isV41Import ? v41Config.K_Line_Period : isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
+        reentryOnTrend: isV41Import ? v41Config.enableSameDirectionReentry : isTrendLadderImport ? trendLadderConfig.Reentry_Wait_Next_M30_Close : isRainbowImport ? rainbowConfig.Reentry_Enabled : isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
         ...v40EntryGate,
         maxLossUsdt: String(cfg.Max_Loss_USDT || cfg.EscapeLossUSD || 15),
-        Initial_Capital: String(isTrendLadderImport ? trendLadderConfig.Initial_Capital : (cfg.Initial_Capital || 100)),
-        First_Order_Pct: String(cfg.First_Order_Pct || 0.5),
-        Max_Loss_Pct: String(cfg.Max_Loss_Pct || 6),
-        martin_mode: martinLayersJson.trim() ? 'layered' : 'fixed',
+        Initial_Capital: String(isV41Import ? v41Config.Initial_Capital : isTrendLadderImport ? trendLadderConfig.Initial_Capital : (cfg.Initial_Capital || 100)),
+        First_Order_Pct: String(isV41Import ? v41Config.First_Order_Pct : (cfg.First_Order_Pct || 0.5)),
+        Max_Loss_Pct: String(isV41Import ? v41Config.Max_Loss_Pct : (cfg.Max_Loss_Pct || 6)),
+        martin_mode: isV41Import || martinLayersJson.trim() ? 'layered' : 'fixed',
         v2_5: isV25Import ? v25Config : createV25DefaultConfig(),
         v2_0: isRainbowImport ? rainbowConfig : createRainbow20415DefaultConfig(),
         rainbowTrendLadder: isTrendLadderImport ? trendLadderConfig : createRainbowTrendLadderDefaultConfig(),
+        v4_1: isV41Import ? v41Config : createV41DefaultConfig(),
         apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : '',
       });
       setDialogOpen(true);
@@ -490,6 +509,15 @@ function StrategiesContent() {
   // 從快照導入
   const [showSnapshotImport, setShowSnapshotImport] = useState(false);
   const [snapshotImportSource, setSnapshotImportSource] = useState<SnapshotImportSource | null>(null);
+  const v41SnapshotValidation = useMemo(
+    () => snapshotImportSource?.strategyKey === V41_STRATEGY_KEY
+      ? validateV41Config(snapshotImportSource.config)
+      : null,
+    [snapshotImportSource],
+  );
+  const v41SubmitBlocked = snapshotImportSource?.strategyKey === V41_STRATEGY_KEY
+    ? !v41SnapshotValidation?.valid
+    : form.strategyKey === V41_STRATEGY_KEY && !v41FormValidation?.valid;
   const snapshotsQuery = trpc.backtest.getSnapshots.useQuery({ limit: 50 }, { enabled: showSnapshotImport });
   // T3：建立成功引導彈窗
   const [successInfo, setSuccessInfo] = useState<{
@@ -497,10 +525,12 @@ function StrategiesContent() {
     symbol: string;
     exchange: string;
     webhookUrl: string | null;
+    strategyKey: string | null;
+    startsDisabled: boolean;
   } | null>(null);
 
   const createMutation = trpc.strategies.create.useMutation({
-    onSuccess: (r) => {
+    onSuccess: (r, variables) => {
       utils.strategies.list.invalidate();
       setDialogOpen(false);
       setSnapshotImportSource(null);
@@ -509,6 +539,8 @@ function StrategiesContent() {
         symbol: r.symbol,
         exchange: r.exchange,
         webhookUrl: r.webhookUrl,
+        strategyKey: variables.strategyKey ?? null,
+        startsDisabled: variables.strategyKey === V41_STRATEGY_KEY,
       });
     },
     onError: (e) => toast.error(e.message),
@@ -518,13 +550,15 @@ function StrategiesContent() {
       const selectedKey = (apiKeys ?? []).find((key) => key.id === variables.apiKeyId);
       utils.strategies.list.invalidate();
       setDialogOpen(false);
-      setSnapshotImportSource(null);
       setSuccessInfo({
         name: variables.name,
         symbol: variables.symbol,
         exchange: selectedKey?.exchange ?? "",
         webhookUrl: null,
+        strategyKey: snapshotImportSource?.strategyKey ?? null,
+        startsDisabled: snapshotImportSource?.strategyKey === V41_STRATEGY_KEY,
       });
+      setSnapshotImportSource(null);
       toast.success(r.message);
     },
     onError: (e) => toast.error(e.message),
@@ -623,6 +657,7 @@ function StrategiesContent() {
     const isV25 = strategyKey === V25_STRATEGY_KEY;
     const isRainbow = strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isTrendLadder = strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const isV41 = strategyKey === V41_STRATEGY_KEY;
     const storedV35Config = state.__v35Config && typeof state.__v35Config === "object"
       ? state.__v35Config as Record<string, unknown>
       : undefined;
@@ -635,11 +670,14 @@ function StrategiesContent() {
     const trendLadderConfig = isTrendLadder
       ? normalizeRainbowTrendLadderConfig(state.__rainbowTrendLadderConfig ?? state.__snapshotConfig)
       : createRainbowTrendLadderDefaultConfig();
+    const v41Config = isV41
+      ? normalizeV41Config(state[V41_CONFIG_KEY] ?? state.__snapshotConfig)
+      : createV41DefaultConfig();
     const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find(
       (layer) => layer.enabled && layer.layer > 1 && layer.layer <= trendLadderConfig.Max_Layers,
     );
     const storedMode = (s as any).positionMode ?? legacyPosition.mode;
-    const positionMode: 'quantity' | 'usdt' = storedMode === "usdt" ? "usdt" : "quantity";
+    const positionMode: 'quantity' | 'usdt' = isV41 || storedMode === "usdt" ? "usdt" : "quantity";
     
     setForm({
       id: s.id,
@@ -665,6 +703,7 @@ function StrategiesContent() {
       v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
       v2_0: rainbowConfig,
       rainbowTrendLadder: trendLadderConfig,
+      v4_1: v41Config,
       // 從 martinState.__v35Config 載入 V3.7 優化參數（若存在）
       ...((): Pick<StrategyForm, "martinLayersJson" | "maxLossPct" | "callbackPct" | "kLinePeriod" | "reentryOnTrend" | "maxLossUsdt" | "Initial_Capital" | "First_Order_Pct" | "Max_Loss_Pct" | "martin_mode"> => {
         if (isTrendLadder) {
@@ -678,6 +717,20 @@ function StrategiesContent() {
             Initial_Capital: String(trendLadderConfig.Initial_Capital),
             First_Order_Pct: String(trendLadderConfig.Base_Lot_Size.value),
             Max_Loss_Pct: String(trendLadderConfig.Max_Margin_Usage_Pct),
+            martin_mode: "layered",
+          };
+        }
+        if (isV41) {
+          return {
+            martinLayersJson: JSON.stringify(v41Config.Martin_Layers),
+            maxLossPct: String(v41Config.Max_Loss_Pct),
+            callbackPct: String(v41Config.Callback_Pct),
+            kLinePeriod: String(v41Config.K_Line_Period),
+            reentryOnTrend: v41Config.enableSameDirectionReentry,
+            maxLossUsdt: "0",
+            Initial_Capital: String(v41Config.Initial_Capital),
+            First_Order_Pct: String(v41Config.First_Order_Pct),
+            Max_Loss_Pct: String(v41Config.Max_Loss_Pct),
             martin_mode: "layered",
           };
         }
@@ -722,9 +775,11 @@ function StrategiesContent() {
     const isV25 = form.strategyKey === V25_STRATEGY_KEY;
     const isRainbow = form.strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isTrendLadder = form.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const isV41 = form.strategyKey === V41_STRATEGY_KEY;
     const v25Validation = isV25 ? validateV25Config(form.v2_5) : null;
     const rainbowValidation = isRainbow ? validateRainbow20415Config(form.v2_0) : null;
     const trendLadderValidation = isTrendLadder ? validateRainbowTrendLadderConfig(form.rainbowTrendLadder) : null;
+    const v41Validation = isV41 ? validateV41Config(form.v4_1) : null;
     if (v25Validation && !v25Validation.valid) {
       return toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
@@ -734,15 +789,19 @@ function StrategiesContent() {
     if (trendLadderValidation && !trendLadderValidation.valid) {
       return toast.error(`七彩虹線階梯參數設定錯誤：${trendLadderValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
+    if (v41Validation && !v41Validation.valid) {
+      return toast.error(`V4.1 參數設定錯誤：${v41Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
     const rainbowConfig = rainbowValidation?.config;
     const trendLadderConfig = trendLadderValidation?.config;
+    const v41Config = v41Validation?.config;
     const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
     const firstTrendLadderMartinLayer = trendLadderConfig?.Martin_Layers.find(
       (layer) => layer.enabled && layer.layer > 1 && layer.layer <= trendLadderConfig.Max_Layers,
     );
     // 實盤部署倉位永遠由頂層表單控制；策略專用 Base_Lot_Size 僅保留為原始邏輯配置。
     const positionValue = parseFloat(String(form.positionValue));
-    const effectivePositionMode: "quantity" | "usdt" = form.positionMode;
+    const effectivePositionMode: "quantity" | "usdt" = isV41 ? "usdt" : form.positionMode;
     if (!Number.isFinite(positionValue) || positionValue <= 0)
       return toast.error("倉位大小需為正數");
     // 第二輪優化 3：依交易對規格驗證（數量模式檢查最小量；USDT 模式檢查預估數量）
@@ -811,22 +870,25 @@ function StrategiesContent() {
       direction: form.direction,
       orderType: form.orderType,
       maxPositionPct: parseFloat(form.maxPositionPct) || 0,
-      stopLossPct: isRainbow || isTrendLadder ? 0 : (parseFloat(form.stopLossPct) || 0),
-      takeProfitPct: isTrendLadder ? (trendLadderConfig?.Trailing_Activation_Pct ?? 0) : isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
+      stopLossPct: isRainbow || isTrendLadder ? 0 : isV41 ? (v41Config?.Max_Loss_Pct ?? 0) : (parseFloat(form.stopLossPct) || 0),
+      takeProfitPct: isTrendLadder ? (trendLadderConfig?.Trailing_Activation_Pct ?? 0) : isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : isV41 ? (v41Config?.Target_TP_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
       maxDailyLoss: parseFloat(form.maxDailyLoss) || 0,
-      martinMultiplier: isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
-      maxMartinLevel: isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : (parseInt(form.maxMartinLevel) || 1),
+      martinMultiplier: isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : isV41 ? (v41Config?.Martin_Multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
+      maxMartinLevel: isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : isV41 ? (v41Config?.Max_Layers ?? 1) : (parseInt(form.maxMartinLevel) || 1),
       martinSpacingPct: isTrendLadder
         ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0)
         : isRainbow
         ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct ?? 0 : firstRainbowRange?.spacingPct ?? 0)
+        : isV41
+        ? (v41Config?.Martin_Step_Pct ?? 0)
         : (parseFloat(form.martinSpacingPct) || 0),
       strategyKey: form.strategyKey === "none" ? null : form.strategyKey,
       positionMode: effectivePositionMode,
       v25Config: isV25 ? v25Validation?.config : undefined,
+      v41Config: isV41 && v41Config ? { ...v41Config, Martin_Layers: v41Config.Martin_Layers.map((layer) => ({ ...layer })) } : undefined,
       rainbowTrendLadderConfig: isTrendLadder && trendLadderConfig ? { ...trendLadderConfig } : undefined,
       // V3.7 優化參數（後端存入 martinState.__v35Config）
-      v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
+      v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && form.strategyKey !== V41_STRATEGY_KEY && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
         Martin_Layers: form.martin_mode === "layered" ? (form.martinLayersJson.trim() || "") : "",
         Reentry_On_Trend: form.reentryOnTrend,
         ...(form.strategyKey === V40_STRATEGY_KEY ? {
@@ -2107,6 +2169,15 @@ function StrategiesContent() {
                     context="strategy"
                   />
                 )}
+                {snapshotImportSource.strategyKey === V41_STRATEGY_KEY && (
+                  <V41EntryConditionsPanel
+                    value={snapshotImportSource.config}
+                    onChange={() => undefined}
+                    disabled
+                    context="snapshot"
+                    validationIssues={validateV41Config(snapshotImportSource.config).issues}
+                  />
+                )}
                 <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -2215,9 +2286,39 @@ function StrategiesContent() {
                     className="mb-4"
                   />
                 )}
+                {form.strategyKey === V41_STRATEGY_KEY && (
+                  <V41EntryConditionsPanel
+                    value={form.v4_1}
+                    onChange={(nextConfig) => setForm((prev) => ({
+                      ...prev,
+                      v4_1: nextConfig,
+                      positionValue: nextConfig.Base_Lot_Size,
+                      positionMode: "usdt",
+                      Initial_Capital: String(nextConfig.Initial_Capital),
+                      First_Order_Pct: String(nextConfig.First_Order_Pct),
+                      Max_Loss_Pct: String(nextConfig.Max_Loss_Pct),
+                      maxLossPct: String(nextConfig.Max_Loss_Pct),
+                      takeProfitPct: String(nextConfig.Target_TP_Pct),
+                      callbackPct: String(nextConfig.Callback_Pct),
+                      martinMultiplier: String(nextConfig.Martin_Multiplier),
+                      maxMartinLevel: String(nextConfig.Max_Layers),
+                      martinSpacingPct: String(nextConfig.Martin_Step_Pct),
+                      martinLayersJson: JSON.stringify(nextConfig.Martin_Layers),
+                      martin_mode: "layered",
+                      kLinePeriod: String(nextConfig.K_Line_Period),
+                      reentryOnTrend: nextConfig.enableSameDirectionReentry,
+                    }))}
+                    context="strategy"
+                    validationIssues={v41FormValidation?.issues}
+                    className="mb-4"
+                  />
+                )}
                 <DynamicForm
-                schema={STRATEGIES_DYNAMIC_SCHEMA}
-                values={{
+                schema={getSchemaForStrategy(form.strategyKey)}
+                values={form.strategyKey === V41_STRATEGY_KEY ? {
+                  ...normalizeV41Config(form.v4_1),
+                  martinLayersJson: JSON.stringify(normalizeV41Config(form.v4_1).Martin_Layers),
+                } : {
                   Initial_Capital: parseFloat(form.Initial_Capital) || 10000,
                   First_Order_Pct: parseFloat(form.First_Order_Pct) || 0.3,
                   Max_Loss_Pct: parseFloat(form.Max_Loss_Pct) || 5,
@@ -2236,6 +2337,53 @@ function StrategiesContent() {
                   daily_loss_limit: parseFloat(form.maxDailyLoss) || 0,
                 }}
                 onChange={(vals) => {
+                  if (form.strategyKey === V41_STRATEGY_KEY) {
+                    setForm((prev) => {
+                      const current = normalizeV41Config(prev.v4_1);
+                      const nextConfig = normalizeV41Config({
+                        ...current,
+                        Initial_Capital: vals.Initial_Capital ?? current.Initial_Capital,
+                        Base_Lot_Size: vals.Base_Lot_Size ?? current.Base_Lot_Size,
+                        First_Order_Pct: vals.First_Order_Pct ?? current.First_Order_Pct,
+                        Max_Loss_Pct: vals.Max_Loss_Pct ?? current.Max_Loss_Pct,
+                        KAMA_Fast_Length: vals.KAMA_Fast_Length ?? current.KAMA_Fast_Length,
+                        p2_fastest: vals.p2_fastest ?? current.p2_fastest,
+                        p3_slowest: vals.p3_slowest ?? current.p3_slowest,
+                        KAMA_Slow_Length: vals.KAMA_Slow_Length ?? current.KAMA_Slow_Length,
+                        q2_fastest: vals.q2_fastest ?? current.q2_fastest,
+                        q3_slowest: vals.q3_slowest ?? current.q3_slowest,
+                        Martin_Step_Pct: vals.Martin_Step_Pct ?? current.Martin_Step_Pct,
+                        Martin_Multiplier: vals.Martin_Multiplier ?? current.Martin_Multiplier,
+                        Max_Layers: vals.Max_Layers ?? current.Max_Layers,
+                        Martin_Layers: vals.martinLayersJson === undefined
+                          ? current.Martin_Layers
+                          : parseLayersValue(vals.martinLayersJson),
+                        Target_TP_Pct: vals.Target_TP_Pct ?? current.Target_TP_Pct,
+                        Callback_Pct: vals.Callback_Pct ?? current.Callback_Pct,
+                        K_Line_Period: vals.K_Line_Period ?? current.K_Line_Period,
+                        Kama_Reversal_Min_Layer: vals.Kama_Reversal_Min_Layer ?? current.Kama_Reversal_Min_Layer,
+                      });
+                      return {
+                        ...prev,
+                        v4_1: nextConfig,
+                        positionValue: nextConfig.Base_Lot_Size,
+                        positionMode: "usdt",
+                        Initial_Capital: String(nextConfig.Initial_Capital),
+                        First_Order_Pct: String(nextConfig.First_Order_Pct),
+                        Max_Loss_Pct: String(nextConfig.Max_Loss_Pct),
+                        maxLossPct: String(nextConfig.Max_Loss_Pct),
+                        takeProfitPct: String(nextConfig.Target_TP_Pct),
+                        callbackPct: String(nextConfig.Callback_Pct),
+                        martinMultiplier: String(nextConfig.Martin_Multiplier),
+                        maxMartinLevel: String(nextConfig.Max_Layers),
+                        martinSpacingPct: String(nextConfig.Martin_Step_Pct),
+                        martinLayersJson: JSON.stringify(nextConfig.Martin_Layers),
+                        martin_mode: "layered",
+                        kLinePeriod: String(nextConfig.K_Line_Period),
+                      };
+                    });
+                    return;
+                  }
                   setForm((prev) => ({
                     ...prev,
                     Initial_Capital: String(vals.Initial_Capital ?? prev.Initial_Capital),
@@ -2258,10 +2406,16 @@ function StrategiesContent() {
                 }}
                 showPreview={true}
                 martinLayersEditor={
-                  form.martin_mode === "layered" ? (
+                  form.strategyKey === V41_STRATEGY_KEY || form.martin_mode === "layered" ? (
                     <MartinLayersEditor
                       value={form.martinLayersJson}
-                      onChange={(jsonStr) => setForm((prev) => ({ ...prev, martinLayersJson: jsonStr }))}
+                      onChange={(jsonStr) => setForm((prev) => ({
+                        ...prev,
+                        martinLayersJson: jsonStr,
+                        ...(prev.strategyKey === V41_STRATEGY_KEY
+                          ? { v4_1: normalizeV41Config({ ...prev.v4_1, Martin_Layers: parseLayersValue(jsonStr) }) }
+                          : {}),
+                      }))}
                     />
                   ) : undefined
                 }
@@ -2335,6 +2489,30 @@ function StrategiesContent() {
                           martin_mode: "layered",
                           kLinePeriod: String(nextConfig.Management_Interval_Minutes),
                           reentryOnTrend: nextConfig.Reentry_Wait_Next_M30_Close,
+                        };
+                      }
+                      if (v === V41_STRATEGY_KEY) {
+                        const nextConfig = prev.v4_1 ?? createV41DefaultConfig();
+                        return {
+                          ...prev,
+                          strategyKey: v,
+                          v4_1: nextConfig,
+                          positionValue: nextConfig.Base_Lot_Size,
+                          positionMode: "usdt",
+                          Initial_Capital: String(nextConfig.Initial_Capital),
+                          First_Order_Pct: String(nextConfig.First_Order_Pct),
+                          Max_Loss_Pct: String(nextConfig.Max_Loss_Pct),
+                          maxLossPct: String(nextConfig.Max_Loss_Pct),
+                          stopLossPct: String(nextConfig.Max_Loss_Pct),
+                          takeProfitPct: String(nextConfig.Target_TP_Pct),
+                          callbackPct: String(nextConfig.Callback_Pct),
+                          martinMultiplier: String(nextConfig.Martin_Multiplier),
+                          maxMartinLevel: String(nextConfig.Max_Layers),
+                          martinSpacingPct: String(nextConfig.Martin_Step_Pct),
+                          martinLayersJson: JSON.stringify(nextConfig.Martin_Layers),
+                          martin_mode: "layered",
+                          kLinePeriod: String(nextConfig.K_Line_Period),
+                          reentryOnTrend: nextConfig.enableSameDirectionReentry,
                         };
                       }
                       if (v !== V25_STRATEGY_KEY) return { ...prev, strategyKey: v };
@@ -2420,6 +2598,11 @@ function StrategiesContent() {
             )}
           </div>
           <DialogFooter>
+            {v41SubmitBlocked && (
+              <p className="mr-auto max-w-md text-left text-xs leading-relaxed text-amber-300">
+                V4.1 必須啟用至少一個入場條件，且通過全部 canonical 驗證後才可建立或儲存。
+              </p>
+            )}
             <Button
               variant="outline"
               onClick={() => {
@@ -2429,7 +2612,7 @@ function StrategiesContent() {
             >
               取消
             </Button>
-            <Button onClick={handleSubmit} disabled={saving}>
+            <Button onClick={handleSubmit} disabled={saving || v41SubmitBlocked}>
               {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
               {form.id ? "儲存變更" : "建立策略"}
             </Button>
@@ -2446,7 +2629,10 @@ function StrategiesContent() {
               策略建立成功
             </DialogTitle>
             <DialogDescription>
-              「{successInfo?.name}」（{successInfo?.exchange.toUpperCase()} · {successInfo?.symbol}）已建立並啟用，請依下列步驟完成 TradingView 串接。
+              「{successInfo?.name}」（{successInfo?.exchange.toUpperCase()} · {successInfo?.symbol}）
+              {successInfo?.startsDisabled
+                ? "已建立並保持停用；完成參數複核後才可手動啟用。"
+                : "已建立並啟用，請依下列步驟完成 TradingView 串接。"}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -2494,9 +2680,17 @@ function StrategiesContent() {
                 複製 Alert 訊息範本
               </Button>
             </div>
-            <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
-              <p className="text-xs text-emerald-400 leading-relaxed">
-                步驟 3：完成後，TradingView 觸發警示時即自動下單。可至「訊號日誌」頁面即時確認每筆訊號的接收與執行狀態。
+            <div className={successInfo?.startsDisabled
+              ? "rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"
+              : "rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3"}
+            >
+              <p className={successInfo?.startsDisabled
+                ? "text-xs leading-relaxed text-amber-300"
+                : "text-xs leading-relaxed text-emerald-400"}
+              >
+                {successInfo?.startsDisabled
+                  ? "安全狀態：V4.1 新策略預設停用，目前不會自動下單。請先檢查入場邏輯、快照身份與回測證據，再由策略卡片主動啟用。"
+                  : "步驟 3：完成後，TradingView 觸發警示時即自動下單。可至「訊號日誌」頁面即時確認每筆訊號的接收與執行狀態。"}
               </p>
             </div>
           </div>

@@ -74,6 +74,14 @@ import {
   V40_STRATEGY_KEY,
   normalizeV40EntryGateValue,
 } from "@/components/V40EntryGatePanel";
+import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
+import {
+  V41_STRATEGY_KEY,
+  countEnabledV41EntryConditions,
+  normalizeV41Config,
+  summarizeV41EntryConfig,
+  validateV41Config,
+} from "@shared/strategies/kama3kMartinV41";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -160,11 +168,15 @@ export default function Backtest() {
     () => selectedStrategy && 'schemaConfig' in selectedStrategy ? (selectedStrategy as any).schemaConfig as SchemaConfig | null : null,
     [selectedStrategy],
   );
+  const v41Validation = useMemo(
+    () => strategyKey === V41_STRATEGY_KEY ? validateV41Config(configJson) : null,
+    [configJson, strategyKey],
+  );
   // V4.3: 是否使用 DynamicForm（非 KAMA 策略或有 schemaConfig 但無特殊定制的策略）
   const useDynamicFormMode = useMemo(() => {
     if (!strategyKey) return false;
     // KAMA V3.5 策略使用深度定制面板
-    if (strategyKey === V40_STRATEGY_KEY) return false;
+    if (strategyKey === V40_STRATEGY_KEY || strategyKey === V41_STRATEGY_KEY) return false;
     // 20415 七彩虹使用共享契約驅動的專用軍規面板
     if (strategyKey === RAINBOW_20415_STRATEGY_KEY) return false;
     // 七彩虹線趨勢跟蹤使用共享契約驅動的專用軍規面板
@@ -184,6 +196,8 @@ export default function Backtest() {
         ? { ...normalizeV25Config(selectedStrategy.defaultConfig) }
         : strategyKey === RAINBOW_20415_STRATEGY_KEY
           ? { ...normalizeRainbow20415Config(selectedStrategy.defaultConfig) }
+          : strategyKey === V41_STRATEGY_KEY
+            ? { ...normalizeV41Config(selectedStrategy.defaultConfig) }
           : strategyKey === V40_STRATEGY_KEY
             ? { ...selectedStrategy.defaultConfig, ...normalizeV40EntryGateValue(selectedStrategy.defaultConfig) }
             : { ...selectedStrategy.defaultConfig };
@@ -203,6 +217,12 @@ export default function Backtest() {
       if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
         const rainbow = normalizeRainbow20415Config(nextConfig);
         setTfValue(String(rainbow.Management_Interval_Minutes));
+        setTfUnit("m");
+      } else if (strategyKey === V41_STRATEGY_KEY) {
+        const v41 = normalizeV41Config(nextConfig);
+        setInitialCapital(String(v41.Initial_Capital));
+        setTradeAmount(String(v41.Base_Lot_Size));
+        setTfValue(String(v41.K_Line_Period));
         setTfUnit("m");
       }
     }
@@ -269,6 +289,10 @@ export default function Backtest() {
     if (rainbowTrendValidation && !rainbowTrendValidation.valid) {
       return toast.error(`七彩虹線階梯參數設定錯誤：${rainbowTrendValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
+    const v41RunValidation = strategyKey === V41_STRATEGY_KEY ? validateV41Config(configJson) : null;
+    if (v41RunValidation && !v41RunValidation.valid) {
+      return toast.error(`V4.1 參數設定錯誤：${v41RunValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
     // O1：Martin_Layers 提交前驗證（與後端 validateMartinLayers 一致）
     if (strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && "Martin_Layers" in configJson) {
       const layersErr = validateLayersUI(parseLayersValue(configJson.Martin_Layers));
@@ -286,7 +310,9 @@ export default function Backtest() {
           ? `${rainbowValidation.config.Management_Interval_Minutes}m`
           : rainbowTrendValidation
             ? `${rainbowTrendValidation.config.Management_Interval_Minutes}m`
-            : timeframe,
+            : v41RunValidation?.config
+              ? `${v41RunValidation.config.K_Line_Period}m`
+              : timeframe,
         startDate: startMs,
         endDate: endMs,
         initialCapital: capital,
@@ -297,9 +323,11 @@ export default function Backtest() {
             ? { ...rainbowValidation.config }
             : rainbowTrendValidation
               ? { ...rainbowTrendValidation.config }
-              : strategyKey === V40_STRATEGY_KEY
-                ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
-                : configJson,
+              : v41RunValidation?.config
+                ? { ...v41RunValidation.config }
+                : strategyKey === V40_STRATEGY_KEY
+                  ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
+                  : configJson,
         exchange,
         strategyName: selectedStrategy?.name,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
@@ -308,7 +336,7 @@ export default function Backtest() {
             ? rainbowValidation.config.Base_Lot_Size.value
             : rainbowTrendValidation
               ? rainbowTrendValidation.config.Base_Lot_Size.value
-              : Number(tradeAmount) || undefined,
+              : v41RunValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
       });
       setJobId(id);
       utils.backtest.getQueueStatus.invalidate();
@@ -518,10 +546,12 @@ export default function Backtest() {
     const num = Number(value);
     setConfigJson((prev) => ({
       ...prev,
-      Base_Lot_Size: {
-        value: Number.isFinite(num) && value !== "" ? num : value,
-        mode: mode === "usdt" ? "usdt" : "quantity",
-      },
+      Base_Lot_Size: strategyKey === V41_STRATEGY_KEY
+        ? (Number.isFinite(num) && value !== "" ? num : value)
+        : {
+            value: Number.isFinite(num) && value !== "" ? num : value,
+            mode: mode === "usdt" ? "usdt" : "quantity",
+          },
     }));
   };
 
@@ -564,6 +594,10 @@ export default function Backtest() {
   );
 
   const previewConfig = snapshotConfigQuery.data?.config ?? null;
+  const previewV41Validation = useMemo(
+    () => strategyKey === V41_STRATEGY_KEY && previewConfig ? validateV41Config(previewConfig) : null,
+    [previewConfig, strategyKey],
+  );
 
   const handleImportSnapshot = () => {
     if (!previewConfig) return;
@@ -586,6 +620,17 @@ export default function Backtest() {
       setTradeAmount(String(nextConfig.Base_Lot_Size.value));
       setInitialCapital(String(nextConfig.Initial_Capital));
       setTfValue(String(nextConfig.Management_Interval_Minutes));
+      setTfUnit("m");
+    } else if (strategyKey === V41_STRATEGY_KEY) {
+      const validation = validateV41Config(previewConfig);
+      if (!validation.valid || !validation.config) {
+        toast.error(`V4.1 快照無法導入：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+        return;
+      }
+      setConfigJson({ ...validation.config });
+      setInitialCapital(String(validation.config.Initial_Capital));
+      setTradeAmount(String(validation.config.Base_Lot_Size));
+      setTfValue(String(validation.config.K_Line_Period));
       setTfUnit("m");
     } else if (strategyKey === V40_STRATEGY_KEY) {
       setConfigJson({ ...previewConfig, ...normalizeV40EntryGateValue(previewConfig) });
@@ -668,11 +713,17 @@ export default function Backtest() {
       toast.error(`七彩虹線階梯參數設定錯誤：${rainbowTrendValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
       return;
     }
+    const v41SnapshotValidation = strategyKey === V41_STRATEGY_KEY ? validateV41Config(configJson) : null;
+    if (v41SnapshotValidation && !v41SnapshotValidation.valid) {
+      toast.error(`V4.1 參數設定錯誤：${v41SnapshotValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+      return;
+    }
     const cfg = {
       ...(strategyKey === V25_STRATEGY_KEY
         ? v25Validation?.config ?? configJson
         : rainbowValidation?.config
           ?? rainbowTrendValidation?.config
+          ?? v41SnapshotValidation?.config
           ?? (strategyKey === V40_STRATEGY_KEY
             ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
             : configJson)),
@@ -712,7 +763,9 @@ export default function Backtest() {
           ? `${rainbowValidation.config.Management_Interval_Minutes}m`
           : rainbowTrendValidation
             ? `${rainbowTrendValidation.config.Management_Interval_Minutes}m`
-            : `${tfValue}${tfUnit}`,
+            : v41SnapshotValidation?.config
+              ? `${v41SnapshotValidation.config.K_Line_Period}m`
+              : `${tfValue}${tfUnit}`,
         startDate,
         endDate,
         initialCapital: Number(initialCapital) || 10000,
@@ -723,7 +776,7 @@ export default function Backtest() {
             ? rainbowValidation.config.Base_Lot_Size.value
             : rainbowTrendValidation
               ? rainbowTrendValidation.config.Base_Lot_Size.value
-              : Number(tradeAmount) || undefined,
+              : v41SnapshotValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
         configJson: cfg,
         baseLotSize: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
@@ -731,7 +784,7 @@ export default function Backtest() {
             ? rainbowValidation.config.Base_Lot_Size.value
             : rainbowTrendValidation
               ? rainbowTrendValidation.config.Base_Lot_Size.value
-              : Number(tradeAmount) || undefined,
+              : v41SnapshotValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
         baseLotSizeMode: rainbowValidation
           ? rainbowValidation.config.Base_Lot_Size.mode
           : rainbowTrendValidation?.config.Base_Lot_Size.mode ?? "usdt",
@@ -965,6 +1018,21 @@ export default function Backtest() {
                 value={configJson}
                 onChange={(entryGate) => setConfigJson((prev) => ({ ...prev, ...entryGate }))}
                 context="backtest"
+              />
+            )}
+
+            {strategyKey === V41_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
+              <V41EntryConditionsPanel
+                value={configJson}
+                onChange={(nextConfig) => {
+                  setConfigJson({ ...nextConfig });
+                  setInitialCapital(String(nextConfig.Initial_Capital));
+                  setTradeAmount(String(nextConfig.Base_Lot_Size));
+                  setTfValue(String(nextConfig.K_Line_Period));
+                  setTfUnit("m");
+                }}
+                context="backtest"
+                validationIssues={v41Validation?.issues}
               />
             )}
 
@@ -1267,8 +1335,20 @@ export default function Backtest() {
                 "enableKamaDirectionLock",
                 "enableSameDirectionReentry",
               ]);
+              const v41EntryConditionKeys = new Set([
+                "strategyKey",
+                "configVersion",
+                "entryConditionLogic",
+                "enableThreeKFilter",
+                "threeKMode",
+                "enableKamaFastSlowCross",
+                "enableKamaPriceVsSlow",
+                "enableSameDirectionReentry",
+              ]);
               const entries = Object.entries(configJson).filter(
-                ([k]) => groupOfParam(k) !== 0 && !(strategyKey === V40_STRATEGY_KEY && v40EntryGateKeys.has(k)),
+                ([k]) => groupOfParam(k) !== 0
+                  && !(strategyKey === V40_STRATEGY_KEY && v40EntryGateKeys.has(k))
+                  && !(strategyKey === V41_STRATEGY_KEY && v41EntryConditionKeys.has(k)),
               );
               const g1 = entries.filter(([k]) => groupOfParam(k) === 1);
               const g2 = entries.filter(([k]) => groupOfParam(k) === 2);
@@ -1307,7 +1387,8 @@ export default function Backtest() {
             <div className="flex items-center gap-3 flex-wrap">
               <Button
                 onClick={handleRun}
-                disabled={runMutation.isPending}
+                disabled={runMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}
+                title={v41Validation && !v41Validation.valid ? "V4.1 至少啟用一個方向條件，且所有 canonical 參數必須有效" : undefined}
                 className="bg-blue-600 hover:bg-blue-700 text-white"
               >
                 <Play className="w-4 h-4 mr-1" />
@@ -1324,7 +1405,7 @@ export default function Backtest() {
               <Button
                 variant="outline"
                 onClick={handleSaveSnapshot}
-                disabled={saveSnapshotMutation.isPending}
+                disabled={saveSnapshotMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}
                 title="將當前參數儲存為快照（可於快照庫查看）"
               >
                 <Save className="w-4 h-4 mr-1" />
@@ -1571,6 +1652,17 @@ export default function Backtest() {
                         ))}
                       </div>
                     );
+                  })() : strategyKey === V41_STRATEGY_KEY ? (() => {
+                    const cfg = normalizeV41Config(snap.config);
+                    return (
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+                        <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                          入場邏輯：{cfg.entryConditionLogic.toUpperCase()}
+                        </Badge>
+                        <Badge variant="outline">ENTRY CONDITIONS {countEnabledV41EntryConditions(cfg)}/3</Badge>
+                        <span className="min-w-0 break-words text-muted-foreground">{summarizeV41EntryConfig(cfg)}</span>
+                      </div>
+                    );
                   })() : (
                     <div className="mt-2 truncate text-xs text-muted-foreground">
                       {Object.entries(snap.config || {}).slice(0, 6).map(([k, v]) => (
@@ -1603,7 +1695,23 @@ export default function Backtest() {
               <RainbowTrendLadderConfigPanel value={previewConfig} onChange={() => undefined} disabled context="snapshot" />
             </div>
           )}
-          {previewConfig && strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && (
+          {previewConfig && strategyKey === V41_STRATEGY_KEY && (
+            <div className="mt-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">V4.1 入場條件契約覆核</p>
+                <p className="mt-1 text-xs text-muted-foreground">完整同 key 配置將替換目前表單；AND／OR、false、三 K 模式與特殊重入均原樣保留。</p>
+              </div>
+              <V41EntryConditionsPanel
+                value={previewConfig}
+                onChange={() => undefined}
+                context="snapshot"
+                disabled
+                readOnly
+                validationIssues={previewV41Validation?.issues}
+              />
+            </div>
+          )}
+          {previewConfig && strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && strategyKey !== V41_STRATEGY_KEY && (
             <div className="mt-4 p-4 bg-muted/50 rounded-lg">
               <div className="text-sm font-medium mb-2">參數預覽（將自動填入）</div>
               <div className="grid grid-cols-3 gap-2 text-xs">
@@ -1623,7 +1731,7 @@ export default function Backtest() {
           <DialogFooter className="mt-4">
             <Button
               onClick={handleImportSnapshot}
-              disabled={!selectedSnapshotId || !previewConfig}
+              disabled={!selectedSnapshotId || !previewConfig || Boolean(previewV41Validation && !previewV41Validation.valid)}
               className="bg-purple-600 hover:bg-purple-700 text-white"
             >
               確認導入

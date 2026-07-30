@@ -13,6 +13,7 @@ import { startV61Monitor, runV61Check } from "../services/v61Monitor";
 import { startV50Monitor, runV50Check } from "../services/v50Monitor";
 import { sdk } from "./sdk";
 import { initStrategyStudio } from "../services/strategyStudio";
+import { V41_STRATEGY_KEY } from "../../shared/strategies/kama3kMartinV41";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { backtestWsService } from "../services/wsService";
@@ -137,13 +138,13 @@ async function startServer() {
       let strategyKey = (strategy as any).strategyKey || "";
       let isV35Strategy = isV35StrategyKey(strategyKey);
 
-      // V35 的風控、信號生成與下單必須共用同一跨實例租約。
+      // V35-family（含 V4.1）的風控、信號生成與下單共用既有租約名稱，確保舊 revision 也能跨實例互斥。
       // Heartbeat 重試、舊 revision 與多個 autoscale instance 同時到達時，只允許一條路徑執行。
       if (isV35Strategy) {
         const { acquireProcessLease } = await import("../services/barLock");
         strategyExecutionLease = await acquireProcessLease("v35-auto-trade", strategyId, 180_000);
         if (!strategyExecutionLease) {
-          console.warn(`[Heartbeat/AutoTrade] 🔒 Strategy ${strategyId}: 另一個 V35 執行仍在進行，本輪安全跳過`);
+          console.warn(`[Heartbeat/AutoTrade] 🔒 Strategy ${strategyId}: 另一個 V35-family 執行仍在進行，本輪安全跳過`);
           return res.json({
             ok: true,
             message: "V35 execution already in progress, skipped",
@@ -207,8 +208,27 @@ async function startServer() {
           }
         }
       } catch (e: any) {
-        // 止盈/止損檢查失敗不應阻止信號生成，只記錄警告
+        // V4.1 風控 monitor 失敗時不可繼續產生新曝險；舊策略維持原相容行為。
         console.warn(`[Heartbeat/AutoTrade] ⚠️ TP/SL check failed for ${strategyId}:`, e?.message);
+        if (strategyKey === V41_STRATEGY_KEY) {
+          try {
+            const { createHeartbeatLog } = await import("../db");
+            await createHeartbeatLog({
+              strategyId,
+              userId: strategy.userId,
+              result: "hold",
+              detail: `[monitor_failed] V4.1 持倉監控失敗，fail-closed 跳過信號生成：${e?.message || "unknown"}`,
+            });
+          } catch (logError) {
+            console.warn("[Heartbeat] Failed to log V4.1 monitor failure:", logError);
+          }
+          return res.json({
+            ok: true,
+            message: "V4.1 monitor failed; entry generation blocked (fail-closed)",
+            holdType: "monitor_failed",
+            ranAt: new Date().toISOString(),
+          });
+        }
       }
 
       // 產生交易信號
@@ -361,7 +381,7 @@ async function startServer() {
           const { releaseProcessLease } = await import("../services/barLock");
           await releaseProcessLease(strategyExecutionLease);
         } catch (error) {
-          console.error("[Heartbeat/AutoTrade] 釋放 V35 跨實例租約失敗:", error);
+          console.error("[Heartbeat/AutoTrade] 釋放 V35-family 跨實例租約失敗:", error);
         }
       }
     }

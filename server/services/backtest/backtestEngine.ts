@@ -34,6 +34,21 @@ import {
   normalizeV40EntryGateConfig,
   V40_STRATEGY_KEY,
 } from "../../strategies/v35/entryGate";
+import {
+  evaluateV41EntryConditions,
+  evaluateV41SameDirectionReentry,
+} from "../../strategies/v41/entryConditions";
+import {
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+  assertValidV41Config,
+} from "../../../shared/strategies/kama3kMartinV41";
+import {
+  createV41BacktestEntryDiagnostics,
+  recordV41BacktestEntryEvaluation,
+  recordV41BacktestReentryEvaluation,
+  type V41BacktestEntryDiagnostics,
+} from "./v41BacktestDiagnostics";
 import type { BaseStrategy, MartinState, StrategyInstanceConfig } from "../../strategies/base";
 import { StrategyKama3kBreakoutV25 } from "../../strategies/v25/strategy_kama_3k_breakout_v25";
 import { Strategy20415 } from "../../strategies/builtin/strategy20415";
@@ -116,6 +131,7 @@ export interface BacktestResult {
     endDate: number;
     candleCount: number;
     initialCapital: number;
+    v41EntryDiagnostics?: V41BacktestEntryDiagnostics;
   };
   endPositionPolicy?: BacktestEndPositionPolicy;
   accounting?: BacktestAccountingSnapshot;
@@ -191,6 +207,7 @@ export class BacktestEngine {
       throw new Error(`策略「${request.strategyKey}」未註冊，請確認策略 key 正確`);
     }
     const isV35 = request.strategyKey === V40_STRATEGY_KEY;
+    const isV41 = request.strategyKey === V41_STRATEGY_KEY;
     const isV50 = request.strategyKey === "KAMA_3K_ULTIMATE_V50";
     const isV61 = request.strategyKey === "KAMA_3K_HF_V61";
     const isV70 = request.strategyKey === "KAMA_3K_TORNADO_V70";
@@ -202,10 +219,14 @@ export class BacktestEngine {
       : request;
 
     // 合併策略默認配置（與實盤 resolveConfig 邏輯一致，依選中策略的 defaultConfig）
-    const config: Record<string, unknown> = {
-      ...strategy.defaultConfig,
-      ...request.config,
-    };
+    const rawV41Config = request.config[V41_CONFIG_KEY] ?? request.config;
+    const v41Config = isV41 ? assertValidV41Config(rawV41Config) : null;
+    const config: Record<string, unknown> = v41Config
+      ? { ...v41Config }
+      : {
+          ...strategy.defaultConfig,
+          ...request.config,
+        };
     const v40EntryGateConfig = normalizeV40EntryGateConfig(config);
     if (isV35) {
       Object.assign(config, v40EntryGateConfig);
@@ -213,7 +234,7 @@ export class BacktestEngine {
     const endPositionPolicy = resolveEndPositionPolicy(
       request.endPositionPolicy ?? config.Backtest_End_Position_Policy,
     );
-    config.Backtest_End_Position_Policy = endPositionPolicy;
+    if (!isV41) config.Backtest_End_Position_Policy = endPositionPolicy;
     // 專用策略會先把設定清洗成各自的強型別契約；政策屬於回測請求而非交易參數，
     // 因此在派送前回寫到 request，確保所有分支都取得同一個已正規化值。
     request.endPositionPolicy = endPositionPolicy;
@@ -309,7 +330,7 @@ export class BacktestEngine {
 
     // === V5.0 策略：複用 V3.5 KAMA+3K 回測路徑（同樣的 KAMA 指標 + 3K 形態 + 馬丁，但參數來自 V5.0 配置）===
     // V5.0 和 V3.5 共享相同的 KAMA+3K 回測核心，差異僅在參數預設值和 F1-F6 模組（在實盤中生效）
-    if (!isV35 && !isV50 && !isV61 && !isV70) {
+    if (!isV35 && !isV41 && !isV50 && !isV61 && !isV70) {
       return this.finalizeV25Result(await this.runGenericBacktest(
         request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
       ), request, startMs, endMs, continuousData.quality);
@@ -334,9 +355,10 @@ export class BacktestEngine {
       num(config.kama_fast_fastest ?? config.p2_fastest, 10),
       num(config.kama_fast_slowest ?? config.p3_slowest, 2),
     );
+    const kamaSlowLen = num(config.kama_slow_length ?? config.KAMA_Slow_Length, 50);
     const kamaSlow = calculateKAMASeries(
       closes,
-      num(config.kama_slow_length ?? config.KAMA_Slow_Length, 50),
+      kamaSlowLen,
       num(config.kama_slow_fastest ?? config.q2_fastest, 10),
       num(config.kama_slow_slowest ?? config.q3_slowest, 6),
     );
@@ -378,9 +400,11 @@ export class BacktestEngine {
     // V3.7：硬止損觸發閾值
     const maxLossPct = num(config.Max_Loss_Pct ?? 5, 5);
     const legacyReentryOnTrend = config.Reentry_On_Trend !== false && config.Reentry_On_Trend !== "false";
-    const reentryOnTrend = isV35
-      ? v40EntryGateConfig.enableSameDirectionReentry
-      : legacyReentryOnTrend;
+    const reentryOnTrend = isV41
+      ? (v41Config?.enableSameDirectionReentry ?? false)
+      : isV35
+        ? v40EntryGateConfig.enableSameDirectionReentry
+        : legacyReentryOnTrend;
     const maxLossUsdt = num(config.Max_Loss_USDT ?? 0, 0); // 預設 0 = 不啟用（由 Max_Loss_Pct 控制）
     // === 連續虧損縮倉 & 連續開倉開關（V6.1 風控功能）===
     const enableLossShrinkRaw = config.enable_loss_shrink ?? config.Enable_Loss_Shrink ?? "1";
@@ -442,8 +466,13 @@ export class BacktestEngine {
     let consecutiveLoss = 0; // 連續虧損計數（用於 enable_loss_shrink）
     /** O3：平倉後待重入請求（在主循環中執行；用物件包裝避免閉包窄化為 never） */
     const reentryBox: { req: { side: "long" | "short"; entryTrendBull: boolean } | null } = { req: null };
+    const v41EntryDiagnostics = v41Config
+      ? createV41BacktestEntryDiagnostics(v41Config)
+      : undefined;
 
-    const startIdx = Math.max(kamaFastLen + 2, 3);
+    const startIdx = isV41
+      ? Math.max(kamaFastLen, kamaSlowLen) + 2
+      : Math.max(kamaFastLen + 2, 3);
 
     const closePosition = (
       exitPrice: number,
@@ -488,26 +517,36 @@ export class BacktestEngine {
       const martinDepth = p.layers.length - 1;
       const kfNow = lastKamaFast;
       const ksNow = lastKamaSlow;
-      const split = decideCloseSplit({
-        martinDepth,
-        exitReason: reason === "移動止盈" ? "trailing_stop" : reason,
-        entryTrendBull: p.entryTrendBull,
-        currentKamaFast: kfNow,
-        currentKamaSlow: ksNow,
-        kLinePeriod: tfMs / 60000,
-        cooldownBars: 2,
-        reentryEnabled: reentryOnTrend,
-      });
+      const isRiskExit = reason === "極限止損"
+        || reason === "每日虧損上限"
+        || reason === "硬止損"
+        || reason === "絕對金額限損";
+      if (isV41) {
+        // V4.1 不沿用 V4.0 隱性 Fast/Slow gate；真正重入方向由共用 evaluator 在下一根已收盤 K 重驗。
+        if (martinDepth > 0 || isRiskExit) {
+          cooldownUntil = exitTime + cooldownMs;
+        } else if (reentryOnTrend) {
+          reentryBox.req = { side: p.side, entryTrendBull: p.entryTrendBull };
+        }
+      } else {
+        const split = decideCloseSplit({
+          martinDepth,
+          exitReason: reason === "移動止盈" ? "trailing_stop" : reason,
+          entryTrendBull: p.entryTrendBull,
+          currentKamaFast: kfNow,
+          currentKamaSlow: ksNow,
+          kLinePeriod: tfMs / 60000,
+          cooldownBars: 2,
+          reentryEnabled: reentryOnTrend,
+        });
 
-      if (split.action === "cooldown") {
-        // 分流 B：馬丁解套 → 強制冷卻
-        cooldownUntil = exitTime + split.cooldownMs;
-      } else if (reason === "極限止損" || reason === "每日虧損上限" || reason === "硬止損" || reason === "絕對金額限損") {
-        // 風控性平倉：即使無馬丁也強制冷卻（防止立即重入）
-        cooldownUntil = exitTime + cooldownMs;
-      } else if (split.action === "reenter") {
-        // 分流 A：第 0 層順勢重入（在主循環執行市價重入）
-        reentryBox.req = { side: p.side, entryTrendBull: p.entryTrendBull };
+        if (split.action === "cooldown") {
+          cooldownUntil = exitTime + split.cooldownMs;
+        } else if (isRiskExit) {
+          cooldownUntil = exitTime + cooldownMs;
+        } else if (split.action === "reenter") {
+          reentryBox.req = { side: p.side, entryTrendBull: p.entryTrendBull };
+        }
       }
       position = null;
     };
@@ -659,8 +698,27 @@ export class BacktestEngine {
       const reentryReq = reentryBox.req;
       if (reentryReq) {
         const currentTrendBull = kf > ks;
-        // 重入前再確認 KAMA 方向仍未變（雙重防線）
-        if (currentTrendBull === reentryReq.entryTrendBull) {
+        const v41Reentry = isV41 && v41Config
+          ? evaluateV41SameDirectionReentry({
+              config: v41Config,
+              closedBars: [k1, k2, k3],
+              decisionBarTimestamp: now,
+              decisionClose: price,
+              fastKama: kf,
+              slowKama: ks,
+              allowedDirection: "both",
+              requestedDirection: reentryReq.side,
+              originalDirection: reentryReq.side,
+            })
+          : null;
+        if (v41Reentry && v41EntryDiagnostics) {
+          recordV41BacktestReentryEvaluation(v41EntryDiagnostics, v41Reentry);
+        }
+        // V4.1 使用共用持續條件 evaluator；舊策略保留原有 Fast/Slow 雙重防線。
+        const reentryAllowed = v41Reentry
+          ? v41Reentry.allowed
+          : currentTrendBull === reentryReq.entryTrendBull;
+        if (reentryAllowed) {
           const side = reentryReq.side;
           // 🔥 固定金本位重入：首單 = baseLotUsdt / price（含縮倉）
           let reentryLotUsdt = baseLotUsdt;
@@ -699,7 +757,21 @@ export class BacktestEngine {
 
       let side: "long" | "short" | null = null;
 
-      if (isV61) {
+      if (isV41 && v41Config) {
+        const entryDecision = evaluateV41EntryConditions({
+          config: v41Config,
+          closedBars: [k1, k2, k3],
+          decisionBarTimestamp: now,
+          decisionClose: price,
+          fastKama: kf,
+          slowKama: ks,
+          allowedDirection: "both",
+        });
+        if (v41EntryDiagnostics) {
+          recordV41BacktestEntryEvaluation(v41EntryDiagnostics, entryDecision);
+        }
+        if (entryDecision.passed) side = entryDecision.direction;
+      } else if (isV61) {
         // ===== V6.1 區域觸發模式（entry_zone_mode + direction_mode）=====
         const atrVal = v61AtrSeries[i] ?? 0;
         if (atrVal > 0) {
@@ -924,6 +996,9 @@ export class BacktestEngine {
       summary,
       candleCount: candles.length,
       environment: envSnapshotV35,
+      ...(v41EntryDiagnostics
+        ? { environment: { ...envSnapshotV35, v41EntryDiagnostics } }
+        : {}),
       endPositionPolicy,
       accounting,
     }, request, startMs, endMs, continuousData.quality);

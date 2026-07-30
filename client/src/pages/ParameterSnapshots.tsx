@@ -34,10 +34,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Star, Trash2, Play, Eye, Database, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, Star, Trash2, Play, Eye, Database, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
+import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
 import {
   RAINBOW_20415_STRATEGY_KEY,
   normalizeRainbow20415Config,
@@ -46,6 +47,28 @@ import {
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
   normalizeRainbowTrendLadderConfig,
 } from "@shared/strategies/rainbowTrendLadder";
+import {
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+  countEnabledV41EntryConditions,
+  normalizeV41Config,
+  summarizeV41EntryConfig,
+  validateV41Config,
+} from "@shared/strategies/kama3kMartinV41";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getV41SnapshotDisplay(strategyKey: string | null | undefined, rawSnapshotConfig: unknown) {
+  if (strategyKey !== V41_STRATEGY_KEY) return null;
+  const canonicalCandidate = isRecord(rawSnapshotConfig) && isRecord(rawSnapshotConfig[V41_CONFIG_KEY])
+    ? rawSnapshotConfig[V41_CONFIG_KEY]
+    : rawSnapshotConfig;
+  const validation = validateV41Config(canonicalCandidate);
+  const config = validation.config ?? normalizeV41Config(canonicalCandidate);
+  return { canonicalCandidate, config, validation };
+}
 
 export default function ParameterSnapshots() {
   const [sortBy, setSortBy] = useState<"totalReturn" | "winRate" | "sharpeRatio" | "createdAt">("createdAt");
@@ -106,6 +129,18 @@ export default function ParameterSnapshots() {
       return 0;
     });
   }, [snapshots]);
+  const selectedSnapshot = useMemo(
+    () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? null,
+    [selectedSnapshotId, snapshots],
+  );
+  const selectedV41Display = useMemo(
+    () => getV41SnapshotDisplay(selectedSnapshot?.strategyKey, selectedSnapshot?.config),
+    [selectedSnapshot],
+  );
+  const viewV41Display = useMemo(
+    () => getV41SnapshotDisplay(viewStrategyKey, viewConfig),
+    [viewConfig, viewStrategyKey],
+  );
 
   const handleDelete = async (id: number) => {
     if (!confirm("確定刪除此快照？")) return;
@@ -277,6 +312,30 @@ export default function ParameterSnapshots() {
                           <Badge variant="outline" className="text-xs">
                             {s.strategyName || s.strategyKey}
                           </Badge>
+                          {s.strategyKey === V41_STRATEGY_KEY && (() => {
+                            const display = getV41SnapshotDisplay(s.strategyKey, s.config);
+                            if (!display) return null;
+                            return (
+                              <div className="mt-2 min-w-56 space-y-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Badge variant="outline" className="border-emerald-500/40 text-[10px] text-emerald-300">
+                                    入場邏輯：{display.config.entryConditionLogic.toUpperCase()}
+                                  </Badge>
+                                  <Badge variant="outline" className="text-[10px]">
+                                    {countEnabledV41EntryConditions(display.config)}/3 條件
+                                  </Badge>
+                                  {!display.validation.valid && (
+                                    <Badge variant="outline" className="border-amber-500/45 text-[10px] text-amber-300">
+                                      需複核
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="max-w-sm break-words text-[10px] leading-relaxed text-muted-foreground">
+                                  {summarizeV41EntryConfig(display.config)}
+                                </p>
+                              </div>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className={`text-right font-mono ${(s.totalReturn ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                           {fmtNum(s.totalReturn)}%
@@ -400,7 +459,46 @@ export default function ParameterSnapshots() {
             <DialogHeader>
               <DialogTitle>參數詳情</DialogTitle>
             </DialogHeader>
-            {viewConfig && viewStrategyKey === RAINBOW_20415_STRATEGY_KEY ? (
+            {viewConfig && viewV41Display ? (
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm font-semibold">V4.1 入場條件契約覆核</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    AND／OR、三項條件、三 K 模式與特殊原地重入均以快照保存值唯讀顯示；查看詳情不會改寫配置。
+                  </p>
+                </div>
+                {!viewV41Display.validation.valid && (
+                  <div role="alert" className="flex items-start gap-3 rounded-lg border border-amber-500/35 bg-amber-500/8 p-3 text-amber-100">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-300" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">Canonical 驗證警告（不封鎖唯讀瀏覽）</p>
+                      <p className="mt-1 text-xs leading-relaxed text-amber-100/75">
+                        此快照仍可查看，但後端套用或複製時會維持 fail-closed，直到配置通過同 key 嚴格驗證。
+                      </p>
+                      <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] text-amber-100/75">
+                        {viewV41Display.validation.issues.map((issue) => (
+                          <li key={`${issue.path}:${issue.message}`}>{issue.path}：{issue.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+                <V41EntryConditionsPanel
+                  value={viewV41Display.canonicalCandidate}
+                  onChange={() => undefined}
+                  disabled
+                  readOnly
+                  context="snapshot"
+                  validationIssues={viewV41Display.validation.issues}
+                />
+                <details className="rounded-lg border border-border/60 bg-muted/20 p-3">
+                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground">查看完整原始參數</summary>
+                  <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-[11px] font-mono">
+                    {JSON.stringify(viewConfig, null, 2)}
+                  </pre>
+                </details>
+              </div>
+            ) : viewConfig && viewStrategyKey === RAINBOW_20415_STRATEGY_KEY ? (
               <Rainbow20415ConfigPanel value={viewConfig} onChange={() => undefined} disabled context="snapshot" />
             ) : viewConfig && viewStrategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY ? (
               <RainbowTrendLadderConfigPanel value={viewConfig} onChange={() => undefined} disabled context="snapshot" />
@@ -421,6 +519,24 @@ export default function ParameterSnapshots() {
                 將快照參數套用至現有策略實例，系統會自動驗證策略類型是否匹配。
               </DialogDescription>
             </DialogHeader>
+            {selectedV41Display && (
+              <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="border-emerald-500/40 text-emerald-300">
+                    入場邏輯：{selectedV41Display.config.entryConditionLogic.toUpperCase()}
+                  </Badge>
+                  <Badge variant="outline">
+                    {countEnabledV41EntryConditions(selectedV41Display.config)}/3 條件
+                  </Badge>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  {summarizeV41EntryConfig(selectedV41Display.config)}
+                </p>
+                {!selectedV41Display.validation.valid && (
+                  <p className="mt-2 text-xs text-amber-300">此快照未通過 canonical 驗證，伺服器將拒絕套用。</p>
+                )}
+              </div>
+            )}
             <div className="py-4">
               <Select value={targetStrategyId} onValueChange={setTargetStrategyId}>
                 <SelectTrigger>
@@ -459,6 +575,18 @@ export default function ParameterSnapshots() {
                 快照只提供策略邏輯與倉位預填；建立前可獨立指定最終實盤部署倉位。
               </DialogDescription>
             </DialogHeader>
+            {selectedV41Display && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="border-emerald-500/40 text-emerald-300">
+                    入場邏輯：{selectedV41Display.config.entryConditionLogic.toUpperCase()}
+                  </Badge>
+                  <Badge variant="outline">{countEnabledV41EntryConditions(selectedV41Display.config)}/3 條件</Badge>
+                </div>
+                <p className="mt-2 text-muted-foreground">{summarizeV41EntryConfig(selectedV41Display.config)}</p>
+                <p className="mt-2 text-amber-200">V4.1 快照複製為新策略後預設停用，必須人工覆核後才可啟用。</p>
+              </div>
+            )}
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label>策略名稱</Label>

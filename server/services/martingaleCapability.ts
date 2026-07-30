@@ -23,6 +23,7 @@ export interface MartingaleStrategyInstanceLike {
 const PRIVATE_CONFIG_KEYS = [
   "__v25Config",
   "__v35Config",
+  "__v41Config",
   "__v50Config",
   "__v61Config",
   "__v70Config",
