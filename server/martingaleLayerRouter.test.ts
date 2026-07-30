@@ -71,6 +71,8 @@ describe("strategies.martingaleLayerSummaries", () => {
       strategyId: 11,
       activeCycleCount: 1,
       openLayerCount: 3,
+      availability: "ready",
+      availabilityReason: null,
     }]);
     const caller = appRouter.createCaller(createContext(42));
 
@@ -82,6 +84,8 @@ describe("strategies.martingaleLayerSummaries", () => {
       strategyId: 11,
       activeCycleCount: 1,
       openLayerCount: 3,
+      availability: "ready",
+      availabilityReason: null,
     }]);
     expect(getSnapshotsMock).toHaveBeenCalledWith(
       42,

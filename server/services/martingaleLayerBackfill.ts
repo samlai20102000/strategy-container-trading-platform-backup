@@ -178,6 +178,11 @@ function relativeDiff(left: number, right: number): number {
   return right > EPSILON ? Math.abs(left - right) / right : Number.POSITIVE_INFINITY;
 }
 
+function effectiveFillTime(trade: Trade): number {
+  const timestamp = (trade.filledAt ?? trade.createdAt)?.getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 function reject(
   strategy: Strategy,
   local: LocalOpenState | null,
@@ -201,8 +206,9 @@ function reject(
 }
 
 /**
- * 從最後一次完全平倉後的成交段重建 FIFO 層級。任何一筆 fill 真值不足、方向衝突或
- * 平倉超量都整個策略拒絕；絕不以 createdAt 排序本身冒充可證明的層級真相。
+ * 依交易所精確成交逐筆重播 FIFO 淨倉；每次淨倉精確歸零即形成可證明的循環邊界，
+ * 因此較早且已平倉的 LONG／SHORT 循環不會污染最後活躍循環。任何 fill 真值不足、
+ * 未歸零前反向開倉、錯向／超量平倉仍整體拒絕，絕不猜測逐層成交。
  */
 export function reconstructStrictLegacyCycle(
   strategy: Strategy,
@@ -211,7 +217,10 @@ export function reconstructStrictLegacyCycle(
 ): { decision: MartingaleBackfillDecision; reconstruction: EligibleReconstruction | null } {
   const local = localOpenState(strategy);
   if (!local) return { decision: reject(strategy, local, "no_local_open_position"), reconstruction: null };
-  const filled = history.filter(trade => trade.status === "filled");
+  const filled = history
+    .filter(trade => trade.status === "filled")
+    .slice()
+    .sort((left, right) => effectiveFillTime(left) - effectiveFillTime(right) || left.id - right.id);
   if (filled.length === 0) {
     return { decision: reject(strategy, local, "no_filled_trade_history"), reconstruction: null };
   }
@@ -219,21 +228,26 @@ export function reconstructStrictLegacyCycle(
     return { decision: reject(strategy, local, "unverifiable_fill_truth"), reconstruction: null };
   }
 
-  const entrySide = local.side === "long" ? "buy" : "sell";
-  const closeSide = local.side === "long" ? "sell" : "buy";
   let opens: ReconstructedOpen[] = [];
   let allocations: ReconstructedAllocation[] = [];
+  let cycleSide: "long" | "short" | null = null;
 
   for (const trade of filled) {
     const quantity = finitePositive(trade.size)!;
     if (!trade.reduceOnly) {
-      if (trade.side !== entrySide) {
+      const tradeSide = trade.side === "buy" ? "long" : "short";
+      if (cycleSide !== null && tradeSide !== cycleSide) {
         return { decision: reject(strategy, local, "direction_conflict"), reconstruction: null };
       }
+      cycleSide = tradeSide;
       opens.push({ trade, layerIndex: opens.length + 1, remainingQuantity: quantity });
       continue;
     }
-    if (trade.side !== closeSide) {
+    if (cycleSide === null) {
+      return { decision: reject(strategy, local, "close_exceeds_open_quantity"), reconstruction: null };
+    }
+    const expectedCloseSide = cycleSide === "long" ? "sell" : "buy";
+    if (trade.side !== expectedCloseSide) {
       return { decision: reject(strategy, local, "direction_conflict"), reconstruction: null };
     }
 
@@ -259,12 +273,16 @@ export function reconstructStrictLegacyCycle(
       // 完全平倉是明確循環邊界；較早事件不屬於現行持倉。
       opens = [];
       allocations = [];
+      cycleSide = null;
     }
   }
 
   const remainingOpens = opens.filter(open => open.remainingQuantity > EPSILON);
   if (remainingOpens.length === 0) {
     return { decision: reject(strategy, local, "cycle_already_flat"), reconstruction: null };
+  }
+  if (cycleSide !== local.side) {
+    return { decision: reject(strategy, local, "direction_conflict"), reconstruction: null };
   }
   if (opens.length > maxLayers) {
     return {
@@ -295,7 +313,7 @@ export function reconstructStrictLegacyCycle(
   const cycleId = `legacy:${strategy.id}:${firstExecutionId}`.slice(0, 128);
   const reconstruction: EligibleReconstruction = {
     cycleId,
-    side: local.side,
+    side: cycleSide,
     opens,
     allocations,
     quantity,

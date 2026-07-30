@@ -105,7 +105,38 @@ export function MartingaleLayerPositionPanel({
   }
 
   // 馬丁策略未開倉時不顯示逐層區；非馬丁策略根本不會 render 此元件。
-  if (!summary || summary.activeCycleCount === 0 || summary.openLayerCount === 0) return null;
+  if (!summary || summary.availability === "no_open_position") return null;
+
+  if (summary.availability === "awaiting_reconciliation") {
+    return (
+      <section
+        className="rounded-lg border border-amber-500/35 bg-amber-500/[0.05] px-3 py-3 text-amber-100"
+        data-martingale-layer-reconciliation
+        data-strategy-id={strategyId}
+      >
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+          <div className="min-w-0 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-foreground">馬丁逐層持倉待對帳</span>
+              <Badge variant="outline" className="h-5 border-amber-500/35 px-1.5 text-[9px] text-amber-300">
+                暫不顯示逐層數據
+              </Badge>
+            </div>
+            <p className="text-[11px] leading-relaxed text-amber-100/80">
+              已偵測到此馬丁策略有現存持倉，但尚未建立可稽核的逐層成交 ledger。
+              系統不會推算各層成交價或顯示偽精確盈虧；完成嚴格成交對帳後會自動恢復。
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              此提示為唯讀資料品質狀態，不會改變策略、持倉或任何下單／平倉行為。
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (summary.activeCycleCount === 0 || summary.openLayerCount === 0) return null;
 
   const busy = detailLoading || detailFetching || refreshing;
 

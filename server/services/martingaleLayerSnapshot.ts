@@ -24,6 +24,11 @@ export const MARTINGALE_LAYER_SNAPSHOT_CONTRACT_VERSION = "martin-layer-snapshot
 
 export type MartingaleLayerQuality = "exact" | "account_aggregate" | "mismatch" | "stale" | "unavailable";
 
+export type MartingaleLayerAvailability =
+  | "ready"
+  | "no_open_position"
+  | "awaiting_reconciliation";
+
 export interface MartingaleOpenLayerSnapshot {
   layerEventId: number;
   layerIndex: number;
@@ -56,6 +61,8 @@ export interface MartingaleStrategyLayerSnapshot {
   maxLayers: number;
   activeCycleCount: number;
   openLayerCount: number;
+  availability: MartingaleLayerAvailability;
+  availabilityReason: "legacy_position_without_ledger" | null;
   quality: MartingaleLayerQuality;
   capturedAt: number | null;
   stale: boolean;
@@ -76,6 +83,19 @@ interface SnapshotBuildInput {
 function finiteNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasLocalMartingalePosition(strategy: Strategy): boolean {
+  const state = strategy.martinState;
+  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+  const record = state as Record<string, unknown>;
+  const totalSize = finiteNumber(
+    record.totalSize
+      ?? record.currentPositionSize
+      ?? record.positionSize
+      ?? record.currentQty,
+  );
+  return totalSize !== null && totalSize > EPSILON;
 }
 
 function matchingPosition(
@@ -240,6 +260,11 @@ export function buildMartingaleLayerSnapshots({
     const qualities = cycleSnapshots.flatMap(cycle => cycle.layers.map(layer => layer.quality));
     const quality = qualities.length > 0 ? worstQuality(qualities) : "unavailable";
     const openLayerCount = cycleSnapshots.reduce((sum, cycle) => sum + cycle.layers.length, 0);
+    const availability: MartingaleLayerAvailability = openLayerCount > 0
+      ? "ready"
+      : hasLocalMartingalePosition(strategy)
+        ? "awaiting_reconciliation"
+        : "no_open_position";
     return {
       contractVersion: MARTINGALE_LAYER_SNAPSHOT_CONTRACT_VERSION,
       strategyId: strategy.id,
@@ -247,6 +272,10 @@ export function buildMartingaleLayerSnapshots({
       maxLayers,
       activeCycleCount: cycleSnapshots.length,
       openLayerCount,
+      availability,
+      availabilityReason: availability === "awaiting_reconciliation"
+        ? "legacy_position_without_ledger"
+        : null,
       quality,
       capturedAt,
       stale,

@@ -233,6 +233,53 @@ describe("martingaleLayerSnapshot", () => {
     expect(snapshot.cycles[0].layers[0].grossUnrealizedPnl).toBeNull();
   });
 
+  it("有本地馬丁持倉但沒有 ledger 時回傳待對帳且不生成任何偽層級", () => {
+    const [snapshot] = buildMartingaleLayerSnapshots({
+      strategies: [strategy(1, {
+        martinState: {
+          currentLayer: 2,
+          totalSize: 0.0178,
+          averageEntryPrice: 63_906.31,
+          side: "short",
+        },
+      })],
+      cycles: [],
+      events: [],
+      allocations: [],
+      accounts: new Map(),
+      now: NOW,
+    });
+
+    expect(snapshot).toMatchObject({
+      strategyId: 1,
+      activeCycleCount: 0,
+      openLayerCount: 0,
+      availability: "awaiting_reconciliation",
+      availabilityReason: "legacy_position_without_ledger",
+      quality: "unavailable",
+      pnlHidden: true,
+    });
+    expect(snapshot.cycles).toEqual([]);
+  });
+
+  it("沒有本地持倉且沒有 ledger 時標記 no_open_position", () => {
+    const [snapshot] = buildMartingaleLayerSnapshots({
+      strategies: [strategy(1, { martinState: null })],
+      cycles: [],
+      events: [],
+      allocations: [],
+      accounts: new Map(),
+      now: NOW,
+    });
+
+    expect(snapshot).toMatchObject({
+      availability: "no_open_position",
+      availabilityReason: null,
+      activeCycleCount: 0,
+      openLayerCount: 0,
+    });
+  });
+
   it("多個馬丁策略共享同帳戶、交易對及方向時只按 ledger 分配毛 PnL", () => {
     const snapshots = buildMartingaleLayerSnapshots({
       strategies: [strategy(1), strategy(2)],

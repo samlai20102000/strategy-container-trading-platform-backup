@@ -554,6 +554,8 @@ const strategiesRouter = router({
         strategyId: snapshot.strategyId,
         activeCycleCount: snapshot.activeCycleCount,
         openLayerCount: snapshot.openLayerCount,
+        availability: snapshot.availability,
+        availabilityReason: snapshot.availabilityReason,
       }));
     }),
 

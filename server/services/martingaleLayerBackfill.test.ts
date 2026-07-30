@@ -121,6 +121,101 @@ describe("martingaleLayerBackfill", () => {
     expect(result.reconstruction?.opens[0]).toMatchObject({ layerIndex: 1, remainingQuantity: 2 });
   });
 
+  it("LONG 完全平倉後可切換為 SHORT，且只重建最後活躍循環", () => {
+    const result = reconstructStrictLegacyCycle(
+      strategy(2, 110, false),
+      [
+        trade(1, "buy", 1, 100),
+        trade(2, "sell", 1, 101, true),
+        trade(3, "sell", 2, 110),
+      ],
+      5,
+    );
+
+    expect(result.decision).toMatchObject({
+      eligible: true,
+      side: "short",
+      layerCount: 1,
+      cycleId: "legacy:41:exec-3",
+      reconstructedQuantity: 2,
+      reconstructedEntryPrice: 110,
+    });
+    expect(result.reconstruction?.opens).toEqual([
+      expect.objectContaining({ layerIndex: 1, remainingQuantity: 2 }),
+    ]);
+    expect(result.reconstruction?.allocations).toEqual([]);
+  });
+
+  it("SHORT 完全平倉後可切換為 LONG，且只重建最後活躍循環", () => {
+    const result = reconstructStrictLegacyCycle(
+      strategy(3, 90, true),
+      [
+        trade(1, "sell", 1, 100),
+        trade(2, "buy", 1, 99, true),
+        trade(3, "buy", 3, 90),
+      ],
+      5,
+    );
+
+    expect(result.decision).toMatchObject({
+      eligible: true,
+      side: "long",
+      layerCount: 1,
+      cycleId: "legacy:41:exec-3",
+      reconstructedQuantity: 3,
+      reconstructedEntryPrice: 90,
+    });
+  });
+
+  it("以交易所 filledAt 重排 hydrated 舊成交，不受資料庫原始列順序污染", () => {
+    const result = reconstructStrictLegacyCycle(
+      strategy(3, 340 / 3, false),
+      [
+        trade(40, "sell", 1, 120, false, {
+          createdAt: new Date(1_000),
+          filledAt: new Date(4_000),
+        }),
+        trade(30, "sell", 2, 110, false, {
+          createdAt: new Date(2_000),
+          filledAt: new Date(3_000),
+        }),
+        trade(10, "buy", 1, 100, false, {
+          createdAt: new Date(4_000),
+          filledAt: new Date(1_000),
+        }),
+        trade(20, "sell", 1, 101, true, {
+          createdAt: new Date(5_000),
+          filledAt: new Date(2_000),
+        }),
+      ],
+      5,
+    );
+
+    expect(result.decision).toMatchObject({
+      eligible: true,
+      side: "short",
+      layerCount: 2,
+      cycleId: "legacy:41:exec-30",
+      reconstructedQuantity: 3,
+      reconstructedEntryPrice: 340 / 3,
+    });
+    expect(result.reconstruction?.opens.map(open => open.trade.id)).toEqual([30, 40]);
+  });
+
+  it("舊循環未完全平倉時反向開倉仍嚴格拒絕", () => {
+    const result = reconstructStrictLegacyCycle(
+      strategy(1, 110, false),
+      [
+        trade(1, "buy", 1, 100),
+        trade(2, "sell", 1, 110),
+      ],
+      5,
+    );
+
+    expect(result.decision).toMatchObject({ eligible: false, reason: "direction_conflict" });
+    expect(result.reconstruction).toBeNull();
+  });
+
   it("任何非交易所 fill 真值的歷史都整體拒絕", () => {
     const result = reconstructStrictLegacyCycle(
       strategy(1, 100),
