@@ -10,7 +10,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
-import { BaseStrategy } from "../strategies/base";
+import { BaseStrategy, type StrategyCapabilities } from "../strategies/base";
 import { Strategy20415 } from "../strategies/builtin/strategy20415";
 import { StrategyRainbowTrendLadder } from "../strategies/builtin/strategyRainbowTrendLadder";
 import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
@@ -36,6 +36,24 @@ export const BUILT_IN_KEYS = [
   "KAMA_3K_TORNADO_V70",
 ] as const;
 
+/**
+ * 既有內建策略受逐位元不可變測試保護，能力在可信註冊中心顯式宣告，
+ * 不向策略交易程式插入任何 UI／稽核屬性。
+ */
+const BUILT_IN_CAPABILITIES: Readonly<Record<
+  (typeof BUILT_IN_KEYS)[number],
+  Readonly<StrategyCapabilities>
+>> = Object.freeze({
+  strategy_20415: Object.freeze({ martingaleLayers: true }),
+  RAINBOW_TREND_LADDER_V1: Object.freeze({ martingaleLayers: true }),
+  KAMA_3K_BREAKOUT_V25: Object.freeze({ martingaleLayers: true }),
+  "20415_KAMA_MARTIN_V35": Object.freeze({ martingaleLayers: true }),
+  KAMA_3K_ULTIMATE_V50: Object.freeze({ martingaleLayers: true }),
+  KAMA_3K_HF_V61: Object.freeze({ martingaleLayers: true }),
+  KAMA_3K_TORNADO_V70: Object.freeze({ martingaleLayers: true }),
+});
+const NO_STRATEGY_CAPABILITIES = Object.freeze({ martingaleLayers: false });
+
 /* ==================== 註冊中心 ==================== */
 
 const strategyMap = new Map<string, BaseStrategy>();
@@ -45,6 +63,7 @@ export interface StrategyMeta {
   name: string;
   description?: string;
   defaultConfig: Record<string, unknown>;
+  capabilities: { martingaleLayers: boolean };
   isBuiltIn: boolean;
   sourceType: "system" | "paste" | "upload";
 }
@@ -53,11 +72,22 @@ export function getStrategy(key: string): BaseStrategy | undefined {
   return strategyMap.get(key);
 }
 
+export function getStrategyCapabilities(key: string): Readonly<StrategyCapabilities> {
+  const strategy = strategyMap.get(key);
+  if (!strategy) return NO_STRATEGY_CAPABILITIES;
+  if (isBuiltInKey(key)) {
+    return BUILT_IN_CAPABILITIES[key as (typeof BUILT_IN_KEYS)[number]]
+      ?? NO_STRATEGY_CAPABILITIES;
+  }
+  return Object.freeze({ martingaleLayers: strategy.capabilities.martingaleLayers === true });
+}
+
 export function listRegisteredStrategies(): StrategyMeta[] {
   return Array.from(strategyMap.values()).map((s) => ({
     key: s.key,
     name: s.name,
     defaultConfig: s.defaultConfig,
+    capabilities: getStrategyCapabilities(s.key),
     isBuiltIn: s.isBuiltIn,
     sourceType: s.isBuiltIn ? "system" : "paste",
   }));

@@ -59,6 +59,10 @@ export interface OrderResult {
   settlementStatus?: SettlementStatus;
   /** 成交價量完整性 */
   fillQuality?: FillQuality;
+  /** 只讀成交稽核欄位；用於驗證歷史記錄，不參與下單決策。 */
+  executedSide?: "buy" | "sell";
+  executedReduceOnly?: boolean;
+  executionStatus?: "filled" | "partially_filled" | "cancelled" | "unknown";
   /** 多方向／多持倉平倉時的逐筆權威結果 */
   childResults?: OrderResult[];
 }

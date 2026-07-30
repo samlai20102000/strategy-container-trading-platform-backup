@@ -4,6 +4,7 @@ import type { InsertSignal, InsertTrade } from "../../drizzle/schema";
 import { signals, trades } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { OrderResult } from "../exchanges/types";
+import { appendMartingaleExecution, resolveMartingaleCycle } from "./martingalePositionLedger";
 
 export type LedgerSignalSource = "webhook" | "auto" | "manual";
 export type LedgerTradeStatus = "submitted" | "filled" | "failed" | "cancelled";
@@ -272,7 +273,16 @@ export async function recordTradeExecution(
 
   try {
     return await db.transaction(async tx => {
-      const cycleId = await resolveCycleId(tx, input);
+      const fallbackCycleId = await resolveCycleId(tx, input);
+      const martingaleCycle = await resolveMartingaleCycle(
+        tx,
+        input,
+        fallbackCycleId,
+        executionId,
+      );
+      const cycleId = martingaleCycle.isMartingale
+        ? martingaleCycle.cycleId
+        : fallbackCycleId;
       const pnl = inferPnlTruth(input);
       const orderId = input.execution.orderId || null;
       const exchangeResponse = input.execution.raw === undefined
@@ -356,6 +366,15 @@ export async function recordTradeExecution(
         strategyKey: input.strategy.strategyKey || null,
       } satisfies InsertTrade);
       const tradeId = extractInsertId(tradeResult);
+
+      await appendMartingaleExecution(
+        tx,
+        input,
+        martingaleCycle,
+        executionId,
+        finalSize,
+        finalPrice,
+      );
 
       return {
         signalId,

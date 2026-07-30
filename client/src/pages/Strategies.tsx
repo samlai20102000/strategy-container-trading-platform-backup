@@ -31,6 +31,7 @@ import { V25ConfigPanel } from "@/components/V25ConfigPanel";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
 import { RainbowTrendLadderSafetyControls } from "@/components/RainbowTrendLadderSafetyControls";
+import { MartingaleLayerPositionPanel } from "@/components/MartingaleLayerPositionPanel";
 import { trpc } from "@/lib/trpc";
 import {
   getStrategyApiIdentity,
@@ -76,6 +77,7 @@ import {
   Radio,
   RefreshCw,
   RotateCcw,
+  Search,
   Settings2,
   Square,
   Trash2,
@@ -263,6 +265,43 @@ function StrategiesContent() {
   const { data: registryDefs } = trpc.registry.listDefinitions.useQuery(undefined);
   const { data: studioDefs } = trpc.studio.list.useQuery();
   const definitions = (registryDefs && registryDefs.length > 0) ? registryDefs : studioDefs;
+  const [strategySearch, setStrategySearch] = useState("");
+  const [strategyFilter, setStrategyFilter] = useState<"all" | "martingale" | "non_martingale" | "running" | "stopped">("all");
+  const [strategyPage, setStrategyPage] = useState(1);
+  const [expandedMartinStrategyIds, setExpandedMartinStrategyIds] = useState<Set<number>>(() => new Set());
+  const [refreshingMartinStrategyId, setRefreshingMartinStrategyId] = useState<number | null>(null);
+  const strategyPageSize = 8;
+  const filteredStrategies = useMemo(() => {
+    const query = strategySearch.trim().toLowerCase();
+    return (strategies ?? []).filter((strategy) => {
+      const isMartingale = strategy.martingaleLayerCapability?.isMartingale === true;
+      const filterMatch = strategyFilter === "all"
+        || (strategyFilter === "martingale" && isMartingale)
+        || (strategyFilter === "non_martingale" && !isMartingale)
+        || (strategyFilter === "running" && strategy.enabled)
+        || (strategyFilter === "stopped" && !strategy.enabled);
+      if (!filterMatch) return false;
+      if (!query) return true;
+      return `${strategy.name} ${strategy.symbol} ${strategy.exchange}`.toLowerCase().includes(query);
+    });
+  }, [strategies, strategyFilter, strategySearch]);
+  const strategyPageCount = Math.max(1, Math.ceil(filteredStrategies.length / strategyPageSize));
+  useEffect(() => {
+    setStrategyPage(page => Math.min(page, strategyPageCount));
+  }, [strategyPageCount]);
+  useEffect(() => {
+    setStrategyPage(1);
+  }, [strategyFilter, strategySearch]);
+  const visibleStrategies = useMemo(
+    () => filteredStrategies.slice((strategyPage - 1) * strategyPageSize, strategyPage * strategyPageSize),
+    [filteredStrategies, strategyPage],
+  );
+  const visibleMartingaleStrategyIds = useMemo(
+    () => visibleStrategies
+      .filter(strategy => strategy.martingaleLayerCapability?.isMartingale === true)
+      .map(strategy => strategy.id),
+    [visibleStrategies],
+  );
   const [rangeDays, setRangeDays] = useState<string>("30");
   const perfInput = useMemo(() => {
     if (rangeDays === "all") return {};
@@ -274,8 +313,8 @@ function StrategiesContent() {
   // 交易所持倉快照是策略卡片未實現盈虧的唯一權威來源。
   // 同一 API 金鑰只由後端查詢一次，並依帳戶／交易對／方向安全歸屬；不可歸屬時不顯示偽精確盈虧。
   const positionSnapshotInput = useMemo(
-    () => ({ strategyIds: strategies?.map((strategy) => strategy.id) ?? [] }),
-    [strategies],
+    () => ({ strategyIds: visibleStrategies.map((strategy) => strategy.id) }),
+    [visibleStrategies],
   );
   const {
     data: positionSnapshots,
@@ -297,6 +336,73 @@ function StrategiesContent() {
     },
     onError: (error) => toast.error(`交易所持倉同步失敗：${error.message}`),
   });
+
+  const martinSummaryInput = useMemo(
+    () => ({ strategyIds: visibleMartingaleStrategyIds }),
+    [visibleMartingaleStrategyIds],
+  );
+  const {
+    data: martinLayerSummaries,
+    isLoading: martinLayerSummariesLoading,
+  } = trpc.strategies.martingaleLayerSummaries.useQuery(martinSummaryInput, {
+    enabled: martinSummaryInput.strategyIds.length > 0,
+    refetchInterval: 60_000,
+    staleTime: 55_000,
+  });
+  const martinLayerSummaryMap = useMemo(
+    () => new Map((martinLayerSummaries ?? []).map(summary => [summary.strategyId, summary] as const)),
+    [martinLayerSummaries],
+  );
+  const expandedVisibleMartinStrategyIds = useMemo(
+    () => visibleMartingaleStrategyIds.filter(strategyId => expandedMartinStrategyIds.has(strategyId)),
+    [expandedMartinStrategyIds, visibleMartingaleStrategyIds],
+  );
+  const martinLayerDetailInput = useMemo(
+    () => ({ strategyIds: expandedVisibleMartinStrategyIds, forceRefresh: false }),
+    [expandedVisibleMartinStrategyIds],
+  );
+  const {
+    data: martinLayerSnapshots,
+    isLoading: martinLayerSnapshotsLoading,
+    isFetching: martinLayerSnapshotsFetching,
+  } = trpc.strategies.martingaleLayerSnapshots.useQuery(martinLayerDetailInput, {
+    enabled: martinLayerDetailInput.strategyIds.length > 0,
+    refetchInterval: 60_000,
+    staleTime: 55_000,
+  });
+  const martinLayerSnapshotMap = useMemo(
+    () => new Map((martinLayerSnapshots ?? []).map(snapshot => [snapshot.strategyId, snapshot] as const)),
+    [martinLayerSnapshots],
+  );
+  const toggleMartinLayerPanel = (strategyId: number) => {
+    setExpandedMartinStrategyIds(current => {
+      const next = new Set(current);
+      if (next.has(strategyId)) next.delete(strategyId);
+      else next.add(strategyId);
+      return next;
+    });
+  };
+  const refreshMartinLayerSnapshot = async (strategyId: number) => {
+    setRefreshingMartinStrategyId(strategyId);
+    try {
+      const refreshed = await utils.strategies.martingaleLayerSnapshots.fetch({
+        strategyIds: [strategyId],
+        forceRefresh: true,
+      });
+      utils.strategies.martingaleLayerSnapshots.setData(martinLayerDetailInput, current => {
+        if (!current) return refreshed;
+        const replacement = refreshed[0];
+        return replacement
+          ? current.map(snapshot => snapshot.strategyId === strategyId ? replacement : snapshot)
+          : current;
+      });
+      toast.success("已重新同步馬丁逐層持倉");
+    } catch (error) {
+      toast.error(`逐層持倉同步失敗：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRefreshingMartinStrategyId(null);
+    }
+  };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<StrategyForm>(emptyForm);
@@ -927,19 +1033,19 @@ function StrategiesContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight">策略交易</h1>
           <p className="text-sm text-muted-foreground mt-1">
             管理交易策略，支援 Webhook 信號觸發與 Heartbeat 自動交易兩種模式
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button onClick={openCreate}>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:flex-nowrap">
+          <Button className="min-w-0 flex-1 sm:flex-none" onClick={openCreate}>
             <Plus className="h-4 w-4 mr-1" />
             新增策略
           </Button>
-          <Button variant="outline" className="border-cyan-600 text-cyan-400 hover:bg-cyan-600/10" onClick={() => setShowSnapshotImport(true)}>
+          <Button variant="outline" className="min-w-0 flex-1 border-cyan-600 text-cyan-400 hover:bg-cyan-600/10 sm:flex-none" onClick={() => setShowSnapshotImport(true)}>
             <Upload className="h-4 w-4 mr-1" />
             從快照導入
           </Button>
@@ -982,12 +1088,51 @@ function StrategiesContent() {
               </CardContent>
             </Card>
           ) : (
-            <div className="grid gap-4 lg:grid-cols-2">
-              {strategies.map((s) => (
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/35 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="relative w-full sm:max-w-sm">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={strategySearch}
+                    onChange={event => setStrategySearch(event.target.value)}
+                    placeholder="搜尋策略名稱、交易對或交易所"
+                    className="pl-9"
+                    aria-label="搜尋策略卡片"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={strategyFilter} onValueChange={value => setStrategyFilter(value as typeof strategyFilter)}>
+                    <SelectTrigger className="w-[168px] bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部策略</SelectItem>
+                      <SelectItem value="martingale">只顯示馬丁策略</SelectItem>
+                      <SelectItem value="non_martingale">只顯示非馬丁策略</SelectItem>
+                      <SelectItem value="running">只顯示運行中</SelectItem>
+                      <SelectItem value="stopped">只顯示已停止／暫停</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-muted-foreground">
+                    {filteredStrategies.length} / {strategies.length} 個策略
+                  </span>
+                </div>
+              </div>
+
+              {visibleStrategies.length === 0 ? (
+                <Card>
+                  <CardContent className="py-10 text-center">
+                    <p className="text-sm text-muted-foreground">沒有符合目前搜尋或篩選條件的策略。</p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <>
+                  <div className="grid gap-4 lg:grid-cols-2">
+              {visibleStrategies.map((s) => (
                 <Card key={s.id} className={!s.enabled ? "opacity-70" : ""}>
                   <CardContent className="pt-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
                         <span className="font-medium truncate">{s.name}</span>
                         <ExchangeBadge exchange={s.exchange} />
                         <Badge variant="outline" className="text-[10px]">
@@ -1365,9 +1510,25 @@ function StrategiesContent() {
                           </div>
                         </div>
                       );
-                    })()}
+	                    })()}
 
-                    {/* 交易模式切換 */}
+                    {s.martingaleLayerCapability?.isMartingale === true && (
+                      <MartingaleLayerPositionPanel
+                        strategyId={s.id}
+                        maxLayers={s.martingaleLayerCapability.maxLayers}
+                        summary={martinLayerSummaryMap.get(s.id)}
+                        snapshot={martinLayerSnapshotMap.get(s.id)}
+                        summaryLoading={martinLayerSummariesLoading}
+                        detailLoading={expandedMartinStrategyIds.has(s.id) && martinLayerSnapshotsLoading}
+                        detailFetching={expandedMartinStrategyIds.has(s.id) && martinLayerSnapshotsFetching}
+                        refreshing={refreshingMartinStrategyId === s.id}
+                        expanded={expandedMartinStrategyIds.has(s.id)}
+                        onToggle={() => toggleMartinLayerPanel(s.id)}
+                        onRefresh={() => refreshMartinLayerSnapshot(s.id)}
+                      />
+                    )}
+
+	                    {/* 交易模式切換 */}
                     <AutoTradeModeSection strategy={s} />
 
                     {/* Webhook URL - 僅在 webhook 模式下顯示 */}
@@ -1427,13 +1588,13 @@ function StrategiesContent() {
                       <RainbowTrendLadderSafetyControls strategyId={s.id} strategyName={s.name} />
                     )}
 
-                    <div className="flex items-center gap-2">
+                    <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:items-center">
                       {/* T2：暫停 / 恢復 / 停止 控制按鈕 */}
                       {s.enabled ? (
                         <Button
                           variant="outline"
                           size="sm"
-                          className="flex-1"
+                          className="min-w-0 w-full sm:flex-1"
                           disabled={setStatusMutation.isPending}
                           title="暫停：不再接收訊號，保留馬丁狀態"
                           onClick={() =>
@@ -1447,7 +1608,7 @@ function StrategiesContent() {
                         <Button
                           variant="outline"
                           size="sm"
-                          className="flex-1 border-emerald-500/40 text-emerald-400 hover:text-emerald-300"
+                          className="min-w-0 w-full border-emerald-500/40 text-emerald-400 hover:text-emerald-300 sm:flex-1"
                           disabled={setStatusMutation.isPending}
                           title="恢復接收訊號並自動交易"
                           onClick={() =>
@@ -1461,7 +1622,7 @@ function StrategiesContent() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1"
+                        className="min-w-0 w-full sm:flex-1"
                         disabled={setStatusMutation.isPending || (!s.enabled && s.disabledReason !== "手動暫停")}
                         title="停止：不再接收訊號並重置馬丁狀態"
                         onClick={() => {
@@ -1476,7 +1637,7 @@ function StrategiesContent() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1 border-red-500/40 text-red-400 hover:text-red-300"
+                        className="min-w-0 w-full border-red-500/40 text-red-400 hover:text-red-300 sm:flex-1"
                         disabled={closeMutation.isPending}
                         title="精確平倉：只平本策略記錄的持倉數量，不影響同帳戶其他策略"
                         onClick={() => {
@@ -1501,7 +1662,7 @@ function StrategiesContent() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="shrink-0"
+                        className="w-full shrink-0 sm:w-auto"
                         onClick={() => openEdit(s)}
                       >
                         <Pencil className="h-3.5 w-3.5" />
@@ -1509,7 +1670,7 @@ function StrategiesContent() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="shrink-0 border-amber-500/40 text-amber-400 hover:text-amber-300"
+                        className="w-full shrink-0 border-amber-500/40 text-amber-400 hover:text-amber-300 sm:w-auto"
                         disabled={resetStateMutation.isPending}
                         title="精確重置：只平本策略記錄的持倉 + 清零本地狀態，不影響同帳戶其他策略"
                         onClick={() => {
@@ -1526,7 +1687,7 @@ function StrategiesContent() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1"
+                        className="min-w-0 w-full px-2 sm:flex-1 sm:px-3"
                         disabled={testSignalMutation.isPending}
                         title="發送模擬 BUY 信號至訊號日誌（不實際下單）"
                         onClick={() => testSignalMutation.mutate({ strategyId: s.id })}
@@ -1541,7 +1702,7 @@ function StrategiesContent() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive shrink-0"
+                        className="h-8 w-full shrink-0 text-destructive hover:text-destructive sm:w-8"
                         onClick={() => {
                           if (confirm(`確定刪除策略「${s.name}」？`)) {
                             deleteMutation.mutate({ id: s.id });
@@ -1551,11 +1712,37 @@ function StrategiesContent() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
+	                  </CardContent>
+	                </Card>
+	              ))}
+	                  </div>
+                  {strategyPageCount > 1 && (
+                    <div className="flex items-center justify-center gap-2 pt-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={strategyPage <= 1}
+                        onClick={() => setStrategyPage(page => Math.max(1, page - 1))}
+                      >
+                        <ChevronLeft className="mr-1 h-3.5 w-3.5" />上一頁
+                      </Button>
+                      <span className="min-w-20 text-center text-xs text-muted-foreground">
+                        第 {strategyPage} / {strategyPageCount} 頁
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={strategyPage >= strategyPageCount}
+                        onClick={() => setStrategyPage(page => Math.min(strategyPageCount, page + 1))}
+                      >
+                        下一頁<ChevronRight className="ml-1 h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+	            </div>
+	          )}
         </TabsContent>
 
         <TabsContent value="performance" className="mt-4 space-y-4">

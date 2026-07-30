@@ -311,6 +311,7 @@ export class BybitAdapter implements ExchangeAdapter {
         : orderFee !== undefined ? Math.abs(orderFee) : undefined;
       const gross = closedNet !== undefined ? closedNet + (fee ?? 0) : undefined;
       const hasExactFill = avgPrice !== undefined && avgPrice > 0 && filledSize !== undefined && filledSize > 0;
+      const orderStatus = String(detail?.orderStatus ?? "").toLowerCase();
 
       return {
         filledPrice: avgPrice !== undefined && avgPrice > 0 ? avgPrice : undefined,
@@ -325,6 +326,15 @@ export class BybitAdapter implements ExchangeAdapter {
         feeSource: fee !== undefined ? (closed ? "exchange_closed_pnl" : "exchange_order") : "unavailable",
         settlementStatus: expectPnl ? (closedNet !== undefined ? "final" : "pending") : "not_applicable",
         fillQuality: hasExactFill ? "exact" : avgPrice !== undefined || filledSize !== undefined ? "partial" : "unknown",
+        executedSide: detail?.side === "Buy" ? "buy" : detail?.side === "Sell" ? "sell" : undefined,
+        executedReduceOnly: typeof detail?.reduceOnly === "boolean" ? detail.reduceOnly : undefined,
+        executionStatus: orderStatus === "filled"
+          ? "filled"
+          : orderStatus === "partiallyfilled" || orderStatus === "partially_filled"
+            ? "partially_filled"
+            : orderStatus === "cancelled" || orderStatus === "canceled"
+              ? "cancelled"
+              : "unknown",
       };
     } catch (error) {
       console.warn(`[Bybit][queryOrderFillDetails] orderId=${orderId} 查詢失敗:`, (error as Error).message);

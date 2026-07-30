@@ -101,6 +101,14 @@ export interface StrategyValidationResult {
   reason?: string;
 }
 
+/**
+ * 策略能力宣告。能力必須由策略類別明確提供；未知或舊自訂策略一律 fail-closed。
+ * martingaleLayers 只代表策略引擎具備分層馬丁能力，實例仍須通過有效配置判定才會啟用逐層 UI。
+ */
+export interface StrategyCapabilities {
+  martingaleLayers: boolean;
+}
+
 /** 策略決策動作 */
 export interface StrategyAction {
   action: "OPEN_LONG" | "OPEN_SHORT" | "CLOSE_ALL" | "HOLD";
@@ -124,6 +132,10 @@ export abstract class BaseStrategy {
   abstract readonly defaultConfig: Record<string, any>;
   /** 是否為內建策略（內建策略受保護，禁止覆蓋與刪除） */
   readonly isBuiltIn: boolean = false;
+  /** 未明確宣告的策略不得接入馬丁逐層 ledger／API／UI。 */
+  readonly capabilities: Readonly<StrategyCapabilities> = Object.freeze({
+    martingaleLayers: false,
+  });
 
   /**
    * 核心決策方法：根據訊號、實例配置、市場資料與馬丁狀態產生交易動作

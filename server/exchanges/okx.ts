@@ -809,6 +809,7 @@ export class OKXAdapter implements ExchangeAdapter {
     const fee = signedFee !== undefined ? Math.abs(signedFee) : undefined;
     const filledAt = finite(detail.fillTime ?? detail.uTime ?? detail.cTime);
     const hasExactFill = avgPx !== undefined && avgPx > 0 && filledSize !== undefined;
+    const state = String(detail.state ?? "").toLowerCase();
 
     return {
       filledPrice: avgPx !== undefined && avgPx > 0 ? avgPx : undefined,
@@ -823,6 +824,21 @@ export class OKXAdapter implements ExchangeAdapter {
       feeSource: fee !== undefined ? "exchange_order" : "unavailable",
       settlementStatus: expectPnl ? (grossPnl !== undefined ? "final" : "pending") : "not_applicable",
       fillQuality: hasExactFill ? "exact" : avgPx !== undefined || filledSize !== undefined ? "partial" : "unknown",
+      executedSide: detail.side === "buy" || detail.side === "sell" ? detail.side : undefined,
+      executedReduceOnly: typeof detail.reduceOnly === "boolean"
+        ? detail.reduceOnly
+        : String(detail.reduceOnly ?? "").toLowerCase() === "true"
+          ? true
+          : String(detail.reduceOnly ?? "").toLowerCase() === "false"
+            ? false
+            : undefined,
+      executionStatus: state === "filled"
+        ? "filled"
+        : state === "partially_filled"
+          ? "partially_filled"
+          : state === "canceled" || state === "cancelled"
+            ? "cancelled"
+            : "unknown",
     };
   }
 

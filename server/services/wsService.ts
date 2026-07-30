@@ -13,6 +13,14 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server as HttpServer } from "http";
 
+export function isBacktestWebSocketRequest(rawUrl: string | undefined): boolean {
+  try {
+    return new URL(rawUrl ?? "/", "http://localhost").pathname === "/ws";
+  } catch {
+    return false;
+  }
+}
+
 interface WsClient {
   ws: WebSocket;
   subscribedJobs: Set<string>;
@@ -28,7 +36,21 @@ class BacktestWsService {
   init(server: HttpServer): void {
     if (this.wss) return; // 防止重複初始化
 
-    this.wss = new WebSocketServer({ server, path: "/ws" });
+    // 使用 noServer 並只接管精確 /ws。若直接傳入 { server, path }，ws 套件仍會
+    // 監聽所有 upgrade，並對非 /ws 請求回 400；這會中止同一 HTTP server 上的
+    // Vite HMR 或平台代理 WebSocket，造成開發頁反覆重載／白畫面。
+    this.wss = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (request, socket, head) => {
+      if (!isBacktestWebSocketRequest(request.url)) return;
+      const wss = this.wss;
+      if (!wss) {
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(request, socket, head, ws => {
+        wss.emit("connection", ws, request);
+      });
+    });
 
     this.wss.on("connection", (ws) => {
       const client: WsClient = { ws, subscribedJobs: new Set() };

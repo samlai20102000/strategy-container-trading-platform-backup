@@ -307,6 +307,181 @@ export type Trade = typeof trades.$inferSelect;
 export type InsertTrade = typeof trades.$inferInsert;
 
 /**
+ * 馬丁持倉循環主檔。
+ *
+ * 只為明確宣告 martingale capability 且具有效配置的策略建立；非馬丁策略不得寫入。
+ * cycleId 與 trades.cycleId 共用，讓逐層明細可回溯到不可變成交真相。
+ */
+export const positionCycles = mysqlTable(
+  "position_cycles",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    cycleId: varchar("cycleId", { length: 128 }).notNull().unique(),
+    contractVersion: varchar("contractVersion", { length: 32 })
+      .default("martin-layers-v1")
+      .notNull(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    apiKeyId: int("apiKeyId").notNull(),
+    exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
+    symbol: varchar("symbol", { length: 32 }).notNull(),
+    side: mysqlEnum("side", ["long", "short"]).notNull(),
+    status: mysqlEnum("status", ["open", "closed", "reconciliation_required"])
+      .default("open")
+      .notNull(),
+    dataQuality: mysqlEnum("dataQuality", [
+      "live_exact",
+      "legacy_reconstructed",
+      "reconciliation_required",
+    ])
+      .default("live_exact")
+      .notNull(),
+    openedAt: timestamp("openedAt").notNull(),
+    closedAt: timestamp("closedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("position_cycles_strategy_status_idx").on(table.strategyId, table.status),
+    index("position_cycles_owner_status_idx").on(table.userId, table.status),
+    index("position_cycles_account_position_idx").on(
+      table.apiKeyId,
+      table.symbol,
+      table.side,
+      table.status,
+    ),
+  ],
+);
+
+export type PositionCycle = typeof positionCycles.$inferSelect;
+export type InsertPositionCycle = typeof positionCycles.$inferInsert;
+
+/**
+ * 馬丁逐層開倉成交事件（append-only）。
+ *
+ * 每筆 executionId 最多一列；一個循環內 layerIndex 由 1 開始。部分成交先在 trades
+ * 聚合為交易所確認數量／均價，再以單一事件寫入，避免 UI 把委託量冒充成交量。
+ */
+export const positionLayerEvents = mysqlTable(
+  "position_layer_events",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    apiKeyId: int("apiKeyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }).notNull(),
+    layerIndex: int("layerIndex").notNull(),
+    executionId: varchar("executionId", { length: 128 }).notNull().unique(),
+    layerIntentId: varchar("layerIntentId", { length: 128 }).notNull(),
+    orderId: varchar("orderId", { length: 100 }),
+    exchangeTradeId: varchar("exchangeTradeId", { length: 128 }),
+    side: mysqlEnum("side", ["buy", "sell"]).notNull(),
+    quantity: decimal("quantity", { precision: 20, scale: 8 }).notNull(),
+    entryPrice: decimal("entryPrice", { precision: 20, scale: 8 }).notNull(),
+    fee: decimal("fee", { precision: 20, scale: 8 }),
+    source: mysqlEnum("source", [
+      "live_execution",
+      "legacy_reconstructed",
+      "reconciliation_adjustment",
+    ])
+      .default("live_execution")
+      .notNull(),
+    dataQuality: mysqlEnum("dataQuality", [
+      "live_exact",
+      "legacy_reconstructed",
+      "reconciliation_required",
+    ])
+      .default("live_exact")
+      .notNull(),
+    filledAt: timestamp("filledAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("position_layer_cycle_layer_idx").on(table.cycleId, table.layerIndex),
+    index("position_layer_strategy_cycle_idx").on(table.strategyId, table.cycleId),
+    index("position_layer_order_idx").on(table.orderId),
+  ],
+);
+
+export type PositionLayerEvent = typeof positionLayerEvents.$inferSelect;
+export type InsertPositionLayerEvent = typeof positionLayerEvents.$inferInsert;
+
+/**
+ * 平倉成交對各馬丁層的 FIFO 分配事件（append-only）。
+ * allocationKey = closeExecutionId + layerEventId，令重試可安全去重。
+ */
+export const positionLayerCloseAllocations = mysqlTable(
+  "position_layer_close_allocations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    allocationKey: varchar("allocationKey", { length: 180 }).notNull().unique(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }).notNull(),
+    layerEventId: int("layerEventId").notNull(),
+    layerIndex: int("layerIndex").notNull(),
+    closeExecutionId: varchar("closeExecutionId", { length: 128 }).notNull(),
+    allocatedQuantity: decimal("allocatedQuantity", { precision: 20, scale: 8 }).notNull(),
+    closePrice: decimal("closePrice", { precision: 20, scale: 8 }),
+    grossPnl: decimal("grossPnl", { precision: 20, scale: 8 }),
+    feeShare: decimal("feeShare", { precision: 20, scale: 8 }),
+    realizedPnl: decimal("realizedPnl", { precision: 20, scale: 8 }),
+    allocationPolicy: mysqlEnum("allocationPolicy", ["fifo"]).default("fifo").notNull(),
+    dataQuality: mysqlEnum("dataQuality", [
+      "live_exact",
+      "legacy_reconstructed",
+      "reconciliation_required",
+    ])
+      .default("live_exact")
+      .notNull(),
+    allocatedAt: timestamp("allocatedAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("position_layer_close_cycle_idx").on(table.cycleId, table.layerIndex),
+    index("position_layer_close_execution_idx").on(table.closeExecutionId),
+    index("position_layer_close_event_idx").on(table.layerEventId),
+  ],
+);
+
+export type PositionLayerCloseAllocation = typeof positionLayerCloseAllocations.$inferSelect;
+export type InsertPositionLayerCloseAllocation = typeof positionLayerCloseAllocations.$inferInsert;
+
+/**
+ * 帳戶級持倉共享快照。
+ *
+ * 只儲存交易所回傳的持倉欄位與已清洗錯誤，不儲存 API key／secret。跨 instance 先讀此表，
+ * 到期後再由單一租約持有者刷新，避免每張策略卡或每層各自呼叫交易所。
+ */
+export const accountPositionSnapshots = mysqlTable(
+  "account_position_snapshots",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    snapshotKey: varchar("snapshotKey", { length: 96 }).notNull().unique(),
+    contractVersion: varchar("contractVersion", { length: 40 })
+      .default("exchange-position-v3")
+      .notNull(),
+    userId: int("userId").notNull(),
+    apiKeyId: int("apiKeyId").notNull(),
+    exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
+    status: mysqlEnum("status", ["available", "error"]).notNull(),
+    positions: json("positions").notNull(),
+    sanitizedError: text("sanitizedError"),
+    capturedAt: timestamp("capturedAt").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("account_position_snapshot_owner_idx").on(table.userId, table.apiKeyId),
+    index("account_position_snapshot_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export type AccountPositionSnapshotRow = typeof accountPositionSnapshots.$inferSelect;
+export type InsertAccountPositionSnapshotRow = typeof accountPositionSnapshots.$inferInsert;
+
+/**
  * 風險事件記錄：風險觸發自動平倉與停用策略的審計軌跡
  */
 export const riskEvents = mysqlTable("risk_events", {

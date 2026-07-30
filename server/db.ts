@@ -337,10 +337,9 @@ export async function listSignals(
 /* ==================== 交易記錄 ==================== */
 
 export async function createTrade(data: InsertTrade): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error("資料庫不可用");
-  const result = await db.insert(trades).values(data);
-  return (result as any)[0].insertId as number;
+  // 動態 import 避免 db.ts ↔ ledger 初始化循環；所有舊策略成交統一取得冪等、cycle 與馬丁逐層稽核。
+  const { recordExistingTradeExecution } = await import("./services/tradeExecutionLedger");
+  return recordExistingTradeExecution(data);
 }
 
 export async function updateTrade(id: number, data: Partial<InsertTrade>) {

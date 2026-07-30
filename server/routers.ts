@@ -47,6 +47,8 @@ import {
 } from "./services/deploymentPosition";
 import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
 import { recordExistingTradeExecution } from "./services/tradeExecutionLedger";
+import { evaluateMartingaleStrategyInstance } from "./services/martingaleCapability";
+import { getMartingaleLayerSnapshotsForUser } from "./services/martingaleLayerSnapshot";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -506,11 +508,54 @@ function buildWebhookUrl(req: any, strategyId: number, secret: string): string {
 const strategiesRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     const items = await db.listStrategies(ctx.user.id);
-    return items.map((s) => ({
-      ...s,
-      webhookUrl: buildWebhookUrl(ctx.req, s.id, s.webhookSecret),
-    }));
+    return items.map((s) => {
+      const capability = evaluateMartingaleStrategyInstance(s);
+      return {
+        ...s,
+        webhookUrl: buildWebhookUrl(ctx.req, s.id, s.webhookSecret),
+        martingaleLayerCapability: {
+          isMartingale: capability.isMartingale,
+          maxLayers: capability.maxLayers,
+          reason: capability.reason,
+        },
+      };
+    });
   }),
+
+  /**
+   * 只為已展開的馬丁卡片批次取得逐層詳情。
+   * requested IDs 會在 service 內重新套用 user owner + fail-closed capability 雙重過濾。
+   */
+  martingaleLayerSnapshots: protectedProcedure
+    .input(z.object({
+      strategyIds: z.array(z.number().int().positive()).min(1).max(100)
+        .transform(ids => Array.from(new Set(ids))),
+      forceRefresh: z.boolean().default(false),
+    }))
+    .query(async ({ ctx, input }) => getMartingaleLayerSnapshotsForUser(
+      ctx.user.id,
+      input.strategyIds,
+      { forceRefresh: input.forceRefresh, includeMarketData: true },
+    )),
+
+  /** 卡片級輕量摘要：只計算 ledger 的活躍循環／未平層數，不觸發交易所查詢。 */
+  martingaleLayerSummaries: protectedProcedure
+    .input(z.object({
+      strategyIds: z.array(z.number().int().positive()).min(1).max(100)
+        .transform(ids => Array.from(new Set(ids))),
+    }))
+    .query(async ({ ctx, input }) => {
+      const snapshots = await getMartingaleLayerSnapshotsForUser(
+        ctx.user.id,
+        input.strategyIds,
+        { forceRefresh: false, includeMarketData: false },
+      );
+      return snapshots.map(snapshot => ({
+        strategyId: snapshot.strategyId,
+        activeCycleCount: snapshot.activeCycleCount,
+        openLayerCount: snapshot.openLayerCount,
+      }));
+    }),
 
   create: protectedProcedure
     .input(strategyInputSchema)

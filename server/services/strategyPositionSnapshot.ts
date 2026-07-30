@@ -1,7 +1,9 @@
-import type { ApiKey, Strategy } from "../../drizzle/schema";
-import { listApiKeys, listStrategies } from "../db";
+import { eq } from "drizzle-orm";
+import { accountPositionSnapshots, type ApiKey, type Strategy } from "../../drizzle/schema";
+import { getDb, listApiKeys, listStrategies } from "../db";
 import { createAdapter } from "../exchanges/factory";
 import type { Position } from "../exchanges/types";
+import { acquireProcessLease, releaseProcessLease } from "./barLock";
 
 export const STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION = "exchange-position-v2" as const;
 
@@ -46,6 +48,8 @@ export interface AccountPositionResult {
   positions: Position[];
   capturedAt: number;
   error?: string;
+  /** 有最後成功快照可用，但最近一次刷新失敗；呼叫端應標示 stale／warning。 */
+  refreshError?: string;
 }
 
 export interface AccountPositionSnapshotOptions {
@@ -63,6 +67,11 @@ interface LocalPositionState {
 
 export const POSITION_CACHE_TTL_MS = 5_000;
 export const POSITION_STALE_AFTER_MS = 15_000;
+export const MARTINGALE_POSITION_REFRESH_MS = 60_000;
+export const MARTINGALE_POSITION_STALE_MS = 120_000;
+export const MARTINGALE_POSITION_HIDE_PNL_MS = 300_000;
+const MARTINGALE_REFRESH_ERROR_RETRY_MS = 30_000;
+const MARTINGALE_REFRESH_LEASE_MS = 20_000;
 const accountPositionCache = new Map<
   string,
   { expiresAt: number; promise: Promise<AccountPositionResult> }
@@ -105,7 +114,160 @@ function toLocalPositionState(strategy: Strategy): LocalPositionState {
 
 function sanitizeExchangeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/[\r\n]+/g, " ").slice(0, 240) || "交易所持倉查詢失敗";
+  return raw
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\b(Bearer)\s+[^\s,;]+/gi, "$1 [REDACTED]")
+    .replace(/([?&](?:api[-_]?key|secret|sign(?:ature)?|passphrase|token|authorization)=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/\b(api[-_ ]?key|secret|sign(?:ature)?|passphrase|token|authorization)(\s*[:=]\s*)[^\s,;&]+/gi, "$1$2[REDACTED]")
+    .slice(0, 240) || "交易所持倉查詢失敗";
+}
+
+function persistedSnapshotKey(userId: number, apiKeyId: number): string {
+  return `martin-position-v1:${userId}:${apiKeyId}`;
+}
+
+function persistedPositions(value: unknown): Position[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Position => {
+    if (!item || typeof item !== "object") return false;
+    const row = item as Partial<Position>;
+    return typeof row.symbol === "string"
+      && (row.side === "long" || row.side === "short")
+      && Number.isFinite(Number(row.size))
+      && Number.isFinite(Number(row.entryPrice))
+      && Number.isFinite(Number(row.markPrice));
+  });
+}
+
+/**
+ * 馬丁逐層頁面專用的一分鐘帳戶級共享快照。
+ *
+ * 跨 instance 以資料庫 row + ProcessLease 去重；同一 API 帳戶無論有多少策略卡或層級，
+ * 一分鐘內最多向交易所刷新一次。此函式只呼叫 getPositions，沒有任何下單副作用。
+ */
+export async function getSharedAccountPositionSnapshot(
+  userId: number,
+  apiKey: ApiKey,
+  options: AccountPositionSnapshotOptions = {},
+): Promise<AccountPositionResult> {
+  const db = await getDb();
+  if (!db) return getAccountPositionSnapshot(userId, apiKey, options);
+
+  const now = Date.now();
+  const snapshotKey = persistedSnapshotKey(userId, apiKey.id);
+  const readRow = async () => {
+    const rows = await db
+      .select()
+      .from(accountPositionSnapshots)
+      .where(eq(accountPositionSnapshots.snapshotKey, snapshotKey))
+      .limit(1);
+    return rows[0] ?? null;
+  };
+  const toResult = (row: Awaited<ReturnType<typeof readRow>>): AccountPositionResult | null => {
+    if (!row) return null;
+    const capturedAt = row.capturedAt.getTime();
+    if (row.status === "error") {
+      return {
+        contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
+        positions: [],
+        capturedAt,
+        error: row.sanitizedError || "交易所持倉查詢失敗",
+      };
+    }
+    return {
+      contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
+      positions: persistedPositions(row.positions),
+      capturedAt,
+      refreshError: row.sanitizedError || undefined,
+    };
+  };
+
+  const existing = await readRow();
+  if (!options.forceRefresh && existing && existing.expiresAt.getTime() > now) {
+    return toResult(existing)!;
+  }
+
+  const lease = await acquireProcessLease(
+    `martin-position-snapshot-v1:${userId}`,
+    apiKey.id,
+    MARTINGALE_REFRESH_LEASE_MS,
+  );
+  if (!lease) {
+    const latest = await readRow();
+    return toResult(latest) ?? {
+      contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
+      positions: [],
+      capturedAt: now,
+      error: "帳戶持倉快照正在由另一個實例刷新，請稍後重試",
+    };
+  }
+
+  try {
+    // 取得租約後再讀一次，避免等待租約期間其他 instance 已完成刷新。
+    const latest = await readRow();
+    if (!options.forceRefresh && latest && latest.expiresAt.getTime() > Date.now()) {
+      return toResult(latest)!;
+    }
+
+    const refreshed = await getAccountPositionSnapshot(userId, apiKey, { forceRefresh: true });
+    const refreshedAt = refreshed.capturedAt || Date.now();
+    if (!refreshed.error) {
+      await db.insert(accountPositionSnapshots).values({
+        snapshotKey,
+        userId,
+        apiKeyId: apiKey.id,
+        exchange: apiKey.exchange,
+        status: "available",
+        positions: refreshed.positions,
+        sanitizedError: null,
+        capturedAt: new Date(refreshedAt),
+        expiresAt: new Date(refreshedAt + MARTINGALE_POSITION_REFRESH_MS),
+      }).onDuplicateKeyUpdate({ set: {
+        status: "available",
+        positions: refreshed.positions,
+        sanitizedError: null,
+        capturedAt: new Date(refreshedAt),
+        expiresAt: new Date(refreshedAt + MARTINGALE_POSITION_REFRESH_MS),
+      } });
+      return refreshed;
+    }
+
+    const sanitizedError = sanitizeExchangeError(refreshed.error);
+    const lastGood = latest?.status === "available" ? latest : null;
+    if (lastGood) {
+      await db.update(accountPositionSnapshots).set({
+        sanitizedError,
+        expiresAt: new Date(Date.now() + MARTINGALE_REFRESH_ERROR_RETRY_MS),
+      }).where(eq(accountPositionSnapshots.id, lastGood.id));
+      return {
+        contractVersion: STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION,
+        positions: persistedPositions(lastGood.positions),
+        capturedAt: lastGood.capturedAt.getTime(),
+        refreshError: sanitizedError,
+      };
+    }
+
+    await db.insert(accountPositionSnapshots).values({
+      snapshotKey,
+      userId,
+      apiKeyId: apiKey.id,
+      exchange: apiKey.exchange,
+      status: "error",
+      positions: [],
+      sanitizedError,
+      capturedAt: new Date(refreshedAt),
+      expiresAt: new Date(Date.now() + MARTINGALE_REFRESH_ERROR_RETRY_MS),
+    }).onDuplicateKeyUpdate({ set: {
+      status: "error",
+      positions: [],
+      sanitizedError,
+      capturedAt: new Date(refreshedAt),
+      expiresAt: new Date(Date.now() + MARTINGALE_REFRESH_ERROR_RETRY_MS),
+    } });
+    return { ...refreshed, error: sanitizedError };
+  } finally {
+    await releaseProcessLease(lease);
+  }
 }
 
 /**
