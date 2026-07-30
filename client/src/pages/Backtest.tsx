@@ -69,6 +69,11 @@ import {
   validateRainbowTrendLadderConfig,
 } from "@shared/strategies/rainbowTrendLadder";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
+import {
+  V40EntryGatePanel,
+  V40_STRATEGY_KEY,
+  normalizeV40EntryGateValue,
+} from "@/components/V40EntryGatePanel";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -159,7 +164,7 @@ export default function Backtest() {
   const useDynamicFormMode = useMemo(() => {
     if (!strategyKey) return false;
     // KAMA V3.5 策略使用深度定制面板
-    if (strategyKey === '20415_KAMA_MARTIN_V35') return false;
+    if (strategyKey === V40_STRATEGY_KEY) return false;
     // 20415 七彩虹使用共享契約驅動的專用軍規面板
     if (strategyKey === RAINBOW_20415_STRATEGY_KEY) return false;
     // 七彩虹線趨勢跟蹤使用共享契約驅動的專用軍規面板
@@ -179,7 +184,9 @@ export default function Backtest() {
         ? { ...normalizeV25Config(selectedStrategy.defaultConfig) }
         : strategyKey === RAINBOW_20415_STRATEGY_KEY
           ? { ...normalizeRainbow20415Config(selectedStrategy.defaultConfig) }
-          : { ...selectedStrategy.defaultConfig };
+          : strategyKey === V40_STRATEGY_KEY
+            ? { ...selectedStrategy.defaultConfig, ...normalizeV40EntryGateValue(selectedStrategy.defaultConfig) }
+            : { ...selectedStrategy.defaultConfig };
       setConfigJson(nextConfig);
       // 🔥 同步 initialCapital 與 configJson.Initial_Capital，避免參數衝突
       const ic = selectedStrategy.defaultConfig.Initial_Capital;
@@ -290,7 +297,9 @@ export default function Backtest() {
             ? { ...rainbowValidation.config }
             : rainbowTrendValidation
               ? { ...rainbowTrendValidation.config }
-              : configJson,
+              : strategyKey === V40_STRATEGY_KEY
+                ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
+                : configJson,
         exchange,
         strategyName: selectedStrategy?.name,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
@@ -578,6 +587,8 @@ export default function Backtest() {
       setInitialCapital(String(nextConfig.Initial_Capital));
       setTfValue(String(nextConfig.Management_Interval_Minutes));
       setTfUnit("m");
+    } else if (strategyKey === V40_STRATEGY_KEY) {
+      setConfigJson({ ...previewConfig, ...normalizeV40EntryGateValue(previewConfig) });
     } else {
       setConfigJson((prev) => ({ ...prev, ...previewConfig }));
     }
@@ -660,7 +671,11 @@ export default function Backtest() {
     const cfg = {
       ...(strategyKey === V25_STRATEGY_KEY
         ? v25Validation?.config ?? configJson
-        : rainbowValidation?.config ?? rainbowTrendValidation?.config ?? configJson),
+        : rainbowValidation?.config
+          ?? rainbowTrendValidation?.config
+          ?? (strategyKey === V40_STRATEGY_KEY
+            ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
+            : configJson)),
       Initial_Capital: Number(initialCapital) || 10000,
     };
     // ✅ 從回測結果中提取完整績效指標（如果已有結果）
@@ -941,6 +956,14 @@ export default function Backtest() {
                   setTfValue(String(nextConfig.Management_Interval_Minutes));
                   setTfUnit("m");
                 }}
+                context="backtest"
+              />
+            )}
+
+            {strategyKey === V40_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
+              <V40EntryGatePanel
+                value={configJson}
+                onChange={(entryGate) => setConfigJson((prev) => ({ ...prev, ...entryGate }))}
                 context="backtest"
               />
             )}
@@ -1238,7 +1261,15 @@ export default function Backtest() {
                 );
               };
 
-              const entries = Object.entries(configJson).filter(([k]) => groupOfParam(k) !== 0);
+              const v40EntryGateKeys = new Set([
+                "enableThreeKFilter",
+                "threeKPatternMode",
+                "enableKamaDirectionLock",
+                "enableSameDirectionReentry",
+              ]);
+              const entries = Object.entries(configJson).filter(
+                ([k]) => groupOfParam(k) !== 0 && !(strategyKey === V40_STRATEGY_KEY && v40EntryGateKeys.has(k)),
+              );
               const g1 = entries.filter(([k]) => groupOfParam(k) === 1);
               const g2 = entries.filter(([k]) => groupOfParam(k) === 2);
               const g3 = entries.filter(([k]) => groupOfParam(k) === 3);

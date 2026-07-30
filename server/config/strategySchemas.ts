@@ -85,6 +85,10 @@ export const KAMA_3K_SCHEMA: SchemaConfig = {
       fields: ["KAMA_Fast_Length", "p2_fastest", "p3_slowest", "KAMA_Slow_Length", "q2_fastest", "q3_slowest"],
     },
     {
+      name: "入場安全閘",
+      fields: ["enableThreeKFilter", "threeKPatternMode", "enableKamaDirectionLock", "enableSameDirectionReentry"],
+    },
+    {
       name: "馬丁格爾",
       fields: ["Martin_Multiplier", "Max_Layers", "Martin_Step_Pct", "Martin_Layers"],
     },
@@ -213,6 +217,38 @@ export const KAMA_3K_SCHEMA: SchemaConfig = {
       max: 30,
       step: 1,
       description: "KAMA 慢線的最慢平滑常數",
+    },
+    enableThreeKFilter: {
+      key: "enableThreeKFilter",
+      type: "boolean",
+      label: "啟用三 K 入場確認",
+      default: true,
+      description: "停用後不執行任何三 K 形態；自動方向將由已啟用的 KAMA 鎖決定",
+    },
+    threeKPatternMode: {
+      key: "threeKPatternMode",
+      type: "select",
+      label: "三 K 判定模式（二選一）",
+      default: "breakout",
+      options: [
+        { label: "前兩根同向＋第三根收盤破位", value: "breakout" },
+        { label: "三根 K 線實體全部連續同向", value: "three_body_same_direction" },
+      ],
+      description: "僅在啟用三 K 入場確認時生效，兩種模式不可同時選取",
+    },
+    enableKamaDirectionLock: {
+      key: "enableKamaDirectionLock",
+      type: "boolean",
+      label: "啟用 price／slow KAMA 方向鎖",
+      default: true,
+      description: "做多需 price > slow KAMA；做空需 price < slow KAMA",
+    },
+    enableSameDirectionReentry: {
+      key: "enableSameDirectionReentry",
+      type: "boolean",
+      label: "啟用特殊原地重入",
+      default: true,
+      description: "只控制第 0 層順勢止盈平倉後的同方向即時重入，不影響一般新入場與持倉管理",
     },
     Martin_Step_Pct: {
       key: "Martin_Step_Pct",

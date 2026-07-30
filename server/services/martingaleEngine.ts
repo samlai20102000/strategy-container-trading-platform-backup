@@ -46,6 +46,10 @@ export interface V4Config {
   Target_TP_Pct: number;
   Callback_Pct: number;
   K_Line_Period: number;
+  enableThreeKFilter: boolean;
+  threeKPatternMode: "breakout" | "three_body_same_direction";
+  enableKamaDirectionLock: boolean;
+  enableSameDirectionReentry: boolean;
 }
 
 // ============================================================

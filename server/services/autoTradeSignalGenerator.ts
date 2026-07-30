@@ -43,6 +43,10 @@ import {
 } from "../strategies/rainbowTrendLadder/core";
 import { evaluateRainbowTrendLadderManagement } from "../strategies/rainbowTrendLadder/management";
 import { fetchRainbowTrendLadderMarketQuote } from "./rainbowTrendLadderMarketQuote";
+import {
+  evaluateV40EntryGates,
+  V40_STRATEGY_KEY,
+} from "../strategies/v35/entryGate";
 
 
 
@@ -58,7 +62,7 @@ function toOkxInstId(symbol: string): string {
 /**
  * Fetch K-line data from OKX API
  */
-async function fetchKLineData(
+export async function fetchKLineData(
   adapter: ExchangeAdapter,
   symbol: string,
   period: number,
@@ -468,7 +472,13 @@ export async function generateTradingSignal(
       : 5;
 
     // Fetch K-line data
-    const klines = await fetchKLineData(adapter, strategy.symbol, kLinePeriod, 100);
+    const klines = await fetchKLineData(
+      adapter,
+      strategy.symbol,
+      kLinePeriod,
+      100,
+      strategy.strategyKey === V40_STRATEGY_KEY,
+    );
     
     if (klines.length === 0) {
       console.warn(`[AutoTradeSignalGenerator] No K-line data fetched for ${strategy.symbol}`);
@@ -841,40 +851,71 @@ export async function generateTradingSignal(
     }
     // Handle V3.5 strategies (KAMA) separately due to async generateActionsV35
     else if (engine instanceof BaseStrategyV35) {
-      const v35Signal: StrategyAction = await engine.generateActionsV35(
-        initialSignal,
-        {
-          ...strategy,
-          positionSize: parseFloat(strategy.positionSize || '0'),
-          config: {
-            // 快照原始配置覆蓋引擎預設；身份不一致時不會回傳配置。
-            ...(engine.defaultConfig || {}),
-            ...(boundSnapshotConfig as Record<string, number | string | boolean>),
-            // Override with strategy-specific fields from the 'strategies' table
-            martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
-            maxMartinLevel: strategy.maxMartinLevel,
-            martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || '0'),
-            reentryEnabled: strategy.reentryEnabled,
-            reentryCooldownBars: strategy.reentryCooldownBars,
-            // Merge positionSizeObject if it's a valid object
-            ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
-            Base_Lot_Size: deploymentPosition.value,
-            Position_Mode: deploymentPosition.mode,
-            Position_Value: deploymentPosition.value,
+      const v35RuntimeConfig: Record<string, number | string | boolean> = {
+        // 快照原始配置覆蓋引擎預設；身份不一致時不會回傳配置。
+        ...(engine.defaultConfig || {}),
+        ...(boundSnapshotConfig as Record<string, number | string | boolean>),
+        // Override with strategy-specific fields from the 'strategies' table
+        martinMultiplier: parseFloat(strategy.martinMultiplier?.toString() || '1'),
+        maxMartinLevel: strategy.maxMartinLevel,
+        martinSpacingPct: parseFloat(strategy.martinSpacingPct?.toString() || '0'),
+        reentryEnabled: strategy.reentryEnabled,
+        reentryCooldownBars: strategy.reentryCooldownBars,
+        // Merge positionSizeObject if it's a valid object
+        ...(typeof strategy.positionSizeObject === 'object' && strategy.positionSizeObject !== null ? strategy.positionSizeObject as Record<string, number | string | boolean> : {}),
+        Base_Lot_Size: deploymentPosition.value,
+        Position_Mode: deploymentPosition.mode,
+        Position_Value: deploymentPosition.value,
+      };
+      const v35Instance = {
+        ...strategy,
+        positionSize: parseFloat(strategy.positionSize || '0'),
+        config: v35RuntimeConfig,
+      } as StrategyInstanceConfig;
+
+      const isV40InitialEntry = strategy.strategyKey === V40_STRATEGY_KEY
+        && (Number(strategyState.currentLayer ?? 0) === 0 || Number(strategyState.totalSize ?? 0) <= 0);
+      const v40Gate = isV40InitialEntry
+        ? evaluateV40EntryGates({
+            candles: marketData.candles,
+            rawConfig: v35RuntimeConfig,
+            currentPrice: marketData.lastPrice,
+            allowedDirection: strategy.direction as "long" | "short" | "both",
+          })
+        : null;
+      const v35InputSignal: StrategySignal = v40Gate?.passed
+        ? {
+            ...initialSignal,
+            action: v40Gate.direction === "long" ? "BUY" : "SELL",
+            price: v40Gate.evidence.currentPrice ?? marketData.lastPrice,
           }
-        } as StrategyInstanceConfig,
-        marketData,
-        strategyState,
-      );
+        : initialSignal;
+      const v35Signal: StrategyAction = v40Gate && !v40Gate.passed
+        ? { action: "HOLD", lotSize: 0, reason: v40Gate.reason }
+        : await engine.generateActionsV35(
+            v35InputSignal,
+            v35Instance,
+            marketData,
+            strategyState,
+          );
       console.log(`[AutoTradeSignalGenerator] V35 engine result: action=${v35Signal?.action || 'null'} reason=${v35Signal?.reason || 'none'}`);
       if (v35Signal && v35Signal.action !== "HOLD") {
+        const parsedAction = v35Signal.action === "OPEN_LONG" ? "buy" : v35Signal.action === "OPEN_SHORT" ? "sell" : "close";
+        const gateBarTimestamp = marketData.candles.at(-1)?.timestamp;
         signal = {
-          action: v35Signal.action === "OPEN_LONG" ? "buy" : v35Signal.action === "OPEN_SHORT" ? "sell" : "close",
+          action: parsedAction,
           symbol: strategy.symbol,
           price: v35Signal.price || marketData.lastPrice,
-          barTimestamp: marketData.candles[marketData.candles.length - 1].timestamp,
+          barTimestamp: gateBarTimestamp,
           reason: v35Signal.reason, // Add reason
           confidence: 1.0, // Default confidence for V3.5 signals
+          ...(strategy.strategyKey === V40_STRATEGY_KEY && isV40InitialEntry && v40Gate?.passed && parsedAction !== "close"
+            ? {
+                v40EntryGateValidated: true as const,
+                v40EntryGateDirection: v40Gate.direction!,
+                v40EntryGateBarTimestamp: gateBarTimestamp,
+              }
+            : {}),
         };
         console.log(`[AutoTradeSignalGenerator] ✅ SIGNAL GENERATED: ${signal.action} ${signal.symbol} @ ${signal.price}`);
       } else {

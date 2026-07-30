@@ -67,6 +67,12 @@ import { getBoundStrategyConfig } from "./strategySnapshotConfig";
 import { resolveDeploymentPosition } from "./deploymentPosition";
 import { tradeFillRecordFields } from "./tradeFillTruth";
 import { fetchRainbowTrendLadderMarketQuote } from "./rainbowTrendLadderMarketQuote";
+import {
+  evaluateV40EntryGates,
+  V40_STRATEGY_KEY,
+  type V40EntryDirection,
+} from "../strategies/v35/entryGate";
+import { fetchKLineData } from "./autoTradeSignalGenerator";
 
 /**
  * 策略執行引擎
@@ -93,6 +99,10 @@ export interface ParsedSignal {
   rainbow20415LayerNum?: number;
   rainbow20415CloseReason?: Rainbow20415CloseReason;
   rainbow20415OrderSize?: Rainbow20415BaseLot;
+  /** V4.0 首單 entry gate 內部封印；外部 Webhook 解析器永不映射。 */
+  v40EntryGateValidated?: true;
+  v40EntryGateDirection?: V40EntryDirection;
+  v40EntryGateBarTimestamp?: number;
   /** 新七彩虹階梯策略內部決策封印；外部 webhook 解析器永不映射。 */
   rainbowTrendLadderDecision?: boolean;
   rainbowTrendLadderAction?: RainbowTrendLadderCoreAction;
@@ -1076,31 +1086,88 @@ async function executeSignalV35(
     barTimestamp: signal.barTimestamp,
   };
 
+  let marketData = {
+    candles: [] as any[],
+    lastPrice: signal.price ?? 0,
+    kamaValue: undefined as number | undefined,
+  };
+  const isV40 = strategy.strategyKey === V40_STRATEGY_KEY;
+  const isInitialEntry = engineSignal.action !== "CLOSE"
+    && (Number(state.currentLayer ?? 0) === 0 || Number(state.totalSize ?? 0) <= 0);
+
+  if (isV40 && isInitialEntry) {
+    const requestedDirection: V40EntryDirection = engineSignal.action === "BUY" ? "long" : "short";
+    const isTrustedInternalGate = signal.v40EntryGateValidated === true
+      && signal.v40EntryGateDirection === requestedDirection
+      && Number.isFinite(signal.v40EntryGateBarTimestamp)
+      && signal.v40EntryGateBarTimestamp === signal.barTimestamp;
+
+    if (!isTrustedInternalGate) {
+      const configuredPeriod = Number(mergedCfg.K_Line_Period ?? 5);
+      const kLinePeriod = Number.isFinite(configuredPeriod) && configuredPeriod > 0
+        ? configuredPeriod
+        : 5;
+      try {
+        const closedCandles = await fetchKLineData(
+          adapter,
+          strategy.symbol,
+          kLinePeriod,
+          100,
+          true,
+        );
+        const latestClosed = closedCandles.at(-1);
+        const gate = evaluateV40EntryGates({
+          candles: closedCandles,
+          rawConfig: mergedCfg,
+          currentPrice: latestClosed?.close,
+          requestedDirection,
+          allowedDirection: strategy.direction as "long" | "short" | "both",
+        });
+        if (!gate.passed || !latestClosed) {
+          return { status: "skipped", message: `V4.0 入場安全閘未通過：${gate.reason}` };
+        }
+        engineSignal.price = gate.evidence.currentPrice ?? latestClosed.close;
+        engineSignal.barTimestamp = latestClosed.timestamp;
+        marketData = {
+          candles: closedCandles,
+          lastPrice: engineSignal.price,
+          kamaValue: gate.evidence.slowKama ?? undefined,
+        };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return { status: "skipped", message: `V4.0 入場安全閘行情取得失敗（fail-closed）：${detail}` };
+      }
+    }
+  }
+
   // === 1. Bar-Lock 查詢（僅限初始開倉：currentLayer === 0 且非 CLOSE）===
   // 改為「只查詢不鎖定」，下單成功後才真正鎖定
   const { checkBarLock } = await import("./barLock");
-  if (engineSignal.action !== "CLOSE" && state.currentLayer === 0 && signal.barTimestamp) {
-    const isLocked = await checkBarLock(strategy.id, signal.barTimestamp);
+  if (engineSignal.action !== "CLOSE" && state.currentLayer === 0 && engineSignal.barTimestamp) {
+    const isLocked = await checkBarLock(strategy.id, engineSignal.barTimestamp);
     if (isLocked) {
       return {
         status: "skipped",
-        message: `Bar-Lock 攔截：K 線 ${signal.barTimestamp} 已成功開倉過（重複信號防禦）`,
+        message: `Bar-Lock 攔截：K 線 ${engineSignal.barTimestamp} 已成功開倉過（重複信號防禦）`,
       };
     }
   }
 
   // === 2. 五層驗證 ===
-  // 對於已經過 generateTradingSignal 完整驗證的信號（自動交易 + 手動觸發），跳過重複驗證
-  // 因為此處 marketData 為空（無 candles），重複驗證可能導致誤判
-  const marketData = {
-    candles: [] as any[],
-    lastPrice: signal.price ?? 0,
-  };
-  const isPreValidatedSignal = !!(signal as any).reason;
-  if (!isPreValidatedSignal) {
+  // V4.0 永遠保留狀態／冷卻驗證；只有 entry gate 能以內部封印避免重抓行情。
+  if (isV40) {
     const validation = await engine.validateSignal(engineSignal, marketData, instance);
     if (!validation.valid) {
-      return { status: "skipped", message: `V3.5 驗證未通過：${validation.reason}` };
+      return { status: "skipped", message: `V4.0 驗證未通過：${validation.reason}` };
+    }
+  } else {
+    // 舊 V3.5 行為維持不變，避免把本次修改套用到其他策略。
+    const isPreValidatedSignal = !!signal.reason;
+    if (!isPreValidatedSignal) {
+      const validation = await engine.validateSignal(engineSignal, marketData, instance);
+      if (!validation.valid) {
+        return { status: "skipped", message: `V3.5 驗證未通過：${validation.reason}` };
+      }
     }
   }
 

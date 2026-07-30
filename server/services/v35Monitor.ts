@@ -36,6 +36,7 @@ import { calculateKAMA } from "./backtest/kama";
 import { fetchOKXCandles, fetchBybitCandles } from "./backtest/dataFetcher";
 import { getTimeframeMilliseconds } from "./backtest/timeframeParser";
 import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
+import { normalizeV40EntryGateConfig } from "../strategies/v35/entryGate";
 
 export const V35_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
 export function isV35StrategyKey(strategyKey: unknown): boolean {
@@ -203,7 +204,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       currentKamaSlow: kama?.slow ?? 0,
       kLinePeriod: cfg.K_Line_Period,
       cooldownBars: 2,
-      reentryEnabled: true, // V4.0 默認啟用重入
+      reentryEnabled: cfg.enableSameDirectionReentry,
     });
 
     const closeResult = await executeFullClose(strategy, adapter, state, "trailing_take_profit", trailing.reason, {
@@ -378,6 +379,7 @@ function readV4Config(strategy: Strategy): {
     Target_TP_Pct: 1.0,
     Callback_Pct: 0.1,
     K_Line_Period: 30,
+    ...normalizeV40EntryGateConfig(),
   };
 
   const defaultAudit = normalizeV4MaxLossPct(undefined, defaults.Max_Loss_Pct);
@@ -389,6 +391,7 @@ function readV4Config(strategy: Strategy): {
       if (v35 && typeof v35 === "object") {
         const c = v35 as Record<string, unknown>;
         const maxLossAudit = normalizeV4MaxLossPct(c.Max_Loss_Pct, defaults.Max_Loss_Pct);
+        const entryGates = normalizeV40EntryGateConfig(c);
         return { config: {
           Initial_Capital: Number.isFinite(Number(c.Initial_Capital)) && Number(c.Initial_Capital) > 0 ? Number(c.Initial_Capital) : defaults.Initial_Capital,
           First_Order_Pct: Number.isFinite(Number(c.First_Order_Pct)) ? Number(c.First_Order_Pct) : defaults.First_Order_Pct,
@@ -407,6 +410,7 @@ function readV4Config(strategy: Strategy): {
           Target_TP_Pct: Number.isFinite(Number(c.Target_TP_Pct)) ? Number(c.Target_TP_Pct) : defaults.Target_TP_Pct,
           Callback_Pct: Number.isFinite(Number(c.Callback_Pct)) ? Number(c.Callback_Pct) : defaults.Callback_Pct,
           K_Line_Period: Number.isFinite(Number(c.K_Line_Period)) && Number(c.K_Line_Period) > 0 ? Number(c.K_Line_Period) : defaults.K_Line_Period,
+          ...entryGates,
         }, audit: maxLossAudit };
       }
     }

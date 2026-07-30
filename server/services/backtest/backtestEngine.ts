@@ -29,6 +29,11 @@ import { validateRiskSettings, buildEnvironmentSnapshot } from "../riskSettingsV
 import { parseMartinLayers, getStepPct, getLayerSize, getFirstOrderValue, getLayerStepPct, calculateLayerLot, getLayerMultiplier, V4Config, MartinLayer } from "../martingaleEngine";
 import { validateAndProcessMartinConfig } from "../parameterValidator";
 import { decideCloseSplit } from "../kamaReversalGuard";
+import {
+  evaluateV40EntryGates,
+  normalizeV40EntryGateConfig,
+  V40_STRATEGY_KEY,
+} from "../../strategies/v35/entryGate";
 import type { BaseStrategy, MartinState, StrategyInstanceConfig } from "../../strategies/base";
 import { StrategyKama3kBreakoutV25 } from "../../strategies/v25/strategy_kama_3k_breakout_v25";
 import { Strategy20415 } from "../../strategies/builtin/strategy20415";
@@ -185,7 +190,7 @@ export class BacktestEngine {
     if (!strategy) {
       throw new Error(`策略「${request.strategyKey}」未註冊，請確認策略 key 正確`);
     }
-    const isV35 = request.strategyKey === "20415_KAMA_MARTIN_V35";
+    const isV35 = request.strategyKey === V40_STRATEGY_KEY;
     const isV50 = request.strategyKey === "KAMA_3K_ULTIMATE_V50";
     const isV61 = request.strategyKey === "KAMA_3K_HF_V61";
     const isV70 = request.strategyKey === "KAMA_3K_TORNADO_V70";
@@ -201,6 +206,10 @@ export class BacktestEngine {
       ...strategy.defaultConfig,
       ...request.config,
     };
+    const v40EntryGateConfig = normalizeV40EntryGateConfig(config);
+    if (isV35) {
+      Object.assign(config, v40EntryGateConfig);
+    }
     const endPositionPolicy = resolveEndPositionPolicy(
       request.endPositionPolicy ?? config.Backtest_End_Position_Policy,
     );
@@ -368,7 +377,10 @@ export class BacktestEngine {
     console.log(`[Backtest] 首單模式: 固定金本位 ${baseLotUsdt} USDT，Initial_Capital=${request.initialCapital}`);
     // V3.7：硬止損觸發閾值
     const maxLossPct = num(config.Max_Loss_Pct ?? 5, 5);
-    const reentryOnTrend = config.Reentry_On_Trend !== false && config.Reentry_On_Trend !== "false";
+    const legacyReentryOnTrend = config.Reentry_On_Trend !== false && config.Reentry_On_Trend !== "false";
+    const reentryOnTrend = isV35
+      ? v40EntryGateConfig.enableSameDirectionReentry
+      : legacyReentryOnTrend;
     const maxLossUsdt = num(config.Max_Loss_USDT ?? 0, 0); // 預設 0 = 不啟用（由 Max_Loss_Pct 控制）
     // === 連續虧損縮倉 & 連續開倉開關（V6.1 風控功能）===
     const enableLossShrinkRaw = config.enable_loss_shrink ?? config.Enable_Loss_Shrink ?? "1";
@@ -641,6 +653,9 @@ export class BacktestEngine {
       }
 
       // === O3：第 0 層順勢平倉原地重入（優先於新 3K 入場判斷）===
+      if (isV35 && !v40EntryGateConfig.enableSameDirectionReentry) {
+        reentryBox.req = null;
+      }
       const reentryReq = reentryBox.req;
       if (reentryReq) {
         const currentTrendBull = kf > ks;
@@ -752,8 +767,20 @@ export class BacktestEngine {
             }
           }
         }
+      } else if (isV35) {
+        // ===== V4.0：與實盤／Webhook 完全同源的入場安全閘 =====
+        const gate = evaluateV40EntryGates({
+          candles: [k1, k2, k3],
+          rawConfig: config,
+          currentPrice: price,
+          slowKama: ks,
+          allowedDirection: config.direction === "long" || config.direction === "short"
+            ? config.direction
+            : "both",
+        });
+        if (gate.passed) side = gate.direction;
       } else {
-        // ===== V3.5/V5.0 原始 3K 形態 + 破位邏輯 =====
+        // ===== V5.0 原始 3K 形態 + KAMA 快慢線趨勢 =====
         // 多頭：k1、k2 皆陽 + k3 收盤突破前兩根最高
         const longPattern =
           k1.close > k1.open &&

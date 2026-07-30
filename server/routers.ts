@@ -49,6 +49,10 @@ import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot"
 import { recordExistingTradeExecution } from "./services/tradeExecutionLedger";
 import { evaluateMartingaleStrategyInstance } from "./services/martingaleCapability";
 import { getMartingaleLayerSnapshotsForUser } from "./services/martingaleLayerSnapshot";
+import {
+  normalizeV40EntryGateConfig,
+  V40_STRATEGY_KEY,
+} from "./strategies/v35/entryGate";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -331,6 +335,17 @@ const strategyInputSchema = z.object({
       Initial_Capital: z.number().min(10).default(10000).optional(),
       /** V4.0：首單佔本金百分比 */
       First_Order_Pct: z.number().min(0.01).max(10).default(0.3).optional(),
+      /** V4.0：slow KAMA 方向鎖計算參數 */
+      KAMA_Slow_Length: z.number().int().min(5).max(200).default(50).optional(),
+      q2_fastest: z.number().min(1).max(50).default(10).optional(),
+      q3_slowest: z.number().min(1).max(50).default(6).optional(),
+      /** V4.0：三 K 總開關與互斥模式 */
+      enableThreeKFilter: z.boolean().default(true).optional(),
+      threeKPatternMode: z.enum(["breakout", "three_body_same_direction"]).default("breakout").optional(),
+      /** V4.0：price／slow KAMA 方向鎖 */
+      enableKamaDirectionLock: z.boolean().default(true).optional(),
+      /** V4.0：第 0 層順勢平倉後原地重入 */
+      enableSameDirectionReentry: z.boolean().default(true).optional(),
     })
     .optional(),
   // V5.0：KAMA 3K 極致優化馬丁策略參數
@@ -569,9 +584,15 @@ const strategiesRouter = router({
           message: "選擇的 API 金鑰不存在",
         });
       }
+      const v40Config = input.strategyKey === V40_STRATEGY_KEY
+        ? {
+            ...(input.v35Config ?? {}),
+            ...normalizeV40EntryGateConfig(input.v35Config as Record<string, unknown> | undefined),
+          }
+        : input.v35Config;
       // O1：伺服器端驗證階梯式分層
-      if (input.v35Config?.Martin_Layers) {
-        const layersErr = validateMartinLayersJson(input.v35Config.Martin_Layers);
+      if (v40Config?.Martin_Layers) {
+        const layersErr = validateMartinLayersJson(v40Config.Martin_Layers);
         if (layersErr) throw new TRPCError({ code: "BAD_REQUEST", message: `階梯式馬丁分層設定錯誤：${layersErr}` });
       }
       let v25Config: ReturnType<typeof assertValidV25Config> | undefined;
@@ -650,7 +671,7 @@ const strategiesRouter = router({
           lossCount: 0,
           currentLot: resolvedPositionSize,
           lastEntryPrice: 0,
-          ...(input.v35Config ? { __v35Config: input.v35Config } : {}),
+          ...(v40Config ? { __v35Config: v40Config } : {}),
           ...(input.v50Config ? { __v50Config: input.v50Config } : {}),
           ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
           ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
@@ -662,6 +683,10 @@ const strategiesRouter = router({
         ...(v25Config ? {
           kLinePeriod: v25Config.K_Line_Period,
           reentryEnabled: v25Config.Reentry_On_Trend,
+        } : {}),
+        ...(input.strategyKey === V40_STRATEGY_KEY ? {
+          kLinePeriod: Number(v40Config?.K_Line_Period ?? 15),
+          reentryEnabled: v40Config?.enableSameDirectionReentry ?? true,
         } : {}),
         ...(rainbow20415Config ? {
           kLinePeriod: rainbow20415Config.Entry_Timeframe_Minutes,
@@ -744,13 +769,24 @@ const strategiesRouter = router({
       }
       // Pasted_content_21：更新 __v35Config（保留現有運行狀態如 lossCount/currentLot）
       if (input.v35Config !== undefined) {
-        const layersErr = validateMartinLayersJson(input.v35Config.Martin_Layers ?? "");
+        const targetStrategyKey = input.strategyKey ?? existing.strategyKey;
+        const v40Config = targetStrategyKey === V40_STRATEGY_KEY
+          ? {
+              ...input.v35Config,
+              ...normalizeV40EntryGateConfig(input.v35Config as Record<string, unknown>),
+            }
+          : input.v35Config;
+        const layersErr = validateMartinLayersJson(v40Config.Martin_Layers ?? "");
         if (layersErr) throw new TRPCError({ code: "BAD_REQUEST", message: `階梯式馬丁分層設定錯誤：${layersErr}` });
         const prevState =
           existing.martinState && typeof existing.martinState === "object"
             ? (existing.martinState as Record<string, unknown>)
             : { lossCount: 0, currentLot: Number(existing.positionSize), lastEntryPrice: 0 };
-        data.martinState = { ...prevState, __v35Config: input.v35Config };
+        data.martinState = { ...prevState, __v35Config: v40Config };
+        if (targetStrategyKey === V40_STRATEGY_KEY) {
+          data.kLinePeriod = Number(v40Config.K_Line_Period ?? existing.kLinePeriod ?? 15);
+          data.reentryEnabled = v40Config.enableSameDirectionReentry ?? true;
+        }
       }
       // V5.0：更新 __v50Config（KAMA 3K 極致優化馬丁）
       if (input.v50Config !== undefined) {
@@ -2025,6 +2061,10 @@ const studioRouter = router({
         Target_TP_Pct: input.Target_TP_Pct,
         Callback_Pct: input.Callback_Pct,
         K_Line_Period: input.K_Line_Period,
+        enableThreeKFilter: true,
+        threeKPatternMode: "breakout",
+        enableKamaDirectionLock: true,
+        enableSameDirectionReentry: true,
       });
       return rows;
     }),

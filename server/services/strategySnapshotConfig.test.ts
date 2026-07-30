@@ -73,6 +73,32 @@ describe("通用快照部署契約", () => {
     );
   });
 
+  it("V4.0 快照完整保留三 K 模式與三個顯式 false，不被導入／部署 fallback 改寫", () => {
+    const rawConfig = {
+      enableThreeKFilter: false,
+      threeKPatternMode: "three_body_same_direction",
+      enableKamaDirectionLock: false,
+      enableSameDirectionReentry: false,
+      KAMA_Slow_Length: 89,
+      q2_fastest: 8,
+      q3_slowest: 21,
+    };
+
+    const state = attachSnapshotConfig({}, "20415_KAMA_MARTIN_V35", rawConfig, {
+      snapshotId: 40,
+      snapshotName: "V4.0 入場安全閘",
+      importedAt: 4000,
+    });
+
+    expect(state.__v35Config).toEqual(rawConfig);
+    expect(state[SNAPSHOT_CONFIG_STATE_KEY]).toEqual(rawConfig);
+    expect(getBoundStrategyConfig(state, "20415_KAMA_MARTIN_V35")).toEqual(rawConfig);
+    expect(pickStrategyConfigState({ ...state, currentLayer: 3 })).toMatchObject({
+      __v35Config: rawConfig,
+      __snapshotConfig: rawConfig,
+    });
+  });
+
   it("停止或重置策略時應保留所有雙底線配置，包括未來新增的鍵", () => {
     const state = {
       __snapshotConfig: { zero: 0, disabled: false },

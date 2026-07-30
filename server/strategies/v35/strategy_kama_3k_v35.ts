@@ -65,6 +65,11 @@ export class StrategyKama3kV35 extends BaseStrategyV35 {
     Target_TP_Pct: 1.0,
     Callback_Pct: 0.1,
     K_Line_Period: 15,
+    // V4.0 入場安全閘（舊策略缺值時維持原有行為）
+    enableThreeKFilter: true,
+    threeKPatternMode: 'breakout',
+    enableKamaDirectionLock: true,
+    enableSameDirectionReentry: true,
   };
 
   // ============================================================

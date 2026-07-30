@@ -32,6 +32,12 @@ import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
 import { RainbowTrendLadderSafetyControls } from "@/components/RainbowTrendLadderSafetyControls";
 import { MartingaleLayerPositionPanel } from "@/components/MartingaleLayerPositionPanel";
+import {
+  V40EntryGatePanel,
+  V40_STRATEGY_KEY,
+  normalizeV40EntryGateValue,
+  type V40ThreeKPatternMode,
+} from "@/components/V40EntryGatePanel";
 import { trpc } from "@/lib/trpc";
 import {
   getStrategyApiIdentity,
@@ -177,6 +183,14 @@ type StrategyForm = {
   kLinePeriod: string;
   /** O3：第 0 層順勢重入 */
   reentryOnTrend: boolean;
+  /** V4.0：新首單三 K 形態總開關 */
+  enableThreeKFilter: boolean;
+  /** V4.0：三 K 模式強制二選一 */
+  threeKPatternMode: V40ThreeKPatternMode;
+  /** V4.0：price / slow KAMA 方向鎖 */
+  enableKamaDirectionLock: boolean;
+  /** V4.0：第 0 層順勢獲利後特殊原地重入 */
+  enableSameDirectionReentry: boolean;
   /** O4：絕對金額限損（USDT，0 = 不啟用） */
   maxLossUsdt: string;
   Initial_Capital: string;
@@ -247,6 +261,10 @@ const emptyForm: StrategyForm = {
   callbackPct: "0.1",
   kLinePeriod: "15",
   reentryOnTrend: true,
+  enableThreeKFilter: true,
+  threeKPatternMode: "breakout",
+  enableKamaDirectionLock: true,
+  enableSameDirectionReentry: true,
   maxLossUsdt: "15",
     Initial_Capital: "100",
   First_Order_Pct: "0.5",
@@ -427,6 +445,7 @@ function StrategiesContent() {
       const v25Config = normalizeV25Config(cfg);
       const rainbowConfig = normalizeRainbow20415Config(cfg);
       const trendLadderConfig = normalizeRainbowTrendLadderConfig(cfg);
+      const v40EntryGate = normalizeV40EntryGateValue(cfg);
       const firstRainbowRange = rainbowConfig.Martin_Ranges.find((range) => range.enabled);
       const firstTrendLadderMartinLayer = trendLadderConfig.Martin_Layers.find(
         (layer) => layer.enabled && layer.layer > 1 && layer.layer <= trendLadderConfig.Max_Layers,
@@ -450,6 +469,7 @@ function StrategiesContent() {
         callbackPct: String(isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
         kLinePeriod: String(isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
         reentryOnTrend: isTrendLadderImport ? trendLadderConfig.Reentry_Wait_Next_M30_Close : isRainbowImport ? rainbowConfig.Reentry_Enabled : isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
+        ...v40EntryGate,
         maxLossUsdt: String(cfg.Max_Loss_USDT || cfg.EscapeLossUSD || 15),
         Initial_Capital: String(isTrendLadderImport ? trendLadderConfig.Initial_Capital : (cfg.Initial_Capital || 100)),
         First_Order_Pct: String(cfg.First_Order_Pct || 0.5),
@@ -603,6 +623,12 @@ function StrategiesContent() {
     const isV25 = strategyKey === V25_STRATEGY_KEY;
     const isRainbow = strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isTrendLadder = strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const storedV35Config = state.__v35Config && typeof state.__v35Config === "object"
+      ? state.__v35Config as Record<string, unknown>
+      : undefined;
+    const v40EntryGate = normalizeV40EntryGateValue(
+      strategyKey === V40_STRATEGY_KEY ? storedV35Config : undefined,
+    );
     const rainbowConfig = isRainbow
       ? normalizeRainbow20415Config(state.__v2_0Config ?? state.__snapshotConfig)
       : createRainbow20415DefaultConfig();
@@ -635,6 +661,7 @@ function StrategiesContent() {
       maxMartinLevel: isTrendLadder ? String(trendLadderConfig.Max_Layers) : String((s as any).maxMartinLevel ?? 1),
       martinSpacingPct: isTrendLadder ? String(firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : ((s as any).martinSpacingPct ?? "0"),
       strategyKey,
+      ...v40EntryGate,
       v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
       v2_0: rainbowConfig,
       rainbowTrendLadder: trendLadderConfig,
@@ -802,6 +829,12 @@ function StrategiesContent() {
       v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
         Martin_Layers: form.martin_mode === "layered" ? (form.martinLayersJson.trim() || "") : "",
         Reentry_On_Trend: form.reentryOnTrend,
+        ...(form.strategyKey === V40_STRATEGY_KEY ? {
+          enableThreeKFilter: form.enableThreeKFilter,
+          threeKPatternMode: form.threeKPatternMode,
+          enableKamaDirectionLock: form.enableKamaDirectionLock,
+          enableSameDirectionReentry: form.enableSameDirectionReentry,
+        } : {}),
         Max_Loss_USDT: parseFloat(form.maxLossUsdt) || 0,
         Callback_Pct: parseFloat(form.callbackPct) || 0.1,
         K_Line_Period: parseFloat(form.kLinePeriod) || 15,
@@ -2066,6 +2099,14 @@ function StrategiesContent() {
                     context="snapshot"
                   />
                 )}
+                {snapshotImportSource.strategyKey === V40_STRATEGY_KEY && (
+                  <V40EntryGatePanel
+                    value={snapshotImportSource.config}
+                    onChange={() => undefined}
+                    disabled
+                    context="strategy"
+                  />
+                )}
                 <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -2165,7 +2206,16 @@ function StrategiesContent() {
                 context="strategy"
               />
             ) : (
-              <DynamicForm
+              <>
+                {form.strategyKey === V40_STRATEGY_KEY && (
+                  <V40EntryGatePanel
+                    value={form}
+                    onChange={(entryGate) => setForm((prev) => ({ ...prev, ...entryGate }))}
+                    context="strategy"
+                    className="mb-4"
+                  />
+                )}
+                <DynamicForm
                 schema={STRATEGIES_DYNAMIC_SCHEMA}
                 values={{
                   Initial_Capital: parseFloat(form.Initial_Capital) || 10000,
@@ -2215,7 +2265,8 @@ function StrategiesContent() {
                     />
                   ) : undefined
                 }
-              />
+                />
+              </>
             )}
 
             {/* 策略引擎綁定 */}
@@ -2563,6 +2614,7 @@ function StrategiesContent() {
                       callbackPct: String(cfg.Callback_Pct ?? cfg.trailing_callback_pct ?? 0.1),
                       kLinePeriod: String(cfg.K_Line_Period ?? cfg.timeframe ?? 15),
                       reentryOnTrend: cfg.Reentry_On_Trend !== false,
+                      ...normalizeV40EntryGateValue(cfg),
                       maxLossUsdt: String(cfg.Max_Loss_USDT ?? cfg.EscapeLossUSD ?? 15),
                       Initial_Capital: String(importCapital),
                       First_Order_Pct: String(cfg.First_Order_Pct ?? 0.5),

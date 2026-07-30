@@ -2277,3 +2277,26 @@
 - [x] 唯讀核對 V6.1 原 L1/L2 回填與 apply 後自然產生的 L3 `live_execution` 均完整顯示（目前為 `3/11`），逐層價量／合計與當前持倉在嚴格容差內一致，且其他馬丁與非馬丁資料未被回填改寫
 - [x] 完成已登入桌面與 390px 行動版視覺驗收，覆蓋 V6.1 L1/L2/L3、待對帳狀態 Vitest 契約、零文件水平溢出及查詢零交易副作用
 - [x] 核對 todo、建立最終檢查點並自動發布，交付版本、驗收證據、資料寫入摘要、已知限制與回滾方式
+
+## V4.0 入場條件獨立 Enable 開關—全鏈路方案分析（待使用者確認後才實作）
+- [x] 界定「三條 K 線形態」與「KAMA 方向鎖」兩個開關的獨立語義、預設值及停用時的精確跳過行為（並識別目前文件／回測／實盤三套語義不一致，需由方案明確統一）
+- [x] 定位 V4.0 的正式 strategy key／版本識別，確認修改只限 `20415_KAMA_MARTIN_V35`，不影響 V5.0、V6.1、V7、彩虹 20415 或未來策略
+- [x] 追蹤兩條件在策略核心、預設設定、Zod／共享 Schema、資料庫欄位／設定 JSON、建立／編輯 UI、快照保存／導入的完整資料鏈（確認沿用版本化 JSON／快照即可，不需資料庫 migration）
+- [x] 追蹤兩條件在自動訊號、手動觸發、執行器二次驗證、策略監控、回測中心、背景回測、報告／CSV 的完整判斷鏈（確認實盤與回測現況語義分叉，需抽成 V4.0 單一同源 evaluator）
+- [x] 評估既有 V4.0 實例與舊快照的向後相容、缺值 fallback、0／1 與 boolean 正規化、升級後行為不漂移方案（唯一現役 V4.0 為 auto 三層持倉且兩鍵缺失；缺值解析／UI 顯示為 true，僅作用於下一次全新入場，現有持倉管理不變）
+- [x] 制定四種 enable 組合的實盤／回測一致性測試矩陣與 UI／快照 round-trip 驗收標準（兩鍵皆關時自動／回測 fail-safe HOLD，raw Webhook 才可用外部明確方向繼續驗證）
+- [x] 提出可選方案、風險、建議預設與推薦執行方式，等待使用者確認；推薦方案 C（V4.0 全閉環同源 evaluator），缺值 fallback true、兩鍵皆關自動／回測 fail-safe HOLD；本輪不修改功能、不發布
+
+## V4.0 入場條件與原地重入開關—方案 C 正式實作（使用者已確認擴充範圍）
+- [x] 鎖定 V4.0 專屬設定契約：`enableThreeKFilter`、`threeKPatternMode = breakout | three_body_same_direction`、`enableKamaDirectionLock`、`enableSameDirectionReentry`；三 K 啟用時模式必須二選一，舊資料缺值採安全相容預設
+- [x] 建立只限 `20415_KAMA_MARTIN_V35` 的同源入場 evaluator，支援三 K 突破／三根實體同向二選一、price／slow KAMA 方向鎖、方向限制、資料不足 fail-closed 與兩條件皆停用時自動 HOLD
+- [x] 貫通 V4.0 引擎 defaultConfig／強型別、動態 Schema、tRPC create／update 白名單與 boolean／enum 正規化，確保顯式 `false` 不被 fallback 覆蓋
+- [x] 貫通策略快照 save／preview／import／copy／deploy／edit round-trip；舊快照缺值正確回退且不修改其他策略快照
+- [x] 將 V4.0 自動分析與手動分析改為先經同源 evaluator 產生明確 BUY／SELL／HOLD，封閉 `NONE → OPEN_SHORT`，不改馬丁加倉、平倉、止盈止損或下單數量
+- [x] 將 V4.0 raw Webhook 初始開倉接入同源二次驗證與可信 validation evidence；行情／KAMA 不足時 fail-closed，CLOSE 與持倉管理不受新入場 gate 阻擋
+- [x] 將 V4.0 回測新入場改為同源 evaluator，並以 `enableSameDirectionReentry` 明確控制第 0 層順勢平倉原地重入；停用時不得建立 reentry request
+- [x] 在策略交易 V4.0 表單加入軍工級「入場安全閘」：三 K Enable、兩種模式 Radio 二選一、KAMA 方向鎖 Enable、特殊原地重入 Enable，含狀態、精確規則、停用與資料不足說明
+- [x] 在回測中心加入完全同名同值控制項，並貫通請求 payload、背景回測、結果／快照摘要；策略交易與回測 UI 顯示一致
+- [x] 新增四組 gate、兩種三 K 模式、原地重入 ON／OFF、舊資料 fallback、CRUD／快照 round-trip、Webhook 與 V5/V6.1/V7/七彩虹隔離契約測試
+- [x] 執行全量 Vitest、TypeScript、production build、桌面與 390px 響應式視覺驗收；不建立測試訂單、不主動觸發交易
+- [x] 完成 todo 核對、保存 checkpoint 並交付已自動發布版本與驗收報告

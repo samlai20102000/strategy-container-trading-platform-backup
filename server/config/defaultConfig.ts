@@ -21,6 +21,14 @@ export const V4_CONFIG = {
   q3_slowest: 6,
 
   // ============================================================
+  // V4.0 入場安全閘（舊資料缺值時維持原有行為）
+  // ============================================================
+  enableThreeKFilter: true,
+  threeKPatternMode: "breakout" as const,
+  enableKamaDirectionLock: true,
+  enableSameDirectionReentry: true,
+
+  // ============================================================
   // 馬丁加倉與分層參數
   // ============================================================
   Martin_Step_Pct: 2.0,             // 全局加倉間距（%）
