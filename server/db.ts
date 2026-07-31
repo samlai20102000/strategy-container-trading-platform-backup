@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   apiKeys,
@@ -6,12 +6,15 @@ import {
   heartbeatLogs,
   InsertApiKey,
   InsertHeartbeatLog,
+  InsertOrderPolicyEvent,
   InsertRiskEvent,
   InsertSignal,
   InsertStrategy,
   InsertStrategyDefinition,
   InsertTrade,
   InsertUser,
+  orderPolicyEvents,
+  orderPolicyRecoverySchedules,
   riskEvents,
   signals,
   strategies,
@@ -34,6 +37,93 @@ export async function getDb() {
     }
   }
   return _db;
+}
+
+/** Append-only 訂單政策稽核；回傳 false 讓中央執行層可 fail-closed。 */
+export async function recordOrderPolicyEvent(event: InsertOrderPolicyEvent): Promise<boolean> {
+  const db = await getDb();
+  if (!db) {
+    console.error("[MakerFirst] 稽核資料庫不可用，拒絕建立無稽核訂單");
+    return false;
+  }
+  try {
+    await db.insert(orderPolicyEvents).values(event);
+    return true;
+  } catch (error) {
+    console.error("[MakerFirst] 訂單政策稽核寫入失敗", error);
+    return false;
+  }
+}
+
+const TERMINAL_ORDER_POLICY_EVENTS = [
+  "MAKER_FILLED",
+  "MAKER_EXPIRED",
+  "EMERGENCY_FILLED",
+  "FAILED",
+] as const;
+
+/** 找出每個 policyRunId 最新且已逾時、仍未終結的執行。 */
+export async function listStaleOrderPolicyRunHeads(cutoffMs: number, limit = 20) {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  const latestRuns = db
+    .select({
+      policyRunId: orderPolicyEvents.policyRunId,
+      maxId: sql<number>`max(${orderPolicyEvents.id})`.as("maxId"),
+    })
+    .from(orderPolicyEvents)
+    .groupBy(orderPolicyEvents.policyRunId)
+    .as("latest_order_policy_runs");
+
+  const rows = await db
+    .select({ event: orderPolicyEvents })
+    .from(orderPolicyEvents)
+    .innerJoin(latestRuns, eq(orderPolicyEvents.id, latestRuns.maxId))
+    .where(and(
+      lte(orderPolicyEvents.eventAt, cutoffMs),
+      notInArray(orderPolicyEvents.eventType, [...TERMINAL_ORDER_POLICY_EVENTS]),
+    ))
+    .orderBy(asc(orderPolicyEvents.eventAt))
+    .limit(Math.max(1, Math.min(100, limit)));
+  return rows.map(row => row.event);
+}
+
+export async function listOrderPolicyEventsForRun(policyRunId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  return db
+    .select()
+    .from(orderPolicyEvents)
+    .where(eq(orderPolicyEvents.policyRunId, policyRunId))
+    .orderBy(asc(orderPolicyEvents.eventAt), asc(orderPolicyEvents.id));
+}
+
+export async function isOrderPolicyRecoveryTaskEnabled(taskUid: string): Promise<boolean> {
+  if (!taskUid) return false;
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db
+    .select({ id: orderPolicyRecoverySchedules.id })
+    .from(orderPolicyRecoverySchedules)
+    .where(and(
+      eq(orderPolicyRecoverySchedules.taskUid, taskUid),
+      eq(orderPolicyRecoverySchedules.enabled, true),
+    ))
+    .limit(1);
+  return rows.length === 1;
+}
+
+export async function updateOrderPolicyRecoveryTaskResult(
+  taskUid: string,
+  result: "SUCCESS" | "PARTIAL" | "FAILED",
+  summary: Record<string, unknown>,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  await db
+    .update(orderPolicyRecoverySchedules)
+    .set({ lastRunAt: new Date(), lastResult: result, lastSummary: summary })
+    .where(eq(orderPolicyRecoverySchedules.taskUid, taskUid));
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import type {
   Balance,
+  BestBidAsk,
   ExchangeCapabilitySnapshot,
   ExchangeAdapter,
   ExchangeInstrumentSnapshot,
@@ -82,6 +83,7 @@ interface OKXContractSpec {
   ctVal: number;  // 每張合約的 base 幣數量
   lotSz: number;  // 最小步長（張）
   minSz: number;  // 最小下單量（張）
+  tickSz: number; // 最小價格步長
 }
 /**
  * ★ 核心修復：合約規格快取區分實盤/模擬盤
@@ -117,8 +119,9 @@ async function getOKXContractSpecs(testnet: boolean = false): Promise<Map<string
         const ctVal = parseFloat(item.ctVal);
         const lotSz = parseFloat(item.lotSz);
         const minSz = parseFloat(item.minSz);
+        const tickSz = parseFloat(item.tickSz);
         if (ctVal > 0 && lotSz > 0 && minSz > 0) {
-          specs.set(item.instId, { ctVal, lotSz, minSz });
+          specs.set(item.instId, { ctVal, lotSz, minSz, tickSz: tickSz > 0 ? tickSz : 0 });
         }
       }
       contractSpecCaches.set(cacheKey, { specs, fetchedAt: Date.now() });
@@ -365,6 +368,13 @@ export class OKXAdapter implements ExchangeAdapter {
     const TAG = `[OKX][placeOrder]`;
     try {
       const instId = this.normalizeSymbol(params.symbol);
+      if (params.postOnly && (params.orderType !== "limit" || !params.price || params.price <= 0)) {
+        return {
+          success: false,
+          rawResponse: JSON.stringify({ policy: "GLOBAL_MAKER_FIRST_B_V1", rejected: "POST_ONLY_REQUIRES_LIMIT_PRICE" }),
+          errorMessage: "post-only 訂單必須提供有效限價，已 fail-closed 拒絕",
+        };
+      }
       // 以這組 API Key 的真實帳戶設定為準；模擬子帳號與實盤可能使用不同 posMode。
       // 查詢失敗時採 fail-closed，絕不猜測模式後送出可能不相容的訂單。
       const posMode = await this.getPositionMode();
@@ -403,7 +413,7 @@ export class OKXAdapter implements ExchangeAdapter {
         instId,
         tdMode: "cross",
         side: params.side,
-        ordType: params.orderType,
+        ordType: params.postOnly ? "post_only" : params.orderType,
         sz: String(conversion.contracts),
       };
       // 雙向持倉模式必須送 long／short；單向持倉模式省略 posSide。
@@ -419,6 +429,9 @@ export class OKXAdapter implements ExchangeAdapter {
       }
       if (params.reduceOnly) {
         body.reduceOnly = true;
+      }
+      if (params.clientOrderId) {
+        body.clOrdId = params.clientOrderId.slice(0, 32);
       }
 
       // ★ 核心修復：對 50001 等暫時性錯誤加入指數退避重試 + 端點自動切換
@@ -463,7 +476,7 @@ export class OKXAdapter implements ExchangeAdapter {
 
             // 市價單查詢實際成交數據
             let fillTruth: Partial<OrderResult> = {};
-            if (params.orderType === "market") {
+            if (params.orderType === "market" && !params.postOnly) {
               try {
                 await new Promise((r) => setTimeout(r, 300));
                 const orderInfo = await this.request("GET", "/api/v5/trade/order", {
@@ -551,6 +564,24 @@ export class OKXAdapter implements ExchangeAdapter {
       total: parseFloat(account?.totalEq || "0"),
       unrealizedPnl: parseFloat(detail?.upl || account?.upl || "0"),
       usedMargin: parseFloat(detail?.imr || "0"),
+    };
+  }
+
+  async getBestBidAsk(symbol: string): Promise<BestBidAsk> {
+    const instId = this.normalizeSymbol(symbol);
+    const data = await this.request("GET", "/api/v5/market/ticker", { instId });
+    const row = data.data?.[0];
+    const bid = Number(row?.bidPx);
+    const ask = Number(row?.askPx);
+    if (data.code !== "0" || !Number.isFinite(bid) || bid <= 0 || !Number.isFinite(ask) || ask <= bid) {
+      throw new Error(`OKX 無有效最佳買賣價：${data.code ?? "UNKNOWN"} ${data.msg ?? ""}`.trim());
+    }
+    return {
+      symbol: instId,
+      bid,
+      ask,
+      observedAt: Number(row?.ts) || Date.now(),
+      source: "okx:/api/v5/market/ticker.bidPx/askPx",
     };
   }
 
@@ -858,32 +889,40 @@ export class OKXAdapter implements ExchangeAdapter {
 
   async getOrderExecutionTruth(
     symbol: string,
-    orderId: string,
+    orderId: string | undefined,
     expectPnl = true,
+    clientOrderId?: string,
   ): Promise<Partial<OrderResult>> {
-    return this.queryOrderFillDetails(this.normalizeSymbol(symbol), orderId, expectPnl);
+    return this.queryOrderFillDetails(this.normalizeSymbol(symbol), orderId, expectPnl, clientOrderId);
   }
 
-  private async queryOrderFillDetails(instId: string, orderId: string, expectPnl = true): Promise<Partial<OrderResult>> {
+  private async queryOrderFillDetails(
+    instId: string,
+    orderId: string | undefined,
+    expectPnl = true,
+    clientOrderId?: string,
+  ): Promise<Partial<OrderResult>> {
     try {
+      if (!orderId && !clientOrderId) return {};
+      const query = orderId ? { instId, ordId: orderId } : { instId, clOrdId: clientOrderId };
       await new Promise(resolve => setTimeout(resolve, 800));
-      const orderInfo = await this.request("GET", "/api/v5/trade/order", { instId, ordId: orderId });
+      const orderInfo = await this.request("GET", "/api/v5/trade/order", query);
       const detail = orderInfo.data?.[0];
       if (!detail) return {};
       // 接受 filled 或 partially_filled 狀態
       if (detail.state !== "filled" && detail.state !== "partially_filled") {
         // 再等 500ms 重試一次（市價單通常很快成交）
         await new Promise(resolve => setTimeout(resolve, 500));
-        const retry = await this.request("GET", "/api/v5/trade/order", { instId, ordId: orderId });
+        const retry = await this.request("GET", "/api/v5/trade/order", query);
         const retryDetail = retry.data?.[0];
         if (!retryDetail || (retryDetail.state !== "filled" && retryDetail.state !== "partially_filled")) return {};
         const normalized = await this.normalizeOrderFill(instId, retryDetail, expectPnl);
         console.log(`[OKX queryOrderFillDetails] 重試成功 orderId=${orderId} avgPx=${normalized.filledPrice} size=${normalized.filledSize} pnl=${normalized.netRealizedPnl}`);
-        return normalized;
+        return { orderId: retryDetail.ordId ? String(retryDetail.ordId) : orderId, ...normalized };
       }
       const normalized = await this.normalizeOrderFill(instId, detail, expectPnl);
       console.log(`[OKX queryOrderFillDetails] orderId=${orderId} avgPx=${normalized.filledPrice} size=${normalized.filledSize} pnl=${normalized.netRealizedPnl}`);
-      return normalized;
+      return { orderId: detail.ordId ? String(detail.ordId) : orderId, ...normalized };
     } catch (e: any) {
       console.warn(`[OKX queryOrderFillDetails] 查詢失敗:`, e?.message);
       return {};
@@ -1212,10 +1251,11 @@ export class OKXAdapter implements ExchangeAdapter {
       minOrderSize: spec ? spec.minSz * spec.ctVal : 0,
       quantityStep: spec ? spec.lotSz * spec.ctVal : 0,
       ...(spec ? { contractValue: spec.ctVal } : {}),
+      ...(spec?.tickSz ? { priceStep: spec.tickSz } : {}),
       observedAt,
       source: "okx:/api/v5/public/instruments?instType=SWAP",
       details: spec
-        ? { minContracts: spec.minSz, contractStep: spec.lotSz, testnet: this.isTestnet }
+        ? { minContracts: spec.minSz, contractStep: spec.lotSz, tickSize: spec.tickSz, testnet: this.isTestnet }
         : { testnet: this.isTestnet, status: "missing_or_inactive" },
     };
   }

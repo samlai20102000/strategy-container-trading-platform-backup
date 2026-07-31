@@ -8,6 +8,7 @@ import {
   type RuntimeModeGuardInput,
 } from "../services/runtimeModeGuard";
 import type {
+  CloseExecutionOptions,
   ExchangeAdapter,
   OrderParams,
   OrderResult,
@@ -189,6 +190,13 @@ export function createRuntimeGuardedAdapter(
             size,
             posSide,
             reduceOnly: isClose || decision.reduceOnly === true,
+            policyContext: {
+              strategyId: context.strategy.id,
+              signalId: context.signalId,
+              source: context.source,
+              reasonCode: context.reason,
+              ...params.policyContext,
+            },
           });
         };
       }
@@ -197,13 +205,24 @@ export function createRuntimeGuardedAdapter(
         return async (
           symbol: string,
           posSide?: "long" | "short" | "net",
-          timeoutMs?: number,
+          timeoutMsOrOptions?: number | CloseExecutionOptions,
           priceOffsetPct?: number,
+          smartOptions?: CloseExecutionOptions,
         ): Promise<OrderResult> => {
+          const options = property === "closePosition"
+            ? (typeof timeoutMsOrOptions === "object" ? timeoutMsOrOptions : undefined)
+            : smartOptions;
+          const policyContext = {
+            strategyId: context.strategy.id,
+            signalId: context.signalId,
+            source: context.source,
+            reasonCode: context.reason,
+            ...options?.policyContext,
+          };
           const gate = await authorize(target, context, authorizer, {
             operation: String(property),
             action: "close",
-            details: { symbol, posSide },
+            details: { symbol, posSide, options: { ...options, policyContext } },
             positionSide: posSide,
           });
           if (!gate.allowed) {
@@ -213,8 +232,14 @@ export function createRuntimeGuardedAdapter(
           const legs = closeLegs(gate.envelope.decision);
           if (!advanced) {
             return property === "closePosition"
-              ? target.closePosition(symbol, posSide)
-              : target.closePositionSmart(symbol, posSide, timeoutMs, priceOffsetPct);
+              ? target.closePosition(symbol, posSide, { ...options, policyContext })
+              : target.closePositionSmart(
+                symbol,
+                posSide,
+                typeof timeoutMsOrOptions === "number" ? timeoutMsOrOptions : undefined,
+                priceOffsetPct,
+                { ...options, policyContext },
+              );
           }
           if (legs.length === 0) {
             return rejectedResult("三模式執行 Gate 拒絕：LEG_SCOPED_CLOSE_REQUIRED", gate.envelope.decision);
@@ -227,10 +252,14 @@ export function createRuntimeGuardedAdapter(
             results.push(await target.placeOrder({
               symbol,
               side: leg.side === "long" ? "sell" : "buy",
-              orderType: "market",
+              // Exchange order type 由 factory 層的中央政策決定；此處只表達腿級平倉意圖。
+              orderType: "limit",
               size: leg.quantity,
               reduceOnly: true,
               posSide: leg.side,
+              executionClass: options?.executionClass,
+              emergencyReason: options?.emergencyReason,
+              policyContext,
             }));
           }
           return combineCloseResults(results);

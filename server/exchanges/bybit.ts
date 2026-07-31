@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import type {
   Balance,
+  BestBidAsk,
   ExchangeCapabilitySnapshot,
   ExchangeAdapter,
   ExchangeInstrumentSnapshot,
@@ -183,6 +184,13 @@ export class BybitAdapter implements ExchangeAdapter {
     const TAG = `[Bybit][placeOrder]`;
     try {
       const symbol = this.normalizeSymbol(params.symbol);
+      if (params.postOnly && (params.orderType !== "limit" || !params.price || params.price <= 0)) {
+        return {
+          success: false,
+          rawResponse: JSON.stringify({ policy: "GLOBAL_MAKER_FIRST_B_V1", rejected: "POST_ONLY_REQUIRES_LIMIT_PRICE" }),
+          errorMessage: "post-only 訂單必須提供有效限價，已 fail-closed 拒絕",
+        };
+      }
       if (params.leverage && !params.reduceOnly) {
         await this.setLeverage(symbol, params.leverage);
       }
@@ -195,6 +203,12 @@ export class BybitAdapter implements ExchangeAdapter {
       };
       if (params.orderType === "limit" && params.price) {
         body.price = String(params.price);
+      }
+      if (params.postOnly) {
+        body.timeInForce = "PostOnly";
+      }
+      if (params.clientOrderId) {
+        body.orderLinkId = params.clientOrderId.slice(0, 36);
       }
       if (params.reduceOnly) {
         body.reduceOnly = true;
@@ -276,23 +290,30 @@ export class BybitAdapter implements ExchangeAdapter {
 
   async getOrderExecutionTruth(
     symbol: string,
-    orderId: string,
+    orderId: string | undefined,
     expectPnl = true,
+    clientOrderId?: string,
   ): Promise<Partial<OrderResult>> {
-    return this.queryOrderFillDetails(this.normalizeSymbol(symbol), orderId, expectPnl);
+    return this.queryOrderFillDetails(this.normalizeSymbol(symbol), orderId, expectPnl, clientOrderId);
   }
 
-  private async queryOrderFillDetails(symbol: string, orderId: string, expectPnl: boolean): Promise<Partial<OrderResult>> {
+  private async queryOrderFillDetails(
+    symbol: string,
+    orderId: string | undefined,
+    expectPnl: boolean,
+    clientOrderId?: string,
+  ): Promise<Partial<OrderResult>> {
     const finite = (value: unknown): number | undefined => {
       const parsed = Number(value);
       return Number.isFinite(parsed) ? parsed : undefined;
     };
     try {
+      if (!orderId && !clientOrderId) return {};
       await new Promise(resolve => setTimeout(resolve, 300));
       const orderData = await this.request("GET", "/v5/order/realtime", {
         category: "linear",
         symbol,
-        orderId,
+        ...(orderId ? { orderId } : { orderLinkId: clientOrderId }),
       });
       const detail = orderData.result?.list?.[0];
       const avgPrice = finite(detail?.avgPrice);
@@ -301,7 +322,7 @@ export class BybitAdapter implements ExchangeAdapter {
       const filledAt = finite(detail?.updatedTime ?? detail?.createdTime);
 
       let closed: any;
-      if (expectPnl) {
+      if (expectPnl && orderId) {
         const closedData = await this.request("GET", "/v5/position/closed-pnl", {
           category: "linear",
           symbol,
@@ -323,6 +344,7 @@ export class BybitAdapter implements ExchangeAdapter {
       const orderStatus = String(detail?.orderStatus ?? "").toLowerCase();
 
       return {
+        orderId: detail?.orderId ? String(detail.orderId) : orderId,
         filledPrice: avgPrice !== undefined && avgPrice > 0 ? avgPrice : undefined,
         filledSize: filledSize !== undefined && filledSize > 0 ? filledSize : undefined,
         filledAt,
@@ -346,7 +368,7 @@ export class BybitAdapter implements ExchangeAdapter {
               : "unknown",
       };
     } catch (error) {
-      console.warn(`[Bybit][queryOrderFillDetails] orderId=${orderId} 查詢失敗:`, (error as Error).message);
+      console.warn(`[Bybit][queryOrderFillDetails] orderId=${orderId ?? "-"} clientOrderId=${clientOrderId ?? "-"} 查詢失敗:`, (error as Error).message);
       return {
         settlementStatus: expectPnl ? "pending" : "not_applicable",
         pnlSource: "unavailable",
@@ -372,6 +394,27 @@ export class BybitAdapter implements ExchangeAdapter {
       total: parseFloat(account?.totalEquity || "0"),
       unrealizedPnl: parseFloat(account?.totalPerpUPL || "0"),
       usedMargin: parseFloat(account?.totalInitialMargin || "0"),
+    };
+  }
+
+  async getBestBidAsk(symbol: string): Promise<BestBidAsk> {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+    const data = await this.request("GET", "/v5/market/tickers", {
+      category: "linear",
+      symbol: normalizedSymbol,
+    });
+    const row = data.result?.list?.[0];
+    const bid = Number(row?.bid1Price);
+    const ask = Number(row?.ask1Price);
+    if (data.retCode !== 0 || !Number.isFinite(bid) || bid <= 0 || !Number.isFinite(ask) || ask <= bid) {
+      throw new Error(`Bybit 無有效最佳買賣價：${data.retCode ?? "UNKNOWN"} ${data.retMsg ?? ""}`.trim());
+    }
+    return {
+      symbol: normalizedSymbol,
+      bid,
+      ask,
+      observedAt: Number(row?.time ?? data.time) || Date.now(),
+      source: "bybit:/v5/market/tickers.bid1Price/ask1Price",
     };
   }
 

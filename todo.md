@@ -2432,4 +2432,19 @@
 - [x] 執行 TypeScript、全套 Vitest、production build、桌面及 390×844 行動 UI、secret/log/network 靜態掃描與 source strategy regression
 - [x] 以唯讀基線／審計證明新策略、deployment、decision、intent、fill、signal、trade 未被自動啟用或提交真實交易所 mutation
 - [x] 更新完成報告與 todo，保存唯一穩定 checkpoint 並自動發布；交付版本維持 disabled，實盤需後續另行明確確認
+
+## 全系統 Maker-First 限價執行政策（2026-07-31）
+
+- [x] 完整稽核所有現有策略、通用執行器、風控／止損、手動操作與交易所 adapter 的開倉、加倉、減倉、平倉訂單路徑，列出硬編碼 market 與繞過中央政策的位置
+- [x] 提出限價掛單未成交的 TTL、撤單重掛、被動追價、部分成交、重啟恢復、冪等、緊急平倉與是否允許市價回退方案；使用者已明確選定方案 B
+- [x] 鎖定方案 B 政策：開倉／加倉／正常平倉 post-only 且永不 market；止損、最大日虧與 Kill Switch 先執行 2 秒 × 2 次 maker-only，僅對剩餘量允許具稽核的 emergency taker
+- [x] 建立中央 Order Execution Policy，強制現有及未來所有策略的買／賣／平倉訂單統一經過同一政策，禁止策略直接硬編碼 market／limit
+- [x] 將所有現有策略與通用開平倉路徑遷移至 maker-first 限價執行，保留完整 signal／intent／order／fill／cancel／reprice／failure 稽核鏈
+- [ ] 新增設定 UI 與後端契約，使限價價格來源、TTL、重掛次數、價格偏移、部分成交及緊急回退政策可見、可驗證且 fail-closed
+- [ ] 新增架構守衛與 Vitest，阻止未來策略繞過中央訂單政策，覆蓋 OKX／Bybit payload、post-only、未成交、部分成交、撤單重掛與所有平倉情境
+- [ ] 執行 TypeScript、全套 Vitest、production build、桌面／行動 UI、測試帳戶情境與零未授權市價單稽核
+- [ ] 更新根因／修復報告、核對 TODO、保存 checkpoint 並自動發布；實盤政策仍須另行明確批准
 - [x] 修正 KRM advanced position leg 還原時 `totalCost` 與 ledger `quantity × avgEntryPrice` 不一致造成下一層平均成本錯算，並以 M2 腿級測試鎖定
+- [x] 建立可重啟的 durable Maker-First 執行契約：穩定 policyRunId、完整 intent/config snapshot、orderId/clientOrderId 雙識別查單、跨 instance DB lease，以及 cron-only recovery handler
+- [x] 新增 recovery 單元測試，覆蓋送單後崩潰、同 client id 安全重試、部分成交只接續剩餘量、緊急 taker 不確定時禁止重複市價單
+- [ ] 發布 recovery handler、建立每分鐘 Heartbeat、持久化 task_uid 白名單並執行生產 callback smoke test

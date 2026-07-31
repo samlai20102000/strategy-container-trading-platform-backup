@@ -21,6 +21,7 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import { closePolicyOptions, orderPolicyFields } from "../exchanges/orderPolicyIntent";
 import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import {
@@ -279,7 +280,17 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
 
     if (state.totalSize > 0) {
       // 使用 adapter.closePosition 平倉（平台級別通用，自動處理 posMode/posSide）
-      const result = await adapter.closePositionSmart(strategy.symbol);
+      const result = await adapter.closePositionSmart(
+        strategy.symbol,
+        undefined,
+        undefined,
+        undefined,
+        closePolicyOptions({
+          strategyId: strategy.id,
+          source: "RISK",
+          reasonCode: "v50_hard_stop",
+        }, "STOP_LOSS"),
+      );
       exchangeCloseResult = result;
       if (!result.success) {
         console.error(`[V50Monitor] closeAndDisable 平倉失敗:`, result.errorMessage, result.rawResponse);
@@ -372,7 +383,17 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
 
     if (state.totalSize > 0) {
       // 使用 adapter.closePosition 平倉（平台級別通用，自動處理 posMode/posSide）
-      const result = await adapter.closePositionSmart(strategy.symbol);
+      const result = await adapter.closePositionSmart(
+        strategy.symbol,
+        undefined,
+        undefined,
+        undefined,
+        closePolicyOptions({
+          strategyId: strategy.id,
+          source: "RISK",
+          reasonCode: "v50_trailing_take_profit",
+        }),
+      );
       exchangeCloseResult = result;
       if (!result.success) {
         console.error(`[V50Monitor] closePosition 平倉失敗:`, result.errorMessage, result.rawResponse);
@@ -482,6 +503,11 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
       size: closeSize,
       reduceOnly: true,
       posSide,
+      ...orderPolicyFields({
+        strategyId: strategy.id,
+        source: "EXECUTOR",
+        reasonCode: `v50_partial_profit_layer_${triggerLayer}`,
+      }),
     });
 
     if (!orderResult.success) {

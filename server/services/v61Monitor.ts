@@ -20,6 +20,11 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import {
+  closePolicyOptions,
+  orderPolicyFields,
+  type ApprovedEmergencyReason,
+} from "../exchanges/orderPolicyIntent";
 import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import { loadStrategyState, saveStrategyState } from "./strategyStateManager";
@@ -170,7 +175,13 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
   const zoneSLPct = Number(v61Config.zone_sl_pct) || 999;
   if (pnlPct <= -zoneSLPct) {
     console.log(`[V61Monitor] 策略 ${strategy.id} 觸發區域止損 (pnl=${pnlPct.toFixed(2)}% <= -${zoneSLPct}%)`);
-    await closePosition(strategy, adapter, currentPrice, `V6.1 區域止損 (浮虧 ${Math.abs(pnlPct).toFixed(2)}%)`);
+    await closePosition(
+      strategy,
+      adapter,
+      currentPrice,
+      `V6.1 區域止損 (浮虧 ${Math.abs(pnlPct).toFixed(2)}%)`,
+      "STOP_LOSS",
+    );
     return true;
   }
 
@@ -284,7 +295,17 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
     let exchangeCloseResult: OrderResult | undefined;
 
     if (state.totalSize > 0) {
-      const result = await adapter.closePositionSmart(strategy.symbol);
+      const result = await adapter.closePositionSmart(
+        strategy.symbol,
+        undefined,
+        undefined,
+        undefined,
+        closePolicyOptions({
+          strategyId: strategy.id,
+          source: "RISK",
+          reasonCode: "v61_max_drawdown",
+        }, "STOP_LOSS"),
+      );
       exchangeCloseResult = result;
       if (!result.success) {
         console.error(`[V61Monitor] closeAndDisable 平倉失敗:`, result.errorMessage, result.rawResponse);
@@ -367,7 +388,13 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
   }
 }
 
-async function closePosition(strategy: any, adapter: ExchangeAdapter, price: number, reason: string): Promise<void> {
+async function closePosition(
+  strategy: any,
+  adapter: ExchangeAdapter,
+  price: number,
+  reason: string,
+  emergencyReason?: ApprovedEmergencyReason,
+): Promise<void> {
   // 平倉鎖檢查：同一 symbol 60 秒內不重複嘗試
   if (isCloseLocked(strategy.symbol)) {
     console.warn(`[V61Monitor] ${strategy.symbol} 平倉鎖定中，跳過本次平倉嘗試`);
@@ -384,7 +411,17 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
     let exchangeCloseResult: OrderResult | undefined;
 
     if (state.totalSize > 0) {
-      const result = await adapter.closePositionSmart(strategy.symbol);
+      const result = await adapter.closePositionSmart(
+        strategy.symbol,
+        undefined,
+        undefined,
+        undefined,
+        closePolicyOptions({
+          strategyId: strategy.id,
+          source: "RISK",
+          reasonCode: emergencyReason ? "v61_zone_stop" : "v61_trailing_take_profit",
+        }, emergencyReason),
+      );
       if (!result.success) {
         console.error(`[V61Monitor] closePosition 平倉失敗:`, result.errorMessage, result.rawResponse);
         return; // 失敗不重置狀態，等待鎖過期後重試
@@ -488,6 +525,11 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
       size: closeSize,
       reduceOnly: true,
       posSide,
+      ...orderPolicyFields({
+        strategyId: strategy.id,
+        source: "EXECUTOR",
+        reasonCode: `v61_partial_profit_layer_${triggerLayer}`,
+      }),
     });
 
     if (!orderResult.success) {

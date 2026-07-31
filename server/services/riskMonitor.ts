@@ -10,6 +10,7 @@ import {
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createInitialStrategyState } from "../strategies/base";
 import { createAdapter } from "../exchanges/factory";
+import { closePolicyOptions } from "../exchanges/orderPolicyIntent";
 import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, Position } from "../exchanges/types";
 import { isV35StrategyKey } from "./v35Monitor";
@@ -167,7 +168,22 @@ async function enforceRisk(
 
   let positionClosed = false;
   try {
-    const result = await adapter.closePositionSmart(strategy.symbol, opts.posSide);
+    const emergencyReason = eventType === "stop_loss"
+      ? "STOP_LOSS" as const
+      : eventType === "daily_loss_limit"
+        ? "DAILY_LOSS_LIMIT" as const
+        : undefined;
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      opts.posSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        source: "RISK",
+        reasonCode: eventType,
+      }, emergencyReason),
+    );
     positionClosed = result.success;
     if (result.success && result.orderId) {
       await createTrade({

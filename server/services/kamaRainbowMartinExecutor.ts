@@ -7,6 +7,10 @@ import {
 import { normalizeExecutionModePolicy } from "../../shared/executionModes";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import {
+  approvedEmergencyReasonFromCloseReason,
+  orderPolicyFields,
+} from "../exchanges/orderPolicyIntent";
+import {
   applyKamaRainbowMartinCloseToState,
   applyKamaRainbowMartinFillToState,
   applyKamaRainbowMartinPartialCloseToState,
@@ -154,6 +158,8 @@ export async function executeKamaRainbowMartinSignal(
       return { status: "rejected", message: `Kama 彩虹馬丁腿級平倉量無效：${normalized.reason}` };
     }
     const requestedQuantity = Math.min(normalized.qty, exchangePosition.size);
+    const closeReason = signal.kamaRainbowMartinCloseReason ?? "OTHER";
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(closeReason);
     const result = await adapter.placeOrder({
       symbol: strategy.symbol,
       side: state.isLong ? "sell" : "buy",
@@ -161,6 +167,12 @@ export async function executeKamaRainbowMartinSignal(
       size: requestedQuantity,
       reduceOnly: true,
       posSide,
+      ...orderPolicyFields({
+        strategyId: strategy.id,
+        signalId,
+        source: options.source,
+        reasonCode: signal.kamaRainbowMartinReasonCode ?? closeReason,
+      }, emergencyReason),
     });
     if (!result.success) {
       return { status: "failed", message: result.errorMessage || "Kama 彩虹馬丁腿級平倉失敗", exchangeResponse: result.rawResponse };
@@ -175,7 +187,6 @@ export async function executeKamaRainbowMartinSignal(
         exchangeResponse: truth.rawResponse,
       };
     }
-    const closeReason = signal.kamaRainbowMartinCloseReason ?? "OTHER";
     const nextState = filledQuantity >= state.totalSize - 1e-12
       ? applyKamaRainbowMartinCloseToState(state, closeReason, truth.filledAt ?? Date.now())
       : applyKamaRainbowMartinPartialCloseToState(state, filledQuantity, closeReason, truth.filledAt ?? Date.now());
@@ -277,6 +288,12 @@ export async function executeKamaRainbowMartinSignal(
     leverage: Number(strategy.leverage || 1),
     reduceOnly: false,
     posSide: opensLong ? "long" : "short",
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: options.source,
+      reasonCode: signal.kamaRainbowMartinReasonCode ?? action,
+    }),
   });
   if (!result.success) {
     return { status: "failed", message: result.errorMessage || "Kama 彩虹馬丁下單失敗", exchangeResponse: result.rawResponse };

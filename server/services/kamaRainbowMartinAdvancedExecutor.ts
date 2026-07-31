@@ -6,6 +6,10 @@ import {
 import type { KamaRainbowMartinConfig } from "../../shared/strategies/kamaRainbowMartin";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import {
+  approvedEmergencyReasonFromCloseReason,
+  orderPolicyFields,
+} from "../exchanges/orderPolicyIntent";
+import {
   type KamaRainbowMartinPositionSize,
 } from "../strategies/kamaRainbowMartin/core";
 import { createKamaRainbowMartinRuntimeState } from "../strategies/kamaRainbowMartin/core";
@@ -243,6 +247,8 @@ async function executeAdvancedClose(input: {
     return { status: "skipped", message: `Kama 彩虹馬丁 advanced close intent 已存在（${intentResult.intent.status}）` };
   }
   await transitionOrderIntent(intentResult.intent.intentId, "SUBMITTING");
+  const closeReason = signal.kamaRainbowMartinCloseReason ?? "OTHER";
+  const emergencyReason = approvedEmergencyReasonFromCloseReason(closeReason);
   const result = await adapter.placeOrder({
     symbol: strategy.symbol,
     side: positionSide === "LONG" ? "sell" : "buy",
@@ -250,6 +256,12 @@ async function executeAdvancedClose(input: {
     size: normalized.qty,
     reduceOnly: true,
     posSide: positionSideLower,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: options.source,
+      reasonCode: signal.kamaRainbowMartinReasonCode ?? closeReason,
+    }, emergencyReason),
   });
   if (!result.success) {
     await transitionOrderIntent(intentResult.intent.intentId, "FAILED", { error: result.errorMessage || "exchange rejected" });
@@ -272,7 +284,6 @@ async function executeAdvancedClose(input: {
   await appendFillTruth({ strategy, cycleId, legId: targetLeg.legId, intentId: intentResult.intent.intentId, truth, quantity: filledQuantity, price: filledPrice, fallbackTimestamp: fillTimestamp });
   const fullyClosed = filledQuantity >= quantity - 1e-12;
   await transitionOrderIntent(intentResult.intent.intentId, fullyClosed ? "FILLED" : "PARTIALLY_FILLED", { exchangeOrderId: truth.orderId });
-  const closeReason = signal.kamaRainbowMartinCloseReason ?? "OTHER";
   const nextState = fullyClosed
     ? applyKamaRainbowMartinCloseToState(state, closeReason, fillTimestamp)
     : applyKamaRainbowMartinPartialCloseToState(state, filledQuantity, closeReason, fillTimestamp);
@@ -458,6 +469,12 @@ export async function executeKamaRainbowMartinAdvancedSignal(input: {
     leverage: Number(strategy.leverage || 1),
     reduceOnly: false,
     posSide: opensLong ? "long" : "short",
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: options.source,
+      reasonCode: signal.kamaRainbowMartinReasonCode ?? action,
+    }),
   });
   if (!result.success) {
     await transitionOrderIntent(intentResult.intent.intentId, "FAILED", { error: result.errorMessage || "exchange rejected" });

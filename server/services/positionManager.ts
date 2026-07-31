@@ -1,5 +1,6 @@
 import { Strategy } from "../../drizzle/schema";
 import { ExchangeAdapter } from "../exchanges/types";
+import { orderPolicyFields } from "../exchanges/orderPolicyIntent";
 import type { V4Config, StrategyState } from "./martingaleEngine";
 import { getFirstOrderValue } from "./martingaleEngine";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
@@ -76,6 +77,11 @@ export async function placeInitialOrder(
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
+      ...orderPolicyFields({
+        strategyId: strategy.id,
+        source: "EXECUTOR",
+        reasonCode: "v40_initial_entry",
+      }),
     });
 
     await createTrade({

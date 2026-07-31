@@ -17,6 +17,35 @@ export interface OrderParams {
   leverage?: number;
   /** 持倉方向（OKX 雙向持倉模式必填） */
   posSide?: "long" | "short" | "net";
+  /** 僅允許 maker 成交；交易所若判定會立即成交，必須拒單而非轉 taker。 */
+  postOnly?: boolean;
+  /** 由中央執行層建立的冪等客戶端訂單識別碼。 */
+  clientOrderId?: string;
+  /** 方案 B 執行分類；未指定時中央執行層一律視為 MAKER_ONLY。 */
+  executionClass?: "MAKER_ONLY" | "EMERGENCY_EXIT";
+  /** 只有三種已批准理由可授權 emergency taker。 */
+  emergencyReason?: "STOP_LOSS" | "DAILY_LOSS_LIMIT" | "KILL_SWITCH";
+  /** 只用於稽核，不由交易所解讀。 */
+  policyContext?: {
+    strategyId?: number;
+    signalId?: number;
+    source?: string;
+    reasonCode?: string;
+  };
+}
+
+export interface BestBidAsk {
+  symbol: string;
+  bid: number;
+  ask: number;
+  observedAt: number;
+  source: string;
+}
+
+export interface CloseExecutionOptions {
+  executionClass?: "MAKER_ONLY" | "EMERGENCY_EXIT";
+  emergencyReason?: "STOP_LOSS" | "DAILY_LOSS_LIMIT" | "KILL_SWITCH";
+  policyContext?: OrderParams["policyContext"];
 }
 
 export type ExchangeTruthSource =
@@ -65,6 +94,19 @@ export interface OrderResult {
   executionStatus?: "filled" | "partially_filled" | "cancelled" | "unknown";
   /** 多方向／多持倉平倉時的逐筆權威結果 */
   childResults?: OrderResult[];
+  /** 中央 maker-first 執行層的結構化稽核摘要。 */
+  policyAudit?: {
+    policyVersion: "GLOBAL_MAKER_FIRST_B_V1";
+    executionClass: "MAKER_ONLY" | "EMERGENCY_EXIT";
+    emergencyReason?: "STOP_LOSS" | "DAILY_LOSS_LIMIT" | "KILL_SWITCH";
+    attempts: number;
+    fallbackUsed: boolean;
+    requestedSize: number;
+    filledSize: number;
+    remainingSize: number;
+    finalOrderType: "post_only" | "market" | "none";
+    clientOrderIds: string[];
+  };
 }
 
 export interface Balance {
@@ -155,11 +197,14 @@ export interface ExchangeAdapter {
   /** 只讀探測商品是否可交易及下單規格；不得建立、修改或取消訂單。 */
   probeInstrument(symbol: string): Promise<ExchangeInstrumentSnapshot>;
 
+  /** 只讀取得最佳買／賣價，供中央 post-only 價格決策。 */
+  getBestBidAsk(symbol: string): Promise<BestBidAsk>;
+
   /** 撤單 */
   cancelOrder(symbol: string, orderId: string): Promise<OrderResult>;
 
   /** 市價平倉指定交易對的所有持倉 */
-  closePosition(symbol: string, posSide?: "long" | "short" | "net"): Promise<OrderResult>;
+  closePosition(symbol: string, posSide?: "long" | "short" | "net", options?: CloseExecutionOptions): Promise<OrderResult>;
 
   /**
    * 智能平倉：先限價掛單（享受 maker 費率），超時未成交則取消改市價兜底
@@ -168,7 +213,7 @@ export interface ExchangeAdapter {
    * @param timeoutMs 限價單等待超時（毫秒），預設 3000ms
    * @param priceOffsetPct 限價偏移百分比（相對 markPrice），預設 0.02%（確保快速成交）
    */
-  closePositionSmart(symbol: string, posSide?: "long" | "short" | "net", timeoutMs?: number, priceOffsetPct?: number): Promise<OrderResult>;
+  closePositionSmart(symbol: string, posSide?: "long" | "short" | "net", timeoutMs?: number, priceOffsetPct?: number, options?: CloseExecutionOptions): Promise<OrderResult>;
 
   /** 查詢已實現盈虧記錄（用於統計） */
   getClosedPnl(symbol?: string, startTime?: number): Promise<{ symbol: string; pnl: number; time: number }[]>;
@@ -177,5 +222,10 @@ export interface ExchangeAdapter {
    * 只讀查詢指定訂單的成交與結算真相。
    * 不會下單、撤單或改變持倉，供延遲盈虧對帳使用。
    */
-  getOrderExecutionTruth(symbol: string, orderId: string, expectPnl?: boolean): Promise<Partial<OrderResult>>;
+  getOrderExecutionTruth(
+    symbol: string,
+    orderId: string | undefined,
+    expectPnl?: boolean,
+    clientOrderId?: string,
+  ): Promise<Partial<OrderResult>>;
 }

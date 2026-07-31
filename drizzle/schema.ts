@@ -66,6 +66,80 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type InsertApiKey = typeof apiKeys.$inferInsert;
 
 /**
+ * 全系統 Maker-First 訂單政策事件（append-only）。
+ * 每個 intent 的 submit／partial／cancel／reprice／fallback 都必須留下持久證據。
+ */
+export const orderPolicyEvents = mysqlTable("order_policy_events", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  /** 同一交易意圖跨 request／重啟的穩定識別；所有 attempt 共用。 */
+  policyRunId: varchar("policyRunId", { length: 40 }).notNull(),
+  userId: int("userId").notNull(),
+  apiKeyId: int("apiKeyId").notNull(),
+  strategyId: int("strategyId"),
+  signalId: int("signalId"),
+  exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
+  eventType: mysqlEnum("eventType", [
+    "INTENT_RECEIVED",
+    "MAKER_SUBMIT",
+    "MAKER_ACCEPTED",
+    "MAKER_REJECTED",
+    "MAKER_PARTIAL",
+    "MAKER_FILLED",
+    "MAKER_CANCEL_REQUESTED",
+    "MAKER_CANCELLED",
+    "MAKER_EXPIRED",
+    "EMERGENCY_FALLBACK",
+    "EMERGENCY_FILLED",
+    "FAILED",
+  ]).notNull(),
+  executionClass: mysqlEnum("executionClass", ["MAKER_ONLY", "EMERGENCY_EXIT"]).notNull(),
+  emergencyReason: mysqlEnum("emergencyReason", ["STOP_LOSS", "DAILY_LOSS_LIMIT", "KILL_SWITCH"]),
+  clientOrderId: varchar("clientOrderId", { length: 40 }).notNull(),
+  exchangeOrderId: varchar("exchangeOrderId", { length: 128 }),
+  symbol: varchar("symbol", { length: 40 }).notNull(),
+  side: mysqlEnum("side", ["buy", "sell"]).notNull(),
+  reduceOnly: boolean("reduceOnly").default(false).notNull(),
+  attempt: int("attempt").default(0).notNull(),
+  requestedSize: decimal("requestedSize", { precision: 30, scale: 12 }).notNull(),
+  filledSize: decimal("filledSize", { precision: 30, scale: 12 }).default("0").notNull(),
+  remainingSize: decimal("remainingSize", { precision: 30, scale: 12 }).notNull(),
+  price: decimal("price", { precision: 30, scale: 12 }),
+  reasonCode: varchar("reasonCode", { length: 120 }),
+  message: text("message"),
+  details: json("details"),
+  eventAt: bigint("eventAt", { mode: "number" }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  ownerTimeIdx: index("order_policy_owner_time_idx").on(table.userId, table.eventAt),
+  runTimeIdx: index("order_policy_run_time_idx").on(table.policyRunId, table.eventAt),
+  clientOrderIdx: index("order_policy_client_order_idx").on(table.clientOrderId),
+  exchangeOrderIdx: index("order_policy_exchange_order_idx").on(table.exchangeOrderId),
+}));
+
+export type OrderPolicyEvent = typeof orderPolicyEvents.$inferSelect;
+export type InsertOrderPolicyEvent = typeof orderPolicyEvents.$inferInsert;
+
+/**
+ * Maker-First recovery Heartbeat 的資料庫真相來源。
+ *
+ * 路由除平台 cron 身分外，還必須以 body.task_uid 命中 enabled row 才可執行；
+ * task_uid 不寫入程式碼或 query string，且可在不重新部署的情況下撤銷。
+ */
+export const orderPolicyRecoverySchedules = mysqlTable("order_policy_recovery_schedules", {
+  id: int("id").autoincrement().primaryKey(),
+  taskUid: varchar("taskUid", { length: 128 }).notNull().unique(),
+  enabled: boolean("enabled").default(true).notNull(),
+  lastRunAt: timestamp("lastRunAt"),
+  lastResult: mysqlEnum("lastResult", ["SUCCESS", "PARTIAL", "FAILED"]),
+  lastSummary: json("lastSummary"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type OrderPolicyRecoverySchedule = typeof orderPolicyRecoverySchedules.$inferSelect;
+export type InsertOrderPolicyRecoverySchedule = typeof orderPolicyRecoverySchedules.$inferInsert;
+
+/**
  * 交易策略配置
  */
 export const strategies = mysqlTable("strategies", {

@@ -123,6 +123,16 @@ function normalizeTradeStatus(status: InsertTrade["status"]): LedgerTradeStatus 
     : "filled";
 }
 
+function resolveRecordedOrderType(
+  legacyOrderType: InsertTrade["orderType"],
+  exchangeResult?: OrderResult,
+): LedgerOrderInput["orderType"] {
+  const finalOrderType = exchangeResult?.policyAudit?.finalOrderType;
+  if (finalOrderType === "market") return "market";
+  if (finalOrderType === "post_only") return "limit";
+  return legacyOrderType;
+}
+
 function inferSignalSource(triggerSource: string | null | undefined): LedgerSignalSource {
   const normalized = (triggerSource || "").toLowerCase();
   if (normalized.includes("manual") || normalized.includes("emergency")) return "manual";
@@ -465,7 +475,7 @@ export async function recordExistingTradeExecution(
     },
     order: {
       side: input.side,
-      orderType: input.orderType,
+      orderType: resolveRecordedOrderType(input.orderType, exchangeResult),
       requestedSize: finiteNumber(input.requestedSize ?? input.size) ?? 0,
       requestedPrice: finiteNumber(input.requestedPrice ?? input.price),
       reduceOnly: Boolean(input.reduceOnly),
@@ -505,4 +515,5 @@ export const __tradeExecutionLedgerTestUtils = {
   inferPnlTruth,
   inferSignalSource,
   normalizeTradeStatus,
+  resolveRecordedOrderType,
 };

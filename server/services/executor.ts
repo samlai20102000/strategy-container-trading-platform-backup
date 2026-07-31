@@ -12,6 +12,11 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import {
+  approvedEmergencyReasonFromCloseReason,
+  closePolicyOptions,
+  orderPolicyFields,
+} from "../exchanges/orderPolicyIntent";
 import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter } from "../exchanges/types";
 import type { MartinState, StrategyState } from "../strategies/base";
@@ -337,7 +342,18 @@ export async function executeSignal(
       else if (ms?.isLong === false) closePosSide = "short";
     }
     console.log(`[executor] 平倉訊號 策略 ${strategy.id} posSide=${closePosSide ?? "unknown"}`);
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSide);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closePosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: options.source,
+        reasonCode: "external_close",
+      }),
+    );
     if (result.success) {
       await createTrade({
         strategyId: strategy.id,
@@ -458,7 +474,18 @@ export async function executeSignal(
         }
       }
       console.log(`[executor] 通用引擎 CLOSE_ALL 策略 ${strategy.id} posSide=${genericClosePosSide ?? "unknown"}`);
-      const result = await adapter.closePositionSmart(strategy.symbol, genericClosePosSide);
+      const result = await adapter.closePositionSmart(
+        strategy.symbol,
+        genericClosePosSide,
+        undefined,
+        undefined,
+        closePolicyOptions({
+          strategyId: strategy.id,
+          signalId,
+          source: options.source,
+          reasonCode: "generic_engine_close",
+        }),
+      );
       if (result.success) {
         await createTrade({
           strategyId: strategy.id,
@@ -567,6 +594,12 @@ export async function executeSignal(
     size,
     price: strategy.orderType === "limit" ? signal.price : undefined,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: options.source,
+      reasonCode: "generic_entry_or_add",
+    }),
   });
 
   // 7. 記錄交易
@@ -703,7 +736,19 @@ async function executeSignalRainbowTrendLadder(
         message: `新七彩虹階梯策略無法證明交易所${expectedSide === "long" ? "多" : "空"}倉 ${sameSidePosition?.size ?? 0} 完全屬於本策略本地數量 ${state.totalSize}；已保持 KILL 鎖定但不送出聚合平倉`,
       };
     }
-    const result = await adapter.closePositionSmart(strategy.symbol, expectedSide);
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(closeReason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      expectedSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: closeReason === "KILL" ? "RISK" : "EXECUTOR",
+        reasonCode: `rainbow_trend_ladder_${closeReason ?? "MANUAL"}`,
+      }, emergencyReason),
+    );
     if (!result.success) {
       return { status: "failed", message: result.errorMessage || "新七彩虹階梯策略平倉失敗；KILL 鎖定與本地狀態均保留", exchangeResponse: result.rawResponse };
     }
@@ -808,6 +853,12 @@ async function executeSignalRainbowTrendLadder(
     orderType: "market",
     size: quantity,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `rainbow_trend_ladder_${action}`,
+    }),
   });
   await createTrade({
     strategyId: strategy.id,
@@ -974,7 +1025,19 @@ async function executeSignalRainbow20415(
 
   if (action === "close") {
     if (!hasPosition) return { status: "skipped", message: "20415 無本地持倉可平倉" };
-    const result = await adapter.closePositionSmart(strategy.symbol, state.isLong ? "long" : "short");
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(closeReason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      state.isLong ? "long" : "short",
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: emergencyReason ? "RISK" : "EXECUTOR",
+        reasonCode: `rainbow_20415_${closeReason ?? "MANUAL"}`,
+      }, emergencyReason),
+    );
     if (!result.success) {
       return { status: "failed", message: result.errorMessage || "20415 平倉失敗", exchangeResponse: result.rawResponse };
     }
@@ -1052,6 +1115,12 @@ async function executeSignalRainbow20415(
     orderType: "market",
     size: quantity,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `rainbow_20415_${action}`,
+    }),
   });
   await createTrade({
     strategyId: strategy.id,
@@ -1366,7 +1435,19 @@ async function executeSignalV35(
   // === 4. 平倉 ===
   if (decision.action === "CLOSE_ALL") {
     const closePosSide = state.isLong ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSide);
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(decision.reason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closePosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: emergencyReason ? "RISK" : "EXECUTOR",
+        reasonCode: `v35_${decision.reason || "close_all"}`,
+      }, emergencyReason),
+    );
     if (result.success) {
       // 計算 realizedPnl
       const exitPriceV35 = result.filledPrice || 0;
@@ -1450,6 +1531,12 @@ async function executeSignalV35(
     orderType: "market",
     size: decision.lotSize,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `v35_${decision.action}`,
+    }),
   });
 
   await createTrade({
@@ -1632,7 +1719,19 @@ async function executeSignalV50(
   // === 4. 平倉 ===
   if (decision.action === "CLOSE_ALL") {
     const closePosSide = state.isLong ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSide);
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(decision.reason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closePosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: emergencyReason ? "RISK" : "EXECUTOR",
+        reasonCode: `v50_${decision.reason || "close_all"}`,
+      }, emergencyReason),
+    );
     if (result.success) {
       // 計算 realizedPnl
       const exitPriceV50 = result.filledPrice || 0;
@@ -1702,6 +1801,12 @@ async function executeSignalV50(
     orderType: "market",
     size: decision.lotSize,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `v50_${decision.action}`,
+    }),
   });
 
   await createTrade({
@@ -1874,7 +1979,19 @@ async function executeSignalV61(
   // === 4. 平倉 ===
   if (decision.action === "CLOSE_ALL") {
     const closePosSide = state.isLong ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSide);
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(decision.reason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closePosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: emergencyReason ? "RISK" : "EXECUTOR",
+        reasonCode: `v61_${decision.reason || "close_all"}`,
+      }, emergencyReason),
+    );
     if (result.success) {
       // 計算 realizedPnl
       const exitPriceV61 = result.filledPrice || 0;
@@ -1959,6 +2076,12 @@ async function executeSignalV61(
     size: decision.lotSize,
     price: v61OrderType === 'limit' ? entryPrice : undefined,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `v61_${decision.action}`,
+    }),
   });
 
   await createTrade({
@@ -2088,7 +2211,22 @@ async function executeSignalV25(
       return { status: "skipped", message: "V2.5 目前無本地持倉，不執行平倉" };
     }
     const closePosSide = state.isLong ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSide);
+    const closeReason: Exclude<V25CloseReason, null> = forcedManualClose
+      ? "OTHER"
+      : signal.v25CloseReason ?? "OTHER";
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(closeReason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closePosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: emergencyReason ? "RISK" : "EXECUTOR",
+        reasonCode: `v25_${closeReason}`,
+      }, emergencyReason),
+    );
     if (!result.success) {
       return {
         status: "failed",
@@ -2120,9 +2258,6 @@ async function executeSignalV25(
       triggerSource: "webhook",
     });
 
-    const closeReason: Exclude<V25CloseReason, null> = forcedManualClose
-      ? "OTHER"
-      : signal.v25CloseReason ?? "OTHER";
     const resetState = applyV25CloseToState(
       state,
       closeReason,
@@ -2211,6 +2346,12 @@ async function executeSignalV25(
     orderType: "market",
     size: orderQuantity,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `v25_${isLong ? "long" : "short"}_entry_or_add`,
+    }),
   });
   await createTrade({
     strategyId: strategy.id,
@@ -2343,7 +2484,19 @@ async function executeSignalV70(
   // === 3. 平倉 ===
   if (decision.action === "CLOSE_ALL") {
     const closePosSide = state.isLong ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closePosSide);
+    const emergencyReason = approvedEmergencyReasonFromCloseReason(decision.reason);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closePosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: emergencyReason ? "RISK" : "EXECUTOR",
+        reasonCode: `v70_${decision.reason || "close_all"}`,
+      }, emergencyReason),
+    );
     if (result.success) {
       const exitPrice = result.filledPrice || 0;
       const dirMult = state.isLong ? 1 : -1;
@@ -2420,6 +2573,12 @@ async function executeSignalV70(
     orderType: "market",
     size: decision.lotSize,
     leverage: strategy.leverage,
+    ...orderPolicyFields({
+      strategyId: strategy.id,
+      signalId,
+      source: "EXECUTOR",
+      reasonCode: `v70_${decision.action}`,
+    }),
   });
 
   await createTrade({
@@ -2548,7 +2707,17 @@ async function handleDailyLossBreach(
       else if (ms?.isLong === false) dailyLossPosSide = "short";
     }
     console.log(`[executor] 每日虧損平倉 策略 ${strategy.id} posSide=${dailyLossPosSide ?? "unknown"}`);
-    const result = await adapter.closePositionSmart(strategy.symbol, dailyLossPosSide);
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      dailyLossPosSide,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        source: "RISK",
+        reasonCode: "daily_loss_limit",
+      }, "DAILY_LOSS_LIMIT"),
+    );
     positionClosed = result.success;
     if (result.success) {
       const exitPriceDL = result.filledPrice || 0;

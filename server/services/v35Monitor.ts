@@ -21,6 +21,7 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import { closePolicyOptions, orderPolicyFields } from "../exchanges/orderPolicyIntent";
 import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import type { Strategy } from "../../drizzle/schema";
@@ -297,6 +298,11 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
+      ...orderPolicyFields({
+        strategyId: strategy.id,
+        source: "EXECUTOR",
+        reasonCode: `v35_monitor_martin_layer_${nextLayer}`,
+      }),
     });
 
     await createTrade({
@@ -599,6 +605,11 @@ async function executeReentry(
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
+      ...orderPolicyFields({
+        strategyId: strategy.id,
+        source: "EXECUTOR",
+        reasonCode: "v35_monitor_trend_reentry",
+      }),
     });
 
     await createTrade({
@@ -659,7 +670,18 @@ async function executeFullClose(
   let exchangeCloseResult: OrderResult | undefined;
   try {
     const closeDir = state.entryTrendBull ? "long" : "short";
-    const result = await adapter.closePositionSmart(strategy.symbol, closeDir);
+    const emergencyReason = triggerSource === "hard_stop_loss" ? "STOP_LOSS" as const : undefined;
+    const result = await adapter.closePositionSmart(
+      strategy.symbol,
+      closeDir,
+      undefined,
+      undefined,
+      closePolicyOptions({
+        strategyId: strategy.id,
+        source: "RISK",
+        reasonCode: triggerSource,
+      }, emergencyReason),
+    );
     exchangeCloseResult = result;
     positionClosed = result.success;
     orderId = result.orderId;

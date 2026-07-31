@@ -90,6 +90,44 @@ async function startServer() {
       });
     }
   });
+  app.post("/api/scheduled/order-policy-recovery", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user || !user.isCron || !user.taskUid) {
+        return res.status(403).json({ error: "cron-only" });
+      }
+      const {
+        isOrderPolicyRecoveryTaskEnabled,
+        updateOrderPolicyRecoveryTaskResult,
+      } = await import("../db");
+      if (!await isOrderPolicyRecoveryTaskEnabled(user.taskUid)) {
+        return res.json({ ok: true, skipped: "orphan-or-disabled-task" });
+      }
+
+      const { runOrderPolicyRecovery } = await import("../services/orderPolicyRecovery");
+      const summary = await runOrderPolicyRecovery({ limit: 1 });
+      const result = summary.failed > 0
+        ? (summary.recovered + summary.resumed > 0 ? "PARTIAL" : "FAILED")
+        : "SUCCESS";
+      await updateOrderPolicyRecoveryTaskResult(user.taskUid, result, { ...summary });
+      if (summary.failed > 0) {
+        return res.status(500).json({
+          error: "order-policy-recovery-partial-failure",
+          summary,
+          context: { url: req.originalUrl, taskUid: user.taskUid },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      return res.json({ ok: true, summary, ranAt: new Date().toISOString() });
+    } catch (e: any) {
+      return res.status(500).json({
+        error: e?.message ?? "unknown",
+        stack: e?.stack,
+        context: { url: req.originalUrl },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
   // 24/7 自動交易 Heartbeat 回調端點
   // 每次 K 線週期觸發（例如 5 分鐘）產生信號並執行交易
   app.post("/api/scheduled/auto-trade", async (req, res) => {

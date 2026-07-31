@@ -7,6 +7,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import * as db from "./db";
 import { createAdapter } from "./exchanges/factory";
+import { closePolicyOptions, orderPolicyFields } from "./exchanges/orderPolicyIntent";
 import { createRuntimeGuardedAdapter } from "./exchanges/runtimeGuardedAdapter";
 import { decrypt, encrypt, generateWebhookSecret, maskKey } from "./lib/crypto";
 import {
@@ -1328,6 +1329,11 @@ const strategiesRouter = router({
                 size: strategyTotalSize,
                 reduceOnly: true,
                 posSide: posSide,
+                ...orderPolicyFields({
+                  strategyId: existing.id,
+                  source: "MANUAL",
+                  reasonCode: "manual_reset_state_exact_close",
+                }),
               });
               if (result.success) {
                 exchangeCloseMsg = `已精確平倉 ${posSide} ${strategyTotalSize}; `;
@@ -1456,6 +1462,11 @@ const strategiesRouter = router({
         size: strategyTotalSize,
         reduceOnly: true,
         posSide: posSide,
+        ...orderPolicyFields({
+          strategyId: strategy.id,
+          source: "MANUAL",
+          reasonCode: "manual_exact_strategy_close",
+        }),
       });
 
       const closedSides: string[] = [];
@@ -1606,7 +1617,17 @@ const strategiesRouter = router({
           for (const pos of activePositions) {
             const posSide = pos.side as "long" | "short";
             console.log(`[emergencyCloseAll] 策略 ${strategy.id} 平倉 ${strategy.symbol} posSide=${posSide}`);
-            const result = await adapter.closePositionSmart(strategy.symbol, posSide);
+            const result = await adapter.closePositionSmart(
+              strategy.symbol,
+              posSide,
+              undefined,
+              undefined,
+              closePolicyOptions({
+                strategyId: strategy.id,
+                source: "RISK",
+                reasonCode: "owner_emergency_close_all",
+              }, "KILL_SWITCH"),
+            );
             if (result.success) {
               await recordExistingTradeExecution({
                 strategyId: strategy.id,
