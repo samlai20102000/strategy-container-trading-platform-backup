@@ -2390,5 +2390,5 @@
 ### Phase 11：完整驗證與交付
 - [x] 執行 schema migration 核對、targeted/full Vitest、TypeScript、正式 build 與 secret/log 靜態掃描
 - [x] 以 production-like DB 驗證 owner isolation、revision/idempotency、preflight persistence、mode switch flat Gate 與 legacy migration
-- [ ] 完成部署工作台桌面／行動瀏覽器 QA，驗證三模式、blocker、history、confirm 與錯誤狀態後修復回歸
-- [ ] 合併隔離工作樹回主專案、更新完成報告、核對 todo、保存 checkpoint 並自動發布；不得自動啟用實盤部署
+- [x] 完成部署工作台桌面／行動瀏覽器 QA：主預覽真實資料、三模式入口、blocker/history 區、策略導流與 390×844 響應式長頁通過；confirm/error/action matrix 另由 typed model、tRPC regression 與 build 驗證，全程未提交 lifecycle 或交易所 mutation
+- [x] 合併隔離工作樹回主專案、更新完成報告、核對 todo、保存 checkpoint 並自動發布；全程未自動啟用實盤部署
