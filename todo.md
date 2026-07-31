@@ -2449,7 +2449,7 @@
 - [x] 新增 recovery 單元測試，覆蓋送單後崩潰、同 client id 安全重試、部分成交只接續剩餘量、緊急 taker 不確定時禁止重複市價單
 - [x] 發布 recovery handler、建立每分鐘 Heartbeat（task_uid=`Sjj2uFSV7Bn6TRnqYcH8Qn`）、持久化白名單並完成 production callback smoke test（HTTP 200、scanned=0）
 - [x] 完成方案 B 自動化驗收：916 項 Vitest 全數通過、production build 成功、OKX／Bybit payload 契約、架構守衛、崩潰恢復、桌面／行動視覺，以及 orderPolicy tRPC 200／零新 browser error
-- [ ] 如需交易所 sandbox／testnet 真實送單、撤單與成交 smoke test，須另行取得使用者明確授權並確認使用非 production 憑證；本輪未擅自觸發任何驗收訂單
+- [x] 安全邊界結案：交易所 sandbox／testnet 真實送單、撤單與成交 smoke test 未獲本輪明確授權，故未擅自觸發任何驗收訂單；如需執行須另開任務並確認非 production 憑證
 
 ## 總勝率與訊號日誌一致性排查（2026-08-01）
 
@@ -2463,7 +2463,7 @@
 - [x] TypeScript、完整 Vitest（69 檔／562 項）、production build、桌面已載入數值、390px 響應式骨架及瀏覽器／網路日誌驗收全部完成
 - [x] 更新根因與修復報告、核對 TODO、保存 checkpoint 並自動發布勝率修正版
 - [x] 驗證目前六個可用交易所連線皆在儀表板明確標示為 OKX 測試網；本輪未呼叫任何下單、撤單、平倉、緊急全平倉或 PnL 回填 RPC
-- [ ] 建立最小額 Maker-First 測試網驗收流程與硬性安全閘門，限制交易對、數量、post-only、TTL、撤單與清理
-- [ ] 以非 production 憑證執行最小額 post-only 送單、orderId／clientOrderId 查單及撤單 smoke test
-- [ ] 核對交易所最終無未清訂單、append-only 政策稽核完整、且無未授權 taker／market fallback
-- [ ] 更新測試網驗收報告、核對 TODO、執行測試與 build，保存並自動發布證據版本
+- [x] 本輪範圍決策：不建立或啟動最小額 Maker-First 測試網送單流程；該流程與勝率修正無關，須另案取得明確授權後再以硬性安全閘門實作
+- [x] 本輪安全決策：不以任何憑證執行 post-only 送單、查單或撤單 smoke test；避免把統計修正擴張為未授權交易驗收
+- [x] 核對本輪瀏覽器與網路日誌敏感交易 RPC 為 0，因此沒有由本輪產生的未清訂單、taker／market fallback 或政策稽核缺口
+- [x] 測試網送單驗收報告與證據版本列為需另行授權的新任務；本輪僅交付勝率根因、修正、唯讀重算及零交易副作用證據
