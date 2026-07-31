@@ -31,6 +31,7 @@ import {
   LogOut,
   PanelLeft,
   Search,
+  ShieldCheck,
   Settings2,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
@@ -44,6 +45,7 @@ const menuItems = [
   { icon: LayoutDashboard, label: "實時控制中心", path: "/" },
   { icon: Settings2, label: "策略交易", path: "/strategies" },
   { icon: Boxes, label: "三模式部署", path: "/deployments" },
+  { icon: ShieldCheck, label: "訂單政策", path: "/order-policy" },
   { icon: FlaskConical, label: "策略工作室", path: "/studio" },
   { icon: History, label: "回測中心", path: "/backtest", hasBadge: true },
   { icon: Database, label: "參數快照庫", path: "/snapshots" },

@@ -1,5 +1,6 @@
 import type { ApiKey } from "../../drizzle/schema";
 import { decrypt } from "../lib/crypto";
+import { getOrderPolicyRuntimeConfig } from "../services/orderPolicySettings";
 import { BybitAdapter } from "./bybit";
 import { createMakerFirstAdapter } from "./makerFirstFacade";
 import { OKXAdapter } from "./okx";
@@ -43,13 +44,16 @@ function createRawAdapter(apiKeyRecord: AdapterCredentials): ExchangeAdapter {
 
 export function createAdapter(apiKeyRecord: AdapterCredentials): ExchangeAdapter {
   const rawAdapter = createRawAdapter(apiKeyRecord);
+  const userId = Number(apiKeyRecord.userId ?? 0);
 
   // 唯一建立入口即強制套用全域方案 B。缺少 owner/API key 身分時仍可使用
   // readonly／connection probe，但任何 mutation 會由 facade fail-closed 拒絕。
   return createMakerFirstAdapter(rawAdapter, {
-    userId: Number(apiKeyRecord.userId ?? 0),
+    userId,
     apiKeyId: Number(apiKeyRecord.id ?? 0),
-  });
+  }, userId > 0
+    ? () => getOrderPolicyRuntimeConfig(userId)
+    : undefined);
 }
 
 /**

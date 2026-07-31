@@ -24,6 +24,7 @@ import { autoTradeRouter } from "./routers/autoTrade.router";
 import { rainbowTrendLadderAiRouter } from "./routers/rainbowTrendLadderAi.router";
 import { tradeJournalRouter } from "./routers/tradeJournal.router";
 import { deploymentsRouter } from "./routers/deployments.router";
+import { orderPolicyRouter } from "./routers/orderPolicy.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
 import { getBoundStrategyConfig, pickStrategyConfigState } from "./services/strategySnapshotConfig";
@@ -2677,6 +2678,7 @@ export const appRouter = router({
   apiKeys: apiKeysRouter,
   strategies: strategiesRouter,
   deployments: deploymentsRouter,
+  orderPolicy: orderPolicyRouter,
   signals: signalsRouter,
   tradeJournal: tradeJournalRouter,
   dashboard: dashboardRouter,

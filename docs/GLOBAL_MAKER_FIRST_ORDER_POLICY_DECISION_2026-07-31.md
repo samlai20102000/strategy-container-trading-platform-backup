@@ -2,6 +2,8 @@
 
 > **重要風險聲明：**以下是交易系統工程與風控分析，不保證降低總交易成本或避免損失。Maker-only 可以避免該筆訂單立即成為 taker，但不能保證成交；任何「保證 maker」與「保證立刻成交」的要求在撮合機制上互相衝突。最終政策由使用者決定並承擔交易風險。
 
+> **決策狀態（2026-07-31）：**使用者已明確選定**方案 B：分層 Maker-First**，本決策所述中央政策、全路徑遷移、durable recovery、設定控制面與架構守衛均已實作。最終範圍與驗收證據請見 [`GLOBAL_MAKER_FIRST_IMPLEMENTATION_REPORT_2026-07-31.md`](./GLOBAL_MAKER_FIRST_IMPLEMENTATION_REPORT_2026-07-31.md)。
+
 ## 一、結論先行
 
 本次問題不是單一原因，而是三個層次同時存在：
@@ -130,17 +132,11 @@ OKX `closePositionSmart` 的現行流程是：送普通 limit、等待、查詢�
 
 **我的工程與風控建議是方案 B。** 開倉／加倉沒有必要為了成交而 market；正常止盈可耐心 maker-only；但真正的止損、最大日虧、Kill Switch 若永不允許 taker，可能失去風控功能。Emergency fallback 必須是獨立、預設關閉、明確授權、完整告警與稽核的政策，不能由策略自行決定。
 
-## 七、請使用者決定的項目
+## 七、已確認決策與執行邊界
 
-請回覆以下其中一組：
+使用者已選定**方案 B**：開倉、加倉與正常平倉全部 post-only；只有硬止損、最大日虧及 Kill Switch 在「2 秒 × 2 次 post-only 仍未完成」後，可對剩餘量做一次具完整稽核的 emergency taker fallback。三種 fallback 可在「訂單政策」控制面個別關閉，但不能新增其他緊急理由，也不能放寬 reduce-only、部分成交剩餘量或撤單確認要求。
 
-1. **方案 A：任何情況永不市價／永不 taker fallback。** 接受緊急平倉可能長時間未成交。
-2. **方案 B（建議）：**開倉、加倉、正常平倉全部 post-only；只有止損、最大日虧及 Kill Switch 在「2 秒 × 2 次 post-only 仍未成交」後，可對剩餘量做一次明確記錄的 taker emergency fallback。
-3. 自訂：請指定 emergency 等待秒數、重掛次數，以及哪些風控原因可 fallback。
-
-另請確認是否同意將生產託管升級為 Reserved／always-on，以支援秒級撤單、重掛及重啟恢復。若不同意，實作可完成，但不能誠實保證 Autoscale 環境下的秒級處理時效。
-
-在取得上述決定前，不會修改目前實盤送單行為，也不會送出任何交易。
+本輪沒有使用 production 或 testnet 憑證送出驗收訂單。交易所 sandbox／testnet 的真實送單、撤單、部分成交與費率驗收，須先取得使用者對測試憑證、交易對、名義金額、最大損失與停止條件的另行明確授權。
 
 ## 參考資料
 

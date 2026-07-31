@@ -44,6 +44,10 @@ export interface MakerFirstPolicyConfig {
   emergencyTtlMs: number;
   /** 緊急 taker 前必須完成的 maker-only 提交次數。 */
   emergencyMakerAttempts: number;
+  /** 三種既有緊急 taker fallback 可被使用者縮窄關閉，但不得新增其他原因。 */
+  allowStopLossTaker: boolean;
+  allowDailyLossTaker: boolean;
+  allowKillSwitchTaker: boolean;
   /** 單次 request 內的查單間隔；不建立 setInterval 或背景 timer。 */
   pollIntervalMs: number;
 }
@@ -53,6 +57,9 @@ export const DEFAULT_MAKER_FIRST_POLICY: Readonly<MakerFirstPolicyConfig> = Obje
   standardMaxAttempts: 3,
   emergencyTtlMs: 2_000,
   emergencyMakerAttempts: 2,
+  allowStopLossTaker: true,
+  allowDailyLossTaker: true,
+  allowKillSwitchTaker: true,
   pollIntervalMs: 500,
 });
 
@@ -76,6 +83,16 @@ const APPROVED_EMERGENCY_REASONS = new Set<EmergencyReason>([
   "DAILY_LOSS_LIMIT",
   "KILL_SWITCH",
 ]);
+
+function emergencyTakerEnabled(
+  config: Readonly<MakerFirstPolicyConfig>,
+  reason: EmergencyReason | undefined,
+): boolean {
+  if (reason === "STOP_LOSS") return config.allowStopLossTaker;
+  if (reason === "DAILY_LOSS_LIMIT") return config.allowDailyLossTaker;
+  if (reason === "KILL_SWITCH") return config.allowKillSwitchTaker;
+  return false;
+}
 
 class AuditUnavailableError extends Error {
   constructor() {
@@ -563,6 +580,35 @@ export async function executeMakerFirst(
       };
     }
 
+    if (executionClass === "EMERGENCY_EXIT" && !emergencyTakerEnabled(config, emergencyReason)) {
+      await audit("MAKER_EXPIRED", {
+        attempt: attempts,
+        reasonCode: "EMERGENCY_TAKER_DISABLED",
+        message: `${emergencyReason ?? "UNKNOWN"} 的 taker fallback 已由使用者政策關閉；剩餘量不轉市價`,
+      });
+      return {
+        success: false,
+        rawResponse: lastRawResponse,
+        errorMessage: "緊急 maker-only 嘗試已達上限；此原因的 taker fallback 已關閉",
+        filledSize: totalFilled || undefined,
+        executionStatus: totalFilled > 0 ? "partially_filled" : "cancelled",
+        executedSide: intent.side,
+        executedReduceOnly: true,
+        policyAudit: {
+          policyVersion: MAKER_FIRST_POLICY_VERSION,
+          executionClass,
+          emergencyReason,
+          attempts,
+          fallbackUsed: false,
+          requestedSize,
+          filledSize: totalFilled,
+          remainingSize: remaining(),
+          finalOrderType: "post_only",
+          clientOrderIds,
+        },
+      };
+    }
+
     if (executionClass === "EMERGENCY_EXIT") {
       const emergencyClientOrderId = createClientOrderId(attempts + 1, true);
       clientOrderIds.push(emergencyClientOrderId);
@@ -570,7 +616,7 @@ export async function executeMakerFirst(
         clientOrderId: emergencyClientOrderId,
         attempt: attempts + 1,
         reasonCode: emergencyReason,
-        message: "2 秒 × 2 次 maker-only 後，對剩餘量啟用已批准 taker 緊急退出",
+        message: `${config.emergencyTtlMs}ms × ${config.emergencyMakerAttempts} 次 maker-only 後，對剩餘量啟用已批准 taker 緊急退出`,
       });
       const marketRequested = remaining();
       const market = await adapter.placeOrder({
@@ -745,34 +791,55 @@ async function executeClosePositions(
 /**
  * Factory 層強制套用的 Proxy：攔截所有 mutation；readonly 方法仍綁定原 adapter。
  */
+export type MakerFirstPolicySource = Readonly<MakerFirstPolicyConfig>
+  | (() => Promise<Readonly<MakerFirstPolicyConfig>>);
+
+async function resolvePolicyConfig(source: MakerFirstPolicySource): Promise<Readonly<MakerFirstPolicyConfig>> {
+  return typeof source === "function" ? source() : source;
+}
+
 export function createMakerFirstAdapter(
   adapter: ExchangeAdapter,
   identity: MakerFirstAuditIdentity,
-  config: Readonly<MakerFirstPolicyConfig> = DEFAULT_MAKER_FIRST_POLICY,
+  config: MakerFirstPolicySource = DEFAULT_MAKER_FIRST_POLICY,
   dependencies: MakerFirstDependencies = {},
 ): ExchangeAdapter {
   return new Proxy(adapter, {
     get(target, property) {
       if (property === "placeOrder") {
-        return async (params: OrderParams): Promise<OrderResult> => executeMakerFirst(target, identity, {
-          symbol: params.symbol,
-          side: params.side,
-          size: params.size,
-          targetPrice: params.price,
-          reduceOnly: params.reduceOnly,
-          leverage: params.leverage,
-          posSide: params.posSide,
-          executionClass: params.executionClass,
-          emergencyReason: params.emergencyReason,
-          policyContext: params.policyContext,
-        }, config, dependencies);
+        return async (params: OrderParams): Promise<OrderResult> => executeMakerFirst(
+          target,
+          identity,
+          {
+            symbol: params.symbol,
+            side: params.side,
+            size: params.size,
+            targetPrice: params.price,
+            reduceOnly: params.reduceOnly,
+            leverage: params.leverage,
+            posSide: params.posSide,
+            executionClass: params.executionClass,
+            emergencyReason: params.emergencyReason,
+            policyContext: params.policyContext,
+          },
+          await resolvePolicyConfig(config),
+          dependencies,
+        );
       }
       if (property === "closePosition") {
         return async (
           symbol: string,
           posSide?: "long" | "short" | "net",
           options?: CloseExecutionOptions,
-        ): Promise<OrderResult> => executeClosePositions(target, identity, symbol, posSide, options, config, dependencies);
+        ): Promise<OrderResult> => executeClosePositions(
+          target,
+          identity,
+          symbol,
+          posSide,
+          options,
+          await resolvePolicyConfig(config),
+          dependencies,
+        );
       }
       if (property === "closePositionSmart") {
         return async (
@@ -781,7 +848,15 @@ export function createMakerFirstAdapter(
           _timeoutMs?: number,
           _priceOffsetPct?: number,
           options?: CloseExecutionOptions,
-        ): Promise<OrderResult> => executeClosePositions(target, identity, symbol, posSide, options, config, dependencies);
+        ): Promise<OrderResult> => executeClosePositions(
+          target,
+          identity,
+          symbol,
+          posSide,
+          options,
+          await resolvePolicyConfig(config),
+          dependencies,
+        );
       }
       const value = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;

@@ -119,6 +119,15 @@ function parseSnapshot(events: OrderPolicyEventRow[]): {
     standardMaxAttempts: Math.max(1, Math.trunc(positive(rawConfig.standardMaxAttempts) ?? DEFAULT_MAKER_FIRST_POLICY.standardMaxAttempts)),
     emergencyTtlMs: positive(rawConfig.emergencyTtlMs) ?? DEFAULT_MAKER_FIRST_POLICY.emergencyTtlMs,
     emergencyMakerAttempts: Math.max(1, Math.trunc(positive(rawConfig.emergencyMakerAttempts) ?? DEFAULT_MAKER_FIRST_POLICY.emergencyMakerAttempts)),
+    allowStopLossTaker: typeof rawConfig.allowStopLossTaker === "boolean"
+      ? rawConfig.allowStopLossTaker
+      : DEFAULT_MAKER_FIRST_POLICY.allowStopLossTaker,
+    allowDailyLossTaker: typeof rawConfig.allowDailyLossTaker === "boolean"
+      ? rawConfig.allowDailyLossTaker
+      : DEFAULT_MAKER_FIRST_POLICY.allowDailyLossTaker,
+    allowKillSwitchTaker: typeof rawConfig.allowKillSwitchTaker === "boolean"
+      ? rawConfig.allowKillSwitchTaker
+      : DEFAULT_MAKER_FIRST_POLICY.allowKillSwitchTaker,
     pollIntervalMs: positive(rawConfig.pollIntervalMs) ?? DEFAULT_MAKER_FIRST_POLICY.pollIntervalMs,
   };
   return { origin, intent, config };

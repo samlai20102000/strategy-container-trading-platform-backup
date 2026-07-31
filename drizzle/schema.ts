@@ -140,6 +140,48 @@ export type OrderPolicyRecoverySchedule = typeof orderPolicyRecoverySchedules.$i
 export type InsertOrderPolicyRecoverySchedule = typeof orderPolicyRecoverySchedules.$inferInsert;
 
 /**
+ * 每使用者全域 Maker-First 政策設定。
+ *
+ * 只有 TTL、maker 次數與既有三種緊急 taker 條件可以調整；一般路徑永遠
+ * maker-only、緊急單永遠 reduce-only 等不可放寬的不變量不存入設定。
+ */
+export const orderPolicySettings = mysqlTable("order_policy_settings", {
+  userId: int("userId").primaryKey(),
+  standardTtlMs: int("standardTtlMs").default(30_000).notNull(),
+  standardMaxAttempts: int("standardMaxAttempts").default(3).notNull(),
+  emergencyTtlMs: int("emergencyTtlMs").default(2_000).notNull(),
+  emergencyMakerAttempts: int("emergencyMakerAttempts").default(2).notNull(),
+  allowStopLossTaker: boolean("allowStopLossTaker").default(true).notNull(),
+  allowDailyLossTaker: boolean("allowDailyLossTaker").default(true).notNull(),
+  allowKillSwitchTaker: boolean("allowKillSwitchTaker").default(true).notNull(),
+  revision: int("revision").default(0).notNull(),
+  updatedByUserId: int("updatedByUserId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type OrderPolicySetting = typeof orderPolicySettings.$inferSelect;
+export type InsertOrderPolicySetting = typeof orderPolicySettings.$inferInsert;
+
+/** Maker-First 設定變更歷史；只新增、不更新、不刪除。 */
+export const orderPolicySettingEvents = mysqlTable("order_policy_setting_events", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  revision: int("revision").notNull(),
+  eventType: mysqlEnum("eventType", ["CREATED", "UPDATED", "RESET"]).notNull(),
+  previousConfig: json("previousConfig"),
+  nextConfig: json("nextConfig").notNull(),
+  reason: varchar("reason", { length: 500 }),
+  eventAt: bigint("eventAt", { mode: "number" }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  ownerTimeIdx: index("order_policy_setting_owner_time_idx").on(table.userId, table.eventAt),
+}));
+
+export type OrderPolicySettingEvent = typeof orderPolicySettingEvents.$inferSelect;
+export type InsertOrderPolicySettingEvent = typeof orderPolicySettingEvents.$inferInsert;
+
+/**
  * 交易策略配置
  */
 export const strategies = mysqlTable("strategies", {

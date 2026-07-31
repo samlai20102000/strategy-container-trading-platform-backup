@@ -19,6 +19,9 @@ const FAST_POLICY: Readonly<MakerFirstPolicyConfig> = Object.freeze({
   emergencyTtlMs: 4,
   emergencyMakerAttempts: 2,
   pollIntervalMs: 2,
+  allowStopLossTaker: true,
+  allowDailyLossTaker: true,
+  allowKillSwitchTaker: true,
 });
 
 function ok(orderId?: string, extra: Partial<OrderResult> = {}): OrderResult {

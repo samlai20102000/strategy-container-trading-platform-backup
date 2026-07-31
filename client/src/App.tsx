@@ -15,6 +15,7 @@ import Backtest from "./pages/Backtest";
 import ParameterSnapshots from "./pages/ParameterSnapshots";
 import ParameterScan from "./pages/ParameterScan";
 import DeploymentWorkbench from "./pages/DeploymentWorkbench";
+import OrderPolicy from "./pages/OrderPolicy";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -23,6 +24,7 @@ function Router() {
       <Route path={"/"} component={Home} />
       <Route path={"/strategies"} component={Strategies} />
       <Route path={"/deployments"} component={DeploymentWorkbench} />
+      <Route path={"/order-policy"} component={OrderPolicy} />
       <Route path={"/studio"} component={Studio} />
       <Route path={"/signals"} component={Signals} />
       <Route path={"/positions"} component={Positions} />
