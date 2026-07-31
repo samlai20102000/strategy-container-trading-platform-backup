@@ -631,9 +631,19 @@ type PerfItem = {
   enabled: boolean;
   tradeCount: number;
   closedTradeCount: number;
+  decisiveTradeCount: number;
+  wins: number;
+  losses: number;
+  breakevens: number;
   winRate: number;
   totalPnl: number;
   maxDrawdown: number;
+  pendingPnlCount: number;
+  unresolvedPnlCount: number;
+  excludedEntryCount: number;
+  excludedNonFilledCloseCount: number;
+  duplicateExcludedCount: number;
+  aggregationUnit: "realized_close";
 };
 
 function BlockA2_Performance({
@@ -651,8 +661,17 @@ function BlockA2_Performance({
 
   const totalPnl = perfData.reduce((s, p) => s + p.totalPnl, 0);
   const totalClosed = perfData.reduce((s, p) => s + p.closedTradeCount, 0);
-  const totalWins = perfData.reduce((s, p) => s + Math.round(p.winRate * p.closedTradeCount / 100), 0);
-  const overallWinRate = totalClosed > 0 ? (totalWins / totalClosed) * 100 : 0;
+  const totalDecisive = perfData.reduce((s, p) => s + p.decisiveTradeCount, 0);
+  const totalWins = perfData.reduce((s, p) => s + p.wins, 0);
+  const totalLosses = perfData.reduce((s, p) => s + p.losses, 0);
+  const totalBreakevens = perfData.reduce((s, p) => s + p.breakevens, 0);
+  const overallWinRate = totalDecisive > 0 ? (totalWins / totalDecisive) * 100 : null;
+  const pendingPnlCount = perfData.reduce((s, p) => s + p.pendingPnlCount, 0);
+  const unresolvedPnlCount = perfData.reduce((s, p) => s + p.unresolvedPnlCount, 0);
+  const excludedRowCount = perfData.reduce(
+    (s, p) => s + p.excludedEntryCount + p.excludedNonFilledCloseCount + p.duplicateExcludedCount,
+    0,
+  );
   const maxDD = Math.max(...perfData.map((p) => p.maxDrawdown), 0);
   const totalTrades = perfData.reduce((s, p) => s + p.tradeCount, 0);
 
@@ -663,17 +682,20 @@ function BlockA2_Performance({
           title="累計已實現 PnL"
           icon={<TrendingUp className="h-4 w-4 text-sky-400" />}
           value={<PnlValue value={totalPnl} className="text-xl font-bold" />}
-          sub={`共 ${totalClosed} 筆平倉交易`}
+          sub={`共 ${totalClosed} 筆已知平倉結果`}
         />
         <StatCard
           title="總勝率"
           icon={<Trophy className="h-4 w-4 text-amber-400" />}
           value={
-            <span className={cn("text-xl font-bold font-mono", overallWinRate >= 50 ? "text-emerald-400" : "text-rose-400")}>
-              {overallWinRate.toFixed(1)}%
+            <span className={cn(
+              "text-xl font-bold font-mono",
+              overallWinRate === null ? "text-muted-foreground" : overallWinRate >= 50 ? "text-emerald-400" : "text-rose-400",
+            )}>
+              {overallWinRate === null ? "—" : `${overallWinRate.toFixed(1)}%`}
             </span>
           }
-          sub={`${totalWins} 勝 / ${totalClosed - totalWins} 負`}
+          sub={`${totalWins} 勝 / ${totalLosses} 負${totalBreakevens > 0 ? ` · ${totalBreakevens} 持平` : ""}`}
         />
         <StatCard
           title="最大回撤"
@@ -698,7 +720,7 @@ function BlockA2_Performance({
       </div>
 
       {/* Actions row */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={() => setExpanded(!expanded)}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -722,14 +744,28 @@ function BlockA2_Performance({
         )}
       </div>
 
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+        <Badge variant="outline" className="h-5 border-sky-500/40 bg-sky-500/10 text-[10px] text-sky-300">
+          口徑：已成交平倉淨 PnL
+        </Badge>
+        <span>勝率分母 {totalDecisive} 筆，不含 {totalBreakevens} 筆持平</span>
+        <span>已排除 {excludedRowCount} 筆開倉／非成交／重複 row</span>
+        {(pendingPnlCount > 0 || unresolvedPnlCount > 0) && (
+          <span className="text-amber-300">
+            待對帳 {pendingPnlCount} · 未解 {unresolvedPnlCount}
+          </span>
+        )}
+      </div>
+
       {expanded && (
-        <div className="rounded-lg border border-border bg-card/50 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-lg border border-border bg-card/50">
+          <table className="min-w-[880px] w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/30">
                 <th className="px-3 py-2 text-left font-medium text-muted-foreground">策略</th>
                 <th className="px-3 py-2 text-left font-medium text-muted-foreground">幣種</th>
-                <th className="px-3 py-2 text-right font-medium text-muted-foreground">平倉數</th>
+                <th className="px-3 py-2 text-right font-medium text-muted-foreground">已知平倉</th>
+                <th className="px-3 py-2 text-right font-medium text-muted-foreground">勝 / 負 / 平</th>
                 <th className="px-3 py-2 text-right font-medium text-muted-foreground">勝率</th>
                 <th className="px-3 py-2 text-right font-medium text-muted-foreground">累計 PnL</th>
                 <th className="px-3 py-2 text-right font-medium text-muted-foreground">最大回撤</th>
@@ -746,9 +782,16 @@ function BlockA2_Performance({
                   </td>
                   <td className="px-3 py-2 font-mono text-xs">{p.symbol}</td>
                   <td className="px-3 py-2 text-right font-mono">{p.closedTradeCount}</td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    <span className="text-emerald-400">{p.wins}</span>
+                    <span className="text-muted-foreground"> / </span>
+                    <span className="text-rose-400">{p.losses}</span>
+                    <span className="text-muted-foreground"> / </span>
+                    <span className="text-zinc-300">{p.breakevens}</span>
+                  </td>
                   <td className="px-3 py-2 text-right">
                     <span className={cn("font-mono", p.winRate >= 50 ? "text-emerald-400" : "text-rose-400")}>
-                      {p.closedTradeCount > 0 ? `${p.winRate.toFixed(1)}%` : "-"}
+                      {p.decisiveTradeCount > 0 ? `${p.winRate.toFixed(1)}%` : "-"}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">

@@ -2450,3 +2450,20 @@
 - [x] 發布 recovery handler、建立每分鐘 Heartbeat（task_uid=`Sjj2uFSV7Bn6TRnqYcH8Qn`）、持久化白名單並完成 production callback smoke test（HTTP 200、scanned=0）
 - [x] 完成方案 B 自動化驗收：916 項 Vitest 全數通過、production build 成功、OKX／Bybit payload 契約、架構守衛、崩潰恢復、桌面／行動視覺，以及 orderPolicy tRPC 200／零新 browser error
 - [ ] 如需交易所 sandbox／testnet 真實送單、撤單與成交 smoke test，須另行取得使用者明確授權並確認使用非 production 憑證；本輪未擅自觸發任何驗收訂單
+
+## 總勝率與訊號日誌一致性排查（2026-08-01）
+
+- [x] 依使用者截圖封存異常：總勝率顯示 43.9%（90 勝／115 負），但近期 20415 訊號日誌多筆止盈為正，並混有重複平倉、未實現、unknown 損益與 Bar-Lock 已跳過紀錄
+- [x] 定義唯一勝率口徑：只計入 `filled + reduceOnly + known net realized PnL` 的已實現平倉結果，以 exchangeTradeId／orderId／executionId／tradeId 穩定去重；勝、負、持平分開，cycleId 僅作生命週期分組，不在歷史契約不一致時強制縮成一場
+- [x] 以真實 signals、trades、positions／legs 與 execution ledger 重建 90 勝／115 負來源：實際為 90 正、1 負、114 筆開／加倉零 PnL；Bar-Lock skipped 均未連到交易 row
+- [x] 追蹤儀表板與交易報告的前後端勝率查詢，確認根因為 raw trade row 未檢查 reduceOnly／filled、零 PnL 被放入分母，以及前端從已四捨五入百分比反推勝場
+- [x] 修正全域勝率統計與交易結果去重，讓儀表板、策略明細與交易報告共用同一來源；訊號日誌保留 `unknown／未解／不適用` 資料品質語義且不再污染勝率
+- [x] 新增 Vitest 覆蓋開／加倉零 PnL、failed／cancelled、pending／unresolved、同訂單重複 row、多 fill 平倉、net PnL 優先、持平及回撤；並以真實資料證明 Bar-Lock skipped 沒有交易 row
+- [x] 以正式摘要函式重算全期間、近 30 日、近 7 日及逐策略資料，確認儀表板與交易報告逐項一致；全期間由 43.9% 修正為 98.9%（90 勝／1 負／24 持平，分母 91）且無交易副作用
+- [x] TypeScript、完整 Vitest（69 檔／562 項）、production build、桌面已載入數值、390px 響應式骨架及瀏覽器／網路日誌驗收全部完成
+- [x] 更新根因與修復報告、核對 TODO、保存 checkpoint 並自動發布勝率修正版
+- [x] 驗證目前六個可用交易所連線皆在儀表板明確標示為 OKX 測試網；本輪未呼叫任何下單、撤單、平倉、緊急全平倉或 PnL 回填 RPC
+- [ ] 建立最小額 Maker-First 測試網驗收流程與硬性安全閘門，限制交易對、數量、post-only、TTL、撤單與清理
+- [ ] 以非 production 憑證執行最小額 post-only 送單、orderId／clientOrderId 查單及撤單 smoke test
+- [ ] 核對交易所最終無未清訂單、append-only 政策稽核完整、且無未授權 taker／market fallback
+- [ ] 更新測試網驗收報告、核對 TODO、執行測試與 build，保存並自動發布證據版本

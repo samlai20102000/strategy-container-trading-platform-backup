@@ -2215,11 +2215,19 @@ const performanceRouter = router({
           enabled: s.enabled,
           tradeCount: strategyTrades.length,
           closedTradeCount: summary.closedTradeCount,
-          winRate: summary.closedTradeCount > 0
-            ? (summary.wins / summary.closedTradeCount) * 100
-            : 0,
+          decisiveTradeCount: summary.decisiveTradeCount,
+          wins: summary.wins,
+          losses: summary.losses,
+          breakevens: summary.breakevens,
+          winRate: summary.winRate,
           totalPnl: summary.totalPnl,
           maxDrawdown: summary.maxDrawdown,
+          pendingPnlCount: summary.pendingPnlCount,
+          unresolvedPnlCount: summary.unresolvedPnlCount,
+          excludedEntryCount: summary.excludedEntryCount,
+          excludedNonFilledCloseCount: summary.excludedNonFilledCloseCount,
+          duplicateExcludedCount: summary.duplicateExcludedCount,
+          aggregationUnit: "realized_close" as const,
         };
       });
     }),

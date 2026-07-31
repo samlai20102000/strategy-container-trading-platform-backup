@@ -40,9 +40,9 @@ describe("V4/V35 盈虧與狀態閉環", () => {
 
   it("performance.byStrategy 共用摘要能保留小額非零 totalPnl", () => {
     const summary = summarizeStrategyPerformance([
-      { realizedPnl: "0.005000", createdAt: new Date("2026-07-25T01:00:00Z") },
-      { realizedPnl: "0.002990", createdAt: new Date("2026-07-25T02:00:00Z") },
-      { realizedPnl: null, createdAt: new Date("2026-07-25T03:00:00Z") },
+      { id: 1, reduceOnly: true, status: "filled", realizedPnl: "0.005000", createdAt: new Date("2026-07-25T01:00:00Z") },
+      { id: 2, reduceOnly: true, status: "filled", realizedPnl: "0.002990", createdAt: new Date("2026-07-25T02:00:00Z") },
+      { id: 3, reduceOnly: true, status: "filled", realizedPnl: null, createdAt: new Date("2026-07-25T03:00:00Z") },
     ]);
     expect(summary.closedTradeCount).toBe(2);
     expect(summary.wins).toBe(2);
@@ -52,9 +52,9 @@ describe("V4/V35 盈虧與狀態閉環", () => {
 
   it("非法舊 PnL 不污染總盈虧，且累計曲線正確計算回撤", () => {
     const summary = summarizeStrategyPerformance([
-      { realizedPnl: "2", createdAt: 1 },
-      { realizedPnl: "not-a-number", createdAt: 2 },
-      { realizedPnl: "-0.5", createdAt: 3 },
+      { id: 1, reduceOnly: true, status: "filled", realizedPnl: "2", createdAt: 1 },
+      { id: 2, reduceOnly: true, status: "filled", realizedPnl: "not-a-number", createdAt: 2 },
+      { id: 3, reduceOnly: true, status: "filled", realizedPnl: "-0.5", createdAt: 3 },
     ]);
     expect(summary.closedTradeCount).toBe(2);
     expect(summary.totalPnl).toBe(1.5);

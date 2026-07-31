@@ -1,0 +1,317 @@
+{
+  "generatedAt": "2026-07-31T16:36:27.802Z",
+  "filters": {
+    "startTime": "2026-07-25T00:00:00.000Z",
+    "endTime": null
+  },
+  "strategies": [
+    {
+      "userId": 1,
+      "strategyId": 60008,
+      "strategyName": "KAMA 3K V6.1 高頻掃射 - 導入",
+      "rawRows": 124,
+      "old": {
+        "denominator": 93,
+        "wins": 51,
+        "nonWins": 42,
+        "winRatePct": 54.83870967741935
+      },
+      "corrected": {
+        "closedTradeCount": 52,
+        "decisiveTradeCount": 52,
+        "wins": 51,
+        "losses": 1,
+        "breakevens": 0,
+        "winRate": 98.07692307692307,
+        "totalPnl": 257.36957655,
+        "maxDrawdown": 6.925593450000001,
+        "pendingPnlCount": 0,
+        "unresolvedPnlCount": 0,
+        "excludedEntryCount": 72,
+        "excludedNonFilledCloseCount": 0,
+        "duplicateExcludedCount": 0
+      },
+      "knownCloseQuality": [
+        {
+          "dataQuality": "legacy_unresolved",
+          "reconciliationStatus": "not_required",
+          "pnlSource": "legacy",
+          "pnlField": "net+realized",
+          "sign": "win",
+          "count": 17
+        },
+        {
+          "dataQuality": "exchange_confirmed",
+          "reconciliationStatus": "confirmed",
+          "pnlSource": "exchange_settlement",
+          "pnlField": "net+realized",
+          "sign": "loss",
+          "count": 1
+        },
+        {
+          "dataQuality": "legacy_unresolved",
+          "reconciliationStatus": "not_required",
+          "pnlSource": "unavailable",
+          "pnlField": "realized-only",
+          "sign": "win",
+          "count": 2
+        },
+        {
+          "dataQuality": "legacy_unresolved",
+          "reconciliationStatus": "not_required",
+          "pnlSource": "unknown",
+          "pnlField": "realized-only",
+          "sign": "win",
+          "count": 4
+        },
+        {
+          "dataQuality": "exchange_confirmed",
+          "reconciliationStatus": "confirmed",
+          "pnlSource": "exchange_settlement",
+          "pnlField": "net+realized",
+          "sign": "win",
+          "count": 28
+        }
+      ]
+    },
+    {
+      "userId": 1,
+      "strategyId": 90003,
+      "strategyName": "20415七彩虹馬丁策略 - 導入",
+      "rawRows": 132,
+      "old": {
+        "denominator": 91,
+        "wins": 30,
+        "nonWins": 61,
+        "winRatePct": 32.967032967032964
+      },
+      "corrected": {
+        "closedTradeCount": 54,
+        "decisiveTradeCount": 30,
+        "wins": 30,
+        "losses": 0,
+        "breakevens": 24,
+        "winRate": 100,
+        "totalPnl": 10.84090443,
+        "maxDrawdown": 0,
+        "pendingPnlCount": 0,
+        "unresolvedPnlCount": 1,
+        "excludedEntryCount": 77,
+        "excludedNonFilledCloseCount": 0,
+        "duplicateExcludedCount": 0
+      },
+      "knownCloseQuality": [
+        {
+          "dataQuality": "exchange_confirmed",
+          "reconciliationStatus": "confirmed",
+          "pnlSource": "exchange_settlement",
+          "pnlField": "net+realized",
+          "sign": "win",
+          "count": 29
+        },
+        {
+          "dataQuality": "exchange_confirmed",
+          "reconciliationStatus": "confirmed",
+          "pnlSource": "exchange",
+          "pnlField": "net+realized",
+          "sign": "win",
+          "count": 1
+        },
+        {
+          "dataQuality": "exchange_confirmed",
+          "reconciliationStatus": "confirmed",
+          "pnlSource": "exchange_settlement",
+          "pnlField": "net+realized",
+          "sign": "breakeven",
+          "count": 24
+        }
+      ]
+    },
+    {
+      "userId": 1,
+      "strategyId": 120011,
+      "strategyName": "V4.0 KAMA+3K 動態馬丁策略（百分比控倉） - 導入",
+      "rawRows": 32,
+      "old": {
+        "denominator": 26,
+        "wins": 9,
+        "nonWins": 17,
+        "winRatePct": 34.61538461538461
+      },
+      "corrected": {
+        "closedTradeCount": 9,
+        "decisiveTradeCount": 9,
+        "wins": 9,
+        "losses": 0,
+        "breakevens": 0,
+        "winRate": 100,
+        "totalPnl": 9.97407532,
+        "maxDrawdown": 0,
+        "pendingPnlCount": 0,
+        "unresolvedPnlCount": 0,
+        "excludedEntryCount": 23,
+        "excludedNonFilledCloseCount": 0,
+        "duplicateExcludedCount": 0
+      },
+      "knownCloseQuality": [
+        {
+          "dataQuality": "legacy_unresolved",
+          "reconciliationStatus": "not_required",
+          "pnlSource": "exchange",
+          "pnlField": "net+realized",
+          "sign": "win",
+          "count": 2
+        },
+        {
+          "dataQuality": "exchange_confirmed",
+          "reconciliationStatus": "confirmed",
+          "pnlSource": "exchange_settlement",
+          "pnlField": "net+realized",
+          "sign": "win",
+          "count": 7
+        }
+      ]
+    },
+    {
+      "userId": 1,
+      "strategyId": 150008,
+      "strategyName": "七彩虹線趨勢跟蹤階梯馬丁策略(全跟)",
+      "rawRows": 0,
+      "old": {
+        "denominator": 0,
+        "wins": 0,
+        "nonWins": 0,
+        "winRatePct": null
+      },
+      "corrected": {
+        "closedTradeCount": 0,
+        "decisiveTradeCount": 0,
+        "wins": 0,
+        "losses": 0,
+        "breakevens": 0,
+        "winRate": 0,
+        "totalPnl": 0,
+        "maxDrawdown": 0,
+        "pendingPnlCount": 0,
+        "unresolvedPnlCount": 0,
+        "excludedEntryCount": 0,
+        "excludedNonFilledCloseCount": 0,
+        "duplicateExcludedCount": 0
+      },
+      "knownCloseQuality": []
+    }
+  ],
+  "strategyComparisons": [
+    {
+      "strategyId": 60008,
+      "strategyName": "KAMA 3K V6.1 高頻掃射 - 導入",
+      "dashboard": {
+        "knownCloses": 52,
+        "decisiveTradeCount": 52,
+        "wins": 51,
+        "losses": 1,
+        "breakevens": 0
+      },
+      "report": {
+        "knownCloses": 52,
+        "decisiveTradeCount": 52,
+        "wins": 51,
+        "losses": 1,
+        "breakevens": 0
+      },
+      "matches": true
+    },
+    {
+      "strategyId": 90003,
+      "strategyName": "20415七彩虹馬丁策略 - 導入",
+      "dashboard": {
+        "knownCloses": 54,
+        "decisiveTradeCount": 30,
+        "wins": 30,
+        "losses": 0,
+        "breakevens": 24
+      },
+      "report": {
+        "knownCloses": 54,
+        "decisiveTradeCount": 30,
+        "wins": 30,
+        "losses": 0,
+        "breakevens": 24
+      },
+      "matches": true
+    },
+    {
+      "strategyId": 120011,
+      "strategyName": "V4.0 KAMA+3K 動態馬丁策略（百分比控倉） - 導入",
+      "dashboard": {
+        "knownCloses": 9,
+        "decisiveTradeCount": 9,
+        "wins": 9,
+        "losses": 0,
+        "breakevens": 0
+      },
+      "report": {
+        "knownCloses": 9,
+        "decisiveTradeCount": 9,
+        "wins": 9,
+        "losses": 0,
+        "breakevens": 0
+      },
+      "matches": true
+    },
+    {
+      "strategyId": 150008,
+      "strategyName": "七彩虹線趨勢跟蹤階梯馬丁策略(全跟)",
+      "dashboard": {
+        "knownCloses": 0,
+        "decisiveTradeCount": 0,
+        "wins": 0,
+        "losses": 0,
+        "breakevens": 0
+      },
+      "report": {
+        "knownCloses": 0,
+        "decisiveTradeCount": 0,
+        "wins": 0,
+        "losses": 0,
+        "breakevens": 0
+      },
+      "matches": true
+    }
+  ],
+  "total": {
+    "rawRows": 288,
+    "old": {
+      "denominator": 210,
+      "wins": 90,
+      "nonWins": 120,
+      "winRatePct": 42.857142857142854
+    },
+    "corrected": {
+      "knownCloses": 115,
+      "decisiveTradeCount": 91,
+      "wins": 90,
+      "losses": 1,
+      "breakevens": 24,
+      "winRatePct": 98.9010989010989,
+      "totalPnl": 278.1845563,
+      "pendingPnlCount": 0,
+      "unresolvedPnlCount": 1,
+      "excludedEntryCount": 172,
+      "excludedNonFilledCloseCount": 0,
+      "duplicateExcludedCount": 0
+    },
+    "report": {
+      "knownCloses": 115,
+      "decisiveTradeCount": 91,
+      "wins": 90,
+      "losses": 1,
+      "breakevens": 24
+    },
+    "invariants": {
+      "decisiveEqualsWinsPlusLosses": true,
+      "everyCurrentStrategyMatchesTradeReport": true,
+      "dashboardMatchesTradeReport": true
+    }
+  }
+}

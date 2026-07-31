@@ -191,6 +191,76 @@ describe("tradeReportGenerator", () => {
     });
   });
 
+  it("uses the shared decisive win-rate denominator and never counts zero-PnL entries as losses", () => {
+    const data = buildTradeReportData([
+      journalRow({
+        id: 1,
+        signalId: 1,
+        tradeId: 11,
+        executionId: "entry-exec",
+        orderId: "entry-order",
+        exchangeTradeId: "entry-fill",
+        reduceOnly: false,
+        realizedPnl: "0",
+        pnlState: "not_applicable",
+      }),
+      journalRow({
+        id: 2,
+        signalId: 2,
+        tradeId: 12,
+        executionId: "win-exec",
+        orderId: "win-order",
+        exchangeTradeId: "win-fill",
+        parsedAction: "close",
+        reduceOnly: true,
+        realizedPnl: "2",
+        dataQuality: "exchange_confirmed",
+        reconciliationStatus: "confirmed",
+        pnlState: "known",
+      }),
+      journalRow({
+        id: 3,
+        signalId: 3,
+        tradeId: 13,
+        executionId: "loss-exec",
+        orderId: "loss-order",
+        exchangeTradeId: "loss-fill",
+        parsedAction: "close",
+        reduceOnly: true,
+        realizedPnl: "-1",
+        dataQuality: "exchange_confirmed",
+        reconciliationStatus: "confirmed",
+        pnlState: "known",
+      }),
+      journalRow({
+        id: 4,
+        signalId: 4,
+        tradeId: 14,
+        executionId: "flat-exec",
+        orderId: "flat-order",
+        exchangeTradeId: "flat-fill",
+        parsedAction: "close",
+        reduceOnly: true,
+        realizedPnl: "0",
+        dataQuality: "exchange_confirmed",
+        reconciliationStatus: "confirmed",
+        pnlState: "known",
+      }),
+    ], {});
+
+    expect(data.strategies[0]).toMatchObject({
+      tradeCount: 4,
+      closeCount: 3,
+      knownPnlCount: 3,
+      decisivePnlCount: 2,
+      winCount: 1,
+      lossCount: 1,
+      breakevenCount: 1,
+      winRatePct: 50,
+      netRealizedPnl: 1,
+    });
+  });
+
   it("keeps every current and future strategy distinct across OKX and Bybit without a whitelist", () => {
     const strategyCases = [
       { strategyId: 20415, strategyKey: "strategy_20415", exchange: "okx" },

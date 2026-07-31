@@ -6,6 +6,7 @@ import {
   type TradeJournalFilters,
   type TradeJournalRow,
 } from "./tradeJournalQuery";
+import { summarizeStrategyPerformance } from "./performanceSummary";
 
 export type TradeReportFormat = "xlsx" | "csv";
 
@@ -58,8 +59,10 @@ export interface StrategyReportSummary {
   tradeCount: number;
   closeCount: number;
   knownPnlCount: number;
+  decisivePnlCount: number;
   winCount: number;
   lossCount: number;
+  breakevenCount: number;
   winRatePct: number | null;
   grossPnl: number;
   fee: number;
@@ -208,9 +211,18 @@ export function buildStrategySummaries(rows: TradeJournalRow[]): StrategyReportS
     const signalRows = group.filter(row => row.signalId !== null);
     const tradeRows = group.filter(row => row.tradeId !== null);
     const closeRows = tradeRows.filter(row => row.reduceOnly);
-    const knownCloseRows = closeRows.filter(row => numeric(row.realizedPnl) !== null);
-    const winCount = knownCloseRows.filter(row => (numeric(row.realizedPnl) ?? 0) > 0).length;
-    const lossCount = knownCloseRows.filter(row => (numeric(row.realizedPnl) ?? 0) < 0).length;
+    const performance = summarizeStrategyPerformance(tradeRows.map(row => ({
+      id: row.tradeId,
+      executionId: row.executionId,
+      exchangeTradeId: row.exchangeTradeId,
+      orderId: row.orderId,
+      reduceOnly: row.reduceOnly,
+      status: row.tradeStatus,
+      realizedPnl: row.realizedPnl,
+      reconciliationStatus: row.reconciliationStatus,
+      dataQuality: row.dataQuality,
+      createdAt: row.filledAt ?? row.createdAt,
+    })));
     return {
       strategyId: first.strategyId,
       strategyName: first.strategyName ?? `策略 #${first.strategyId ?? "未知"}`,
@@ -222,16 +234,18 @@ export function buildStrategySummaries(rows: TradeJournalRow[]): StrategyReportS
       skippedCount: signalRows.filter(row => row.status === "skipped").length,
       tradeCount: tradeRows.length,
       closeCount: closeRows.length,
-      knownPnlCount: knownCloseRows.length,
-      winCount,
-      lossCount,
-      winRatePct: knownCloseRows.length > 0 ? (winCount / knownCloseRows.length) * 100 : null,
+      knownPnlCount: performance.closedTradeCount,
+      decisivePnlCount: performance.decisiveTradeCount,
+      winCount: performance.wins,
+      lossCount: performance.losses,
+      breakevenCount: performance.breakevens,
+      winRatePct: performance.decisiveTradeCount > 0 ? performance.winRate : null,
       grossPnl: sumKnown(closeRows.map(row => row.grossPnl)) ?? 0,
       fee: sumKnown(tradeRows.map(row => row.fee)) ?? 0,
       fundingFee: sumKnown(tradeRows.map(row => row.fundingFee)) ?? 0,
-      netRealizedPnl: sumKnown(closeRows.map(row => row.realizedPnl)) ?? 0,
-      pendingCount: group.filter(row => row.pnlState === "pending").length,
-      unresolvedCount: group.filter(row => row.pnlState === "unresolved").length,
+      netRealizedPnl: performance.totalPnl,
+      pendingCount: performance.pendingPnlCount,
+      unresolvedCount: performance.unresolvedPnlCount,
     };
   }).sort((a, b) => a.strategyName.localeCompare(b.strategyName, "zh-Hant"));
 }
@@ -427,20 +441,21 @@ export async function buildTradeXlsx(data: TradeReportData): Promise<Buffer> {
   const summaryHeaderRow = summarySheet.rowCount + 1;
   summarySheet.addRow([
     "策略ID", "策略名稱", "策略Key", "交易所", "訊號數", "已執行", "失敗／拒絕", "已跳過", "成交數",
-    "平倉數", "已知盈虧數", "盈利數", "虧損數", "勝率(%)", "毛利", "手續費", "資金費",
+    "平倉數", "已知盈虧數", "有方向結果數", "盈利數", "虧損數", "持平數", "勝率(%)", "毛利", "手續費", "資金費",
     "淨已實現盈虧", "待對帳", "未解",
   ]);
   for (const summary of data.strategies) {
     summarySheet.addRow([
       summary.strategyId, summary.strategyName, summary.strategyKey, summary.exchange, summary.signalCount,
       summary.executedCount, summary.failedCount, summary.skippedCount, summary.tradeCount, summary.closeCount,
-      summary.knownPnlCount, summary.winCount, summary.lossCount, summary.winRatePct, summary.grossPnl, summary.fee,
+      summary.knownPnlCount, summary.decisivePnlCount, summary.winCount, summary.lossCount, summary.breakevenCount,
+      summary.winRatePct, summary.grossPnl, summary.fee,
       summary.fundingFee, summary.netRealizedPnl, summary.pendingCount, summary.unresolvedCount,
     ]);
   }
   summarySheet.columns.forEach((column, index) => { column.width = index <= 3 ? 24 : 16; });
-  summarySheet.getColumn(14).numFmt = "0.00";
-  for (let index = 15; index <= 18; index += 1) summarySheet.getColumn(index).numFmt = "0.00000000";
+  summarySheet.getColumn(16).numFmt = "0.00";
+  for (let index = 17; index <= 20; index += 1) summarySheet.getColumn(index).numFmt = "0.00000000";
   styleTableSheet(summarySheet, summaryHeaderRow);
 
   const qualitySheet = workbook.addWorksheet("資料品質", { properties: { defaultRowHeight: 20 } });
