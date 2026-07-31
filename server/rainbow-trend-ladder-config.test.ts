@@ -123,9 +123,10 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
 
     expect(backtestSource).toContain("const nextConfig = normalizeRainbowTrendLadderConfig(previewConfig)");
     expect(backtestSource).toContain("setTfValue(String(nextConfig.Management_Interval_Minutes))");
-    expect(backtestSource).toContain("strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && !useDynamicFormMode");
+    expect(backtestSource).toContain("if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) return false");
+    expect(backtestSource).toContain("if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) return false");
     expect(backtestSource).toContain("<RainbowTrendLadderConfigPanel");
-    expect(backtestSource).toContain("strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY");
+    expect(backtestSource).toContain("strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY && !useDynamicFormMode");
   });
 
   it("策略管理、建立更新、三條快照部署與回測資料取得都直讀 Max_Layers／30M 單一來源", () => {
@@ -137,7 +138,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁設定契約", () => {
 
     expect(routerSource.match(/rainbowTrendLadderConfig\.Max_Layers/g)).toHaveLength(2);
     expect(snapshotRouterSource.match(/\?\s*ladderConfig\.Max_Layers/g)).toHaveLength(3);
-    expect(strategiesSource).toContain("maxMartinLevel: isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1)");
+    expect(strategiesSource).toContain(": isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1)");
     expect(strategiesSource).toContain("maxMartinLevel: String(nextConfig.Max_Layers)");
     expect(deploymentSources).not.toContain("deriveRainbowTrendLadderFinalEnabledLayer");
     expect(backtestEngineSource).toContain('{ ...request, timeframe: "30m" }');

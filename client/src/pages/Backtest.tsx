@@ -82,6 +82,13 @@ import {
   summarizeV41EntryConfig,
   validateV41Config,
 } from "@shared/strategies/kama3kMartinV41";
+import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
+import {
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  getKamaRainbowMartinTimeframeMinutes,
+  normalizeKamaRainbowMartinConfig,
+  validateKamaRainbowMartinConfig,
+} from "@shared/strategies/kamaRainbowMartin";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -100,6 +107,7 @@ export default function Backtest() {
   const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [initialCapital, setInitialCapital] = useState("10000");
   const [tradeAmount, setTradeAmount] = useState("15"); // 每次交易金額 (USDT)
+  const [positionMode, setPositionMode] = useState<"quantity" | "usdt">("usdt");
   const [endPositionPolicy, setEndPositionPolicy] = useState<"mark_to_market" | "force_close">("mark_to_market");
   const [configJson, setConfigJson] = useState<Record<string, unknown>>({});
 
@@ -181,6 +189,8 @@ export default function Backtest() {
     if (strategyKey === RAINBOW_20415_STRATEGY_KEY) return false;
     // 七彩虹線趨勢跟蹤使用共享契約驅動的專用軍規面板
     if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) return false;
+    // KRM 使用同一份 canonical config 與專用同源回測面板
+    if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) return false;
     // V6.1 高頻掃射策略使用深度定制面板（需要 V4.0 風格馬丁分層 UI）
     if (strategyKey === 'KAMA_3K_HF_V61') return false;
     // V2.5 使用共享參數契約驅動的專用面板
@@ -196,6 +206,8 @@ export default function Backtest() {
         ? { ...normalizeV25Config(selectedStrategy.defaultConfig) }
         : strategyKey === RAINBOW_20415_STRATEGY_KEY
           ? { ...normalizeRainbow20415Config(selectedStrategy.defaultConfig) }
+          : strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+            ? { ...normalizeKamaRainbowMartinConfig(selectedStrategy.defaultConfig) }
           : strategyKey === V41_STRATEGY_KEY
             ? { ...normalizeV41Config(selectedStrategy.defaultConfig) }
           : strategyKey === V40_STRATEGY_KEY
@@ -217,6 +229,10 @@ export default function Backtest() {
       if (strategyKey === RAINBOW_20415_STRATEGY_KEY) {
         const rainbow = normalizeRainbow20415Config(nextConfig);
         setTfValue(String(rainbow.Management_Interval_Minutes));
+        setTfUnit("m");
+      } else if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+        const kamaRainbowMartin = normalizeKamaRainbowMartinConfig(nextConfig);
+        setTfValue(String(getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartin.timeframe)));
         setTfUnit("m");
       } else if (strategyKey === V41_STRATEGY_KEY) {
         const v41 = normalizeV41Config(nextConfig);
@@ -289,6 +305,16 @@ export default function Backtest() {
     if (rainbowTrendValidation && !rainbowTrendValidation.valid) {
       return toast.error(`七彩虹線階梯參數設定錯誤：${rainbowTrendValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
+    const kamaRainbowMartinValidation = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ? validateKamaRainbowMartinConfig(configJson)
+      : null;
+    if (kamaRainbowMartinValidation && !kamaRainbowMartinValidation.valid) {
+      return toast.error(`Kama彩虹馬丁參數設定錯誤：${kamaRainbowMartinValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
+    const positionSize = Number(tradeAmount);
+    if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (!Number.isFinite(positionSize) || positionSize <= 0)) {
+      return toast.error("Kama彩虹馬丁的首層倉位必須大於 0");
+    }
     const v41RunValidation = strategyKey === V41_STRATEGY_KEY ? validateV41Config(configJson) : null;
     if (v41RunValidation && !v41RunValidation.valid) {
       return toast.error(`V4.1 參數設定錯誤：${v41RunValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
@@ -310,6 +336,8 @@ export default function Backtest() {
           ? `${rainbowValidation.config.Management_Interval_Minutes}m`
           : rainbowTrendValidation
             ? `${rainbowTrendValidation.config.Management_Interval_Minutes}m`
+            : kamaRainbowMartinValidation?.config
+              ? `${getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinValidation.config.timeframe)}m`
             : v41RunValidation?.config
               ? `${v41RunValidation.config.K_Line_Period}m`
               : timeframe,
@@ -323,6 +351,12 @@ export default function Backtest() {
             ? { ...rainbowValidation.config }
             : rainbowTrendValidation
               ? { ...rainbowTrendValidation.config }
+              : kamaRainbowMartinValidation?.config
+                ? {
+                    ...kamaRainbowMartinValidation.config,
+                    Position_Size_Value: positionSize,
+                    Position_Size_Mode: positionMode,
+                  }
               : v41RunValidation?.config
                 ? { ...v41RunValidation.config }
                 : strategyKey === V40_STRATEGY_KEY
@@ -336,7 +370,9 @@ export default function Backtest() {
             ? rainbowValidation.config.Base_Lot_Size.value
             : rainbowTrendValidation
               ? rainbowTrendValidation.config.Base_Lot_Size.value
-              : v41RunValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
+              : kamaRainbowMartinValidation?.config
+                ? positionSize
+                : v41RunValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
       });
       setJobId(id);
       utils.backtest.getQueueStatus.invalidate();
@@ -621,6 +657,15 @@ export default function Backtest() {
       setInitialCapital(String(nextConfig.Initial_Capital));
       setTfValue(String(nextConfig.Management_Interval_Minutes));
       setTfUnit("m");
+    } else if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+      const validation = validateKamaRainbowMartinConfig(previewConfig);
+      if (!validation.valid || !validation.config) {
+        toast.error(`Kama彩虹馬丁快照無法導入：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+        return;
+      }
+      setConfigJson({ ...validation.config });
+      setTfValue(String(getKamaRainbowMartinTimeframeMinutes(validation.config.timeframe)));
+      setTfUnit("m");
     } else if (strategyKey === V41_STRATEGY_KEY) {
       const validation = validateV41Config(previewConfig);
       if (!validation.valid || !validation.config) {
@@ -649,7 +694,11 @@ export default function Backtest() {
       if (bs.symbol) setSymbol(bs.symbol);
       // 七彩虹線的資料週期是共享策略契約的一部分，舊快照的 backtestSettings
       // 可能曾錯存 Entry_Timeframe，不能覆蓋 Management_Interval_Minutes。
-      if (bs.timeframe && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY) {
+      if (
+        bs.timeframe
+        && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY
+        && strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ) {
         // 解析 timeframe 字串（如 "1h", "15m", "4h", "1d"）
         const tfMatch = bs.timeframe.match(/^(\d+)([mhd])$/);
         if (tfMatch) {
@@ -662,6 +711,9 @@ export default function Backtest() {
       if (bs.initialCapital && bs.initialCapital > 0) setInitialCapital(String(bs.initialCapital));
       if (bs.tradeAmount && bs.tradeAmount > 0) setTradeAmount(String(bs.tradeAmount));
       else if (bs.baseLotSize && bs.baseLotSize > 0) setTradeAmount(String(bs.baseLotSize));
+      if (bs.baseLotSizeMode === "quantity" || bs.baseLotSizeMode === "usdt") {
+        setPositionMode(bs.baseLotSizeMode);
+      }
       if (bs.endPositionPolicy === "force_close" || bs.endPositionPolicy === "mark_to_market") {
         setEndPositionPolicy(bs.endPositionPolicy);
       }
@@ -713,6 +765,18 @@ export default function Backtest() {
       toast.error(`七彩虹線階梯參數設定錯誤：${rainbowTrendValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
       return;
     }
+    const kamaRainbowMartinValidation = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ? validateKamaRainbowMartinConfig(configJson)
+      : null;
+    if (kamaRainbowMartinValidation && !kamaRainbowMartinValidation.valid) {
+      toast.error(`Kama彩虹馬丁參數設定錯誤：${kamaRainbowMartinValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+      return;
+    }
+    const positionSize = Number(tradeAmount);
+    if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (!Number.isFinite(positionSize) || positionSize <= 0)) {
+      toast.error("Kama彩虹馬丁的首層倉位必須大於 0");
+      return;
+    }
     const v41SnapshotValidation = strategyKey === V41_STRATEGY_KEY ? validateV41Config(configJson) : null;
     if (v41SnapshotValidation && !v41SnapshotValidation.valid) {
       toast.error(`V4.1 參數設定錯誤：${v41SnapshotValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
@@ -723,6 +787,7 @@ export default function Backtest() {
         ? v25Validation?.config ?? configJson
         : rainbowValidation?.config
           ?? rainbowTrendValidation?.config
+          ?? kamaRainbowMartinValidation?.config
           ?? v41SnapshotValidation?.config
           ?? (strategyKey === V40_STRATEGY_KEY
             ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
@@ -763,6 +828,8 @@ export default function Backtest() {
           ? `${rainbowValidation.config.Management_Interval_Minutes}m`
           : rainbowTrendValidation
             ? `${rainbowTrendValidation.config.Management_Interval_Minutes}m`
+            : kamaRainbowMartinValidation?.config
+              ? `${getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinValidation.config.timeframe)}m`
             : v41SnapshotValidation?.config
               ? `${v41SnapshotValidation.config.K_Line_Period}m`
               : `${tfValue}${tfUnit}`,
@@ -776,6 +843,8 @@ export default function Backtest() {
             ? rainbowValidation.config.Base_Lot_Size.value
             : rainbowTrendValidation
               ? rainbowTrendValidation.config.Base_Lot_Size.value
+              : kamaRainbowMartinValidation?.config
+                ? positionSize
               : v41SnapshotValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
         configJson: cfg,
         baseLotSize: strategyKey === V25_STRATEGY_KEY
@@ -784,10 +853,13 @@ export default function Backtest() {
             ? rainbowValidation.config.Base_Lot_Size.value
             : rainbowTrendValidation
               ? rainbowTrendValidation.config.Base_Lot_Size.value
+              : kamaRainbowMartinValidation?.config
+                ? positionSize
               : v41SnapshotValidation?.config?.Base_Lot_Size ?? (Number(tradeAmount) || undefined),
         baseLotSizeMode: rainbowValidation
           ? rainbowValidation.config.Base_Lot_Size.mode
-          : rainbowTrendValidation?.config.Base_Lot_Size.mode ?? "usdt",
+          : rainbowTrendValidation?.config.Base_Lot_Size.mode
+            ?? (kamaRainbowMartinValidation?.config ? positionMode : "usdt"),
       },
     });
   };
@@ -846,7 +918,7 @@ export default function Backtest() {
               </div>
               <div className="space-y-2">
                 <Label className="text-xs">時間框架</Label>
-                <Select value={`${tfValue}${tfUnit}`} onValueChange={(v) => {
+                <Select disabled={strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY} value={`${tfValue}${tfUnit}`} onValueChange={(v) => {
                   const m = v.match(/^(\d+)(m|h|d)$/);
                   if (m) { setTfValue(m[1]); setTfUnit(m[2] as "m" | "h" | "d"); }
                 }}>
@@ -891,10 +963,16 @@ export default function Backtest() {
                 />
               </div>
               <div className="space-y-2">
-                <Label className="text-xs">{strategyKey === RAINBOW_20415_STRATEGY_KEY ? "20415 底倉數值" : "每次交易金額（USDT）"}</Label>
+                <Label className="text-xs">
+                  {strategyKey === RAINBOW_20415_STRATEGY_KEY
+                    ? "20415 底倉數值"
+                    : strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+                      ? `KRM 首層倉位（${positionMode === "usdt" ? "USDT" : "幣數量"}）`
+                      : "每次交易金額（USDT）"}
+                </Label>
                 <Input
                   type="number"
-                  min="1"
+                  min={strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY ? "0.00000001" : "1"}
                   step="any"
                   lang="en"
                   inputMode="decimal"
@@ -903,7 +981,7 @@ export default function Backtest() {
                   onChange={(e) => {
                     setTradeAmount(e.target.value);
                     const num = Number(e.target.value);
-                    if (Number.isFinite(num) && num > 0) {
+                    if (strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY && Number.isFinite(num) && num > 0) {
                       setConfigJson((prev) => ({
                         ...prev,
                         base_lot_size: num,
@@ -918,9 +996,26 @@ export default function Backtest() {
                     ? "由下方 V2.5 Base_Lot_Size 單一參數契約控制"
                     : strategyKey === RAINBOW_20415_STRATEGY_KEY
                       ? `由下方七彩虹 Base_Lot_Size 控制；數據鎖定 ${normalizeRainbow20415Config(configJson).Management_Interval_Minutes}m 管理週期`
+                      : strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+                        ? `頂層 Position_Size；策略 timeframe 鎖定 ${getKamaRainbowMartinTimeframeMinutes(normalizeKamaRainbowMartinConfig(configJson).timeframe)}m，馬丁層量由下方面板預覽`
                     : "首單固定金額，加倉按馬丁倍率遞增"}
                 </p>
               </div>
+              {strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+                <div className="space-y-2">
+                  <Label className="text-xs">KRM 倉位模式</Label>
+                  <Select value={positionMode} onValueChange={(value) => setPositionMode(value as "quantity" | "usdt")}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="usdt">USDT 名目金額</SelectItem>
+                      <SelectItem value="quantity">幣數量</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">此值屬策略實例／回測設定，不寫入 canonical 策略配置。</p>
+                </div>
+              )}
             </div>
 
             <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/[0.04] p-4">
@@ -1013,6 +1108,20 @@ export default function Backtest() {
               />
             )}
 
+            {strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
+              <KamaRainbowMartinConfigPanel
+                value={configJson}
+                onChange={(nextConfig) => {
+                  setConfigJson({ ...nextConfig });
+                  setTfValue(String(getKamaRainbowMartinTimeframeMinutes(nextConfig.timeframe)));
+                  setTfUnit("m");
+                }}
+                context="backtest"
+                positionMode={positionMode}
+                positionSize={Number(tradeAmount) || 0}
+              />
+            )}
+
             {strategyKey === V40_STRATEGY_KEY && Object.keys(configJson).length > 0 && (
               <V40EntryGatePanel
                 value={configJson}
@@ -1037,7 +1146,7 @@ export default function Backtest() {
             )}
 
             {/* 動態策略參數（UI-3：三大模組化區塊分類）- 內建策略深度定制面板 */}
-            {strategyKey !== V25_STRATEGY_KEY && strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
+            {strategyKey !== V25_STRATEGY_KEY && strategyKey !== RAINBOW_20415_STRATEGY_KEY && strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY && !useDynamicFormMode && Object.keys(configJson).length > 0 && (() => {
               /** 單一參數渲染（含 UI-1/UI-2/UI-4 特殊規則） */
               const renderParam = (key: string, value: unknown) => {
                 // 任務 B2：Base_Lot_Size 雙模式（數量 / USDT）
@@ -1506,7 +1615,7 @@ export default function Backtest() {
               endPositionPolicy,
               configJson,
               baseLotSize: Number(tradeAmount) || undefined,
-              baseLotSizeMode: "usdt",
+              baseLotSizeMode: strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY ? positionMode : "usdt",
             }}
           />
         )}

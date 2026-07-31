@@ -25,7 +25,7 @@ import { tradeJournalRouter } from "./routers/tradeJournal.router";
 import { deploymentsRouter } from "./routers/deployments.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
-import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
+import { getBoundStrategyConfig, pickStrategyConfigState } from "./services/strategySnapshotConfig";
 import { summarizeStrategyPerformance } from "./services/performanceSummary";
 import {
   assertValidV25Config,
@@ -42,6 +42,12 @@ import {
   assertValidRainbowTrendLadderConfig,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../shared/strategies/rainbowTrendLadder";
+import {
+  assertValidKamaRainbowMartinConfig,
+  getKamaRainbowMartinTimeframeMinutes,
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+} from "../shared/strategies/kamaRainbowMartin";
 import {
   deploymentPositionColumns,
   finalizeDeploymentPosition,
@@ -71,6 +77,8 @@ import {
   createDefaultExecutionPolicy,
   EXECUTION_POLICY_VERSION,
 } from "../shared/executionModes";
+import { listActivePositionLegs } from "./services/threeModeLedger";
+import { parseKamaRainbowMartinSignalPayload } from "../shared/observability/kamaRainbowMartinSignalTrace";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -426,6 +434,8 @@ const strategyInputSchema = z.object({
   v2_0Config: z.record(z.string(), z.unknown()).optional(),
   // 全新七彩虹線趨勢跟蹤階梯馬丁：獨立契約，不共用 20415 設定鍵。
   rainbowTrendLadderConfig: z.record(z.string(), z.unknown()).optional(),
+  // Kama 彩虹馬丁：獨立 canonical 契約，不接受任何舊策略配置鍵。
+  kamaRainbowMartinConfig: z.record(z.string(), z.unknown()).optional(),
   // V6.1：KAMA 3K 高頻掃射極致版參數
   v61Config: z
     .object({
@@ -594,6 +604,51 @@ const strategiesRouter = router({
       }));
     }),
 
+  /** KRM 唯讀腿級監控：owner-scoped，僅回傳監控所需白名單欄位，不觸發交易所查詢或任何 mutation。 */
+  kamaRainbowMartinRuntimeMonitor: protectedProcedure
+    .input(z.object({ strategyId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const strategy = await db.getStrategyById(input.strategyId, ctx.user.id);
+      if (!strategy) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "策略不存在" });
+      }
+      if (strategy.strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "此監控端點僅適用於 Kama 彩虹馬丁策略" });
+      }
+      const legs = await listActivePositionLegs({ userId: ctx.user.id, strategyId: strategy.id });
+      return {
+        strategyId: strategy.id,
+        strategyKey: strategy.strategyKey,
+        legs: legs.map(leg => {
+          const state = (leg.martinState ?? {}) as Record<string, unknown>;
+          const runtime = (state.kamaRainbowMartinRuntime ?? {}) as Record<string, unknown>;
+          return {
+            legId: leg.legId,
+            cycleId: leg.cycleId,
+            executionMode: leg.executionMode,
+            side: leg.side,
+            role: leg.role,
+            status: leg.status,
+            quantity: Number(leg.quantity),
+            avgEntryPrice: leg.avgEntryPrice == null ? null : Number(leg.avgEntryPrice),
+            unrealizedPnl: leg.unrealizedPnl == null ? null : Number(leg.unrealizedPnl),
+            currentLayer: Number(state.currentLayer ?? 0),
+            lastLayerFillPrice: Number(runtime.lastLayerFillPrice ?? 0),
+            trailingActive: runtime.trailingActive === true,
+            peakProfitPct: Number(runtime.peakProfitPct ?? 0),
+            triggerProfitPct: runtime.triggerProfitPct == null ? null : Number(runtime.triggerProfitPct),
+            lastDecisionCode: String(runtime.lastDecisionCode ?? "KRM_DATA_NOT_READY"),
+            lastDecisionReason: String(runtime.lastDecisionReason ?? "尚無決策紀錄"),
+            direction: String(runtime.direction ?? "INSUFFICIENT"),
+            currentLineValues: (runtime.currentLineValues ?? {}) as Record<string, number>,
+            lineSlopes: (runtime.lineSlopes ?? {}) as Record<string, number>,
+            lockedPair: Array.isArray(runtime.lockedPair) ? runtime.lockedPair.map(String) : null,
+            updatedAt: leg.updatedAt,
+          };
+        }),
+      };
+    }),
+
   create: protectedProcedure
     .input(strategyInputSchema)
     .mutation(async ({ ctx, input }) => {
@@ -668,6 +723,36 @@ const strategiesRouter = router({
           });
         }
       }
+      if (
+        input.kamaRainbowMartinConfig !== undefined
+        && input.strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "kamaRainbowMartinConfig 僅可用於 Kama彩虹馬丁策略",
+        });
+      }
+      if (
+        input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+        && [input.v25Config, input.v35Config, input.v41Config, input.v50Config, input.v61Config, input.v70Config, input.v2_0Config, input.rainbowTrendLadderConfig]
+          .some(value => value !== undefined)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Kama彩虹馬丁策略不可混用其他策略的配置鍵",
+        });
+      }
+      let kamaRainbowMartinConfig: ReturnType<typeof assertValidKamaRainbowMartinConfig> | undefined;
+      if (input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+        try {
+          kamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(input.kamaRainbowMartinConfig);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Kama彩虹馬丁參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
       const firstV25Range = v25Config?.Martin_Ranges[0];
       const firstRainbowRange = rainbow20415Config
         ? getRainbow20415RangeForLayer(rainbow20415Config.Martin_Ranges, 1)
@@ -694,6 +779,7 @@ const strategiesRouter = router({
         ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
         ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
         ...(rainbowTrendLadderConfig ? { __rainbowTrendLadderConfig: rainbowTrendLadderConfig } : {}),
+        ...(kamaRainbowMartinConfig ? { [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: kamaRainbowMartinConfig } : {}),
         ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
         ...(v25Config ? { __v25Config: v25Config } : {}),
       };
@@ -722,18 +808,20 @@ const strategiesRouter = router({
         strategyVersion: capabilityManifest?.strategyVersion ?? 1,
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
-        stopLossPct: v41Columns?.stopLossPct ?? String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
-        takeProfitPct: v41Columns?.takeProfitPct ?? String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
+        stopLossPct: v41Columns?.stopLossPct ?? String(kamaRainbowMartinConfig?.hardStopLossPct ?? v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
+        takeProfitPct: v41Columns?.takeProfitPct ?? String(kamaRainbowMartinConfig ? 0 : v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: v41Columns?.martinMultiplier ?? String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
+        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
         maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbow20415Config
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges))
             : rainbowTrendLadderConfig
               ? rainbowTrendLadderConfig.Max_Layers
-              : input.maxMartinLevel),
-        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
+              : kamaRainbowMartinConfig
+                ? kamaRainbowMartinConfig.maxLayers
+                : input.maxMartinLevel),
+        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(kamaRainbowMartinConfig?.gapPct ?? firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
         martinState,
         strategyKey: input.strategyKey || null,
         ...(v25Config ? {
@@ -755,6 +843,10 @@ const strategiesRouter = router({
         ...(rainbowTrendLadderConfig ? {
           kLinePeriod: rainbowTrendLadderConfig.Entry_Timeframe_Minutes,
           reentryEnabled: rainbowTrendLadderConfig.Reentry_Wait_Next_M30_Close,
+        } : {}),
+        ...(kamaRainbowMartinConfig ? {
+          kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
+          reentryEnabled: false,
         } : {}),
       });
       // T3：回傳新建策略的 Webhook URL，供前端顯示成功引導彈窗
@@ -786,6 +878,15 @@ const strategiesRouter = router({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "V4.1 策略引擎身份不可在既有實例上切換；請以顯式轉換草稿建立新實例",
+        });
+      }
+      if (
+        (existing.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY || targetStrategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY)
+        && existing.strategyKey !== targetStrategyKey
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Kama彩虹馬丁策略引擎身份不可在既有實例上切換；請建立新的 disabled 實例",
         });
       }
       let v41Config: ReturnType<typeof resolveV41ConfigForStrategy>;
@@ -832,6 +933,53 @@ const strategiesRouter = router({
       if (input.maxMartinLevel !== undefined) data.maxMartinLevel = input.maxMartinLevel;
       if (input.martinSpacingPct !== undefined) data.martinSpacingPct = String(input.martinSpacingPct);
       if (input.strategyKey !== undefined) data.strategyKey = input.strategyKey || null;
+      if (
+        input.kamaRainbowMartinConfig !== undefined
+        && targetStrategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "kamaRainbowMartinConfig 僅可用於 Kama彩虹馬丁策略",
+        });
+      }
+      if (
+        targetStrategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+        && [input.v25Config, input.v35Config, input.v41Config, input.v50Config, input.v61Config, input.v70Config, input.v2_0Config, input.rainbowTrendLadderConfig]
+          .some(value => value !== undefined)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Kama彩虹馬丁策略不可混用其他策略的配置鍵",
+        });
+      }
+      if (targetStrategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+        const currentState = existing.martinState && typeof existing.martinState === "object"
+          ? existing.martinState as Record<string, unknown>
+          : {};
+        const rawConfig = input.kamaRainbowMartinConfig
+          ?? getBoundStrategyConfig(currentState, KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
+        let kamaRainbowMartinConfig: ReturnType<typeof assertValidKamaRainbowMartinConfig>;
+        try {
+          kamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(rawConfig);
+        } catch (error) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Kama彩虹馬丁參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        data.martinState = {
+          ...currentState,
+          ...pickStrategyConfigState(currentState),
+          [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: kamaRainbowMartinConfig,
+        };
+        data.stopLossPct = String(kamaRainbowMartinConfig.hardStopLossPct);
+        data.takeProfitPct = "0";
+        data.martinMultiplier = String(kamaRainbowMartinConfig.multiplier);
+        data.maxMartinLevel = kamaRainbowMartinConfig.maxLayers;
+        data.martinSpacingPct = String(kamaRainbowMartinConfig.gapPct);
+        data.kLinePeriod = getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe);
+        data.reentryEnabled = false;
+      }
       if (v41Config) {
         const currentState = existing.martinState && typeof existing.martinState === "object"
           ? existing.martinState as Record<string, unknown>
@@ -2064,7 +2212,32 @@ const performanceRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      return db.listTrades(ctx.user.id, input);
+      const rows = await db.listTrades(ctx.user.id, input);
+      const linkedSignals = await db.listSignalsByIds(
+        ctx.user.id,
+        rows.map(row => row.signalId).filter((id): id is number => typeof id === "number"),
+      );
+      const signalById = new Map(linkedSignals.map(signal => [signal.id, signal] as const));
+      return rows.map(row => {
+        const linkedSignal = row.signalId ? signalById.get(row.signalId) : undefined;
+        const sealedTrace = parseKamaRainbowMartinSignalPayload(linkedSignal?.rawPayload);
+        const isKrm = Boolean(sealedTrace) || row.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
+        return {
+          ...row,
+          kamaRainbowMartinTrace: isKrm ? {
+            action: sealedTrace?.action ?? null,
+            reasonCode: sealedTrace?.reasonCode ?? linkedSignal?.reasonCode ?? null,
+            executionMode: sealedTrace?.executionMode ?? row.executionMode ?? linkedSignal?.executionMode ?? null,
+            cycleId: sealedTrace?.cycleId ?? row.cycleId ?? linkedSignal?.cycleId ?? null,
+            legId: sealedTrace?.legId ?? row.legId ?? linkedSignal?.legId ?? null,
+            layerNum: sealedTrace?.layerNum ?? null,
+            configRevision: sealedTrace?.configRevision ?? null,
+            eventKey: sealedTrace?.eventKey ?? null,
+            closeReason: sealedTrace?.closeReason ?? null,
+            evidenceSource: sealedTrace ? "sealed_signal" as const : "canonical_trade" as const,
+          } : null,
+        };
+      });
     }),
 
   /** 回填歷史平倉交易的 realizedPnl（一次性運行） */

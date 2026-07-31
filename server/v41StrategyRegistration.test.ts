@@ -38,12 +38,14 @@ const buySignal: StrategySignal = {
 };
 
 describe("V4.1 獨立策略註冊與隔離", () => {
-  it("保留全部既有 built-in key 並只追加 V4.1 key", () => {
-    expect(BUILT_IN_KEYS.slice(0, 4)).toEqual([
+  it("保留全部既有 built-in key、KRM 並只追加 V4.1 key", () => {
+    expect(BUILT_IN_KEYS.slice(0, 6)).toEqual([
       "strategy_20415",
       "RAINBOW_TREND_LADDER_V1",
+      "KAMA_RAINBOW_MARTIN_V1",
       "KAMA_3K_BREAKOUT_V25",
       "20415_KAMA_MARTIN_V35",
+      "20415_KAMA_MARTIN_V41",
     ]);
     expect(BUILT_IN_KEYS).toContain("20415_KAMA_MARTIN_V41");
   });

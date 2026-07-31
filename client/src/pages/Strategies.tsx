@@ -31,6 +31,7 @@ import { V25ConfigPanel } from "@/components/V25ConfigPanel";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
 import { RainbowTrendLadderSafetyControls } from "@/components/RainbowTrendLadderSafetyControls";
+import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
 import { MartingaleLayerPositionPanel } from "@/components/MartingaleLayerPositionPanel";
 import {
   V40EntryGatePanel,
@@ -70,6 +71,19 @@ import {
   validateRainbowTrendLadderConfig,
   type RainbowTrendLadderConfig,
 } from "@shared/strategies/rainbowTrendLadder";
+import {
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES,
+  createKamaRainbowMartinDefaultConfig,
+  normalizeKamaRainbowMartinConfig,
+  validateKamaRainbowMartinConfig,
+  type KamaRainbowMartinConfig,
+} from "@shared/strategies/kamaRainbowMartin";
+import {
+  parseKamaRainbowMartinHeartbeatDetail,
+  type KamaRainbowMartinHeartbeatTrace,
+} from "@shared/observability/kamaRainbowMartinTrace";
 import {
   V41_CONFIG_KEY,
   V41_STRATEGY_KEY,
@@ -211,6 +225,8 @@ type StrategyForm = {
   v2_0?: Rainbow20415Config;
   // 新七彩虹趨勢階梯：獨立七線 SMA、八層階梯、動態止盈與隔離安全配置。
   rainbowTrendLadder?: RainbowTrendLadderConfig;
+  // Kama 彩虹馬丁：動態 KAMA、固定間距指數馬丁與腿級風控的唯一 canonical 配置。
+  kamaRainbowMartin?: KamaRainbowMartinConfig;
   // V7.0：龍捲風雙渦輪配置
   v7_0?: Record<string, any>;
   // V6.1：高頻掃射完整配置
@@ -284,6 +300,7 @@ const emptyForm: StrategyForm = {
   v2_5: createV25DefaultConfig(),
   v2_0: createRainbow20415DefaultConfig(),
   rainbowTrendLadder: createRainbowTrendLadderDefaultConfig(),
+  kamaRainbowMartin: createKamaRainbowMartinDefaultConfig(),
   v4_1: createV41DefaultConfig(),
 };
 
@@ -447,6 +464,12 @@ function StrategiesContent() {
     () => form.strategyKey === V41_STRATEGY_KEY ? validateV41Config(form.v4_1) : null,
     [form.strategyKey, form.v4_1],
   );
+  const kamaRainbowMartinFormValidation = useMemo(
+    () => form.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ? validateKamaRainbowMartinConfig(form.kamaRainbowMartin)
+      : null,
+    [form.kamaRainbowMartin, form.strategyKey],
+  );
 
   // V5.3: 從回測報告「以參數建立新策略」跳轉過來時自動讀取 sessionStorage 預填參數
   useEffect(() => {
@@ -465,10 +488,12 @@ function StrategiesContent() {
       const isV25Import = imported.definitionKey === V25_STRATEGY_KEY;
       const isRainbowImport = imported.definitionKey === RAINBOW_20415_STRATEGY_KEY;
       const isTrendLadderImport = imported.definitionKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+      const isKamaRainbowMartinImport = imported.definitionKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
       const isV41Import = imported.definitionKey === V41_STRATEGY_KEY;
       const v25Config = normalizeV25Config(cfg);
       const rainbowConfig = normalizeRainbow20415Config(cfg);
       const trendLadderConfig = normalizeRainbowTrendLadderConfig(cfg);
+      const kamaRainbowMartinConfig = normalizeKamaRainbowMartinConfig(cfg);
       const v41Config = normalizeV41Config(cfg);
       const v40EntryGate = normalizeV40EntryGateValue(cfg);
       const firstRainbowRange = rainbowConfig.Martin_Ranges.find((range) => range.enabled);
@@ -484,15 +509,15 @@ function StrategiesContent() {
         positionMode: isV41Import ? "usdt" : isTrendLadderImport ? trendLadderConfig.Base_Lot_Size.mode : isRainbowImport ? rainbowConfig.Base_Lot_Size.mode : isV25Import ? "usdt" : emptyForm.positionMode,
         leverage: String(cfg.Leverage || 1),
         direction: cfg.Direction || 'both',
-        stopLossPct: isV41Import ? String(v41Config.Max_Loss_Pct) : isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
-        takeProfitPct: isV41Import ? String(v41Config.Target_TP_Pct) : isTrendLadderImport ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
-        martinMultiplier: String(isV41Import ? v41Config.Martin_Multiplier : isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
-        maxMartinLevel: String(isV41Import ? v41Config.Max_Layers : isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
-        martinSpacingPct: String(isV41Import ? v41Config.Martin_Step_Pct : isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
+        stopLossPct: isKamaRainbowMartinImport ? String(kamaRainbowMartinConfig.hardStopLossPct) : isV41Import ? String(v41Config.Max_Loss_Pct) : isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
+        takeProfitPct: isKamaRainbowMartinImport ? "0" : isV41Import ? String(v41Config.Target_TP_Pct) : isTrendLadderImport ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
+        martinMultiplier: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.multiplier : isV41Import ? v41Config.Martin_Multiplier : isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
+        maxMartinLevel: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.maxLayers : isV41Import ? v41Config.Max_Layers : isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
+        martinSpacingPct: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.gapPct : isV41Import ? v41Config.Martin_Step_Pct : isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
         martinLayersJson: isV41Import ? JSON.stringify(v41Config.Martin_Layers) : martinLayersJson,
         maxLossPct: String(isV41Import ? v41Config.Max_Loss_Pct : (cfg.Max_Loss_Pct || 6)),
-        callbackPct: String(isV41Import ? v41Config.Callback_Pct : isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
-        kLinePeriod: String(isV41Import ? v41Config.K_Line_Period : isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
+        callbackPct: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.trailing.callbackPct : isV41Import ? v41Config.Callback_Pct : isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
+        kLinePeriod: String(isKamaRainbowMartinImport ? KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[kamaRainbowMartinConfig.timeframe] : isV41Import ? v41Config.K_Line_Period : isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
         reentryOnTrend: isV41Import ? v41Config.enableSameDirectionReentry : isTrendLadderImport ? trendLadderConfig.Reentry_Wait_Next_M30_Close : isRainbowImport ? rainbowConfig.Reentry_Enabled : isV25Import ? v25Config.Reentry_On_Trend : cfg.Reentry_On_Trend !== false,
         ...v40EntryGate,
         maxLossUsdt: String(cfg.Max_Loss_USDT || cfg.EscapeLossUSD || 15),
@@ -503,6 +528,7 @@ function StrategiesContent() {
         v2_5: isV25Import ? v25Config : createV25DefaultConfig(),
         v2_0: isRainbowImport ? rainbowConfig : createRainbow20415DefaultConfig(),
         rainbowTrendLadder: isTrendLadderImport ? trendLadderConfig : createRainbowTrendLadderDefaultConfig(),
+        kamaRainbowMartin: isKamaRainbowMartinImport ? kamaRainbowMartinConfig : createKamaRainbowMartinDefaultConfig(),
         v4_1: isV41Import ? v41Config : createV41DefaultConfig(),
         apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : '',
       });
@@ -522,9 +548,18 @@ function StrategiesContent() {
       : null,
     [snapshotImportSource],
   );
+  const kamaRainbowMartinSnapshotValidation = useMemo(
+    () => snapshotImportSource?.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ? validateKamaRainbowMartinConfig(snapshotImportSource.config)
+      : null,
+    [snapshotImportSource],
+  );
   const v41SubmitBlocked = snapshotImportSource?.strategyKey === V41_STRATEGY_KEY
     ? !v41SnapshotValidation?.valid
     : form.strategyKey === V41_STRATEGY_KEY && !v41FormValidation?.valid;
+  const kamaRainbowMartinSubmitBlocked = snapshotImportSource?.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+    ? !kamaRainbowMartinSnapshotValidation?.valid
+    : form.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && !kamaRainbowMartinFormValidation?.valid;
   const snapshotsQuery = trpc.backtest.getSnapshots.useQuery({ limit: 50 }, { enabled: showSnapshotImport });
   // T3：建立成功引導彈窗
   const [successInfo, setSuccessInfo] = useState<{
@@ -547,7 +582,7 @@ function StrategiesContent() {
         exchange: r.exchange,
         webhookUrl: r.webhookUrl,
         strategyKey: variables.strategyKey ?? null,
-        startsDisabled: variables.strategyKey === V41_STRATEGY_KEY,
+        startsDisabled: variables.strategyKey === V41_STRATEGY_KEY || variables.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
       });
     },
     onError: (e) => toast.error(e.message),
@@ -563,7 +598,7 @@ function StrategiesContent() {
         exchange: selectedKey?.exchange ?? "",
         webhookUrl: null,
         strategyKey: snapshotImportSource?.strategyKey ?? null,
-        startsDisabled: snapshotImportSource?.strategyKey === V41_STRATEGY_KEY,
+        startsDisabled: snapshotImportSource?.strategyKey === V41_STRATEGY_KEY || snapshotImportSource?.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
       });
       setSnapshotImportSource(null);
       toast.success(r.message);
@@ -664,6 +699,7 @@ function StrategiesContent() {
     const isV25 = strategyKey === V25_STRATEGY_KEY;
     const isRainbow = strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isTrendLadder = strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const isKamaRainbowMartin = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
     const isV41 = strategyKey === V41_STRATEGY_KEY;
     const storedV35Config = state.__v35Config && typeof state.__v35Config === "object"
       ? state.__v35Config as Record<string, unknown>
@@ -677,6 +713,9 @@ function StrategiesContent() {
     const trendLadderConfig = isTrendLadder
       ? normalizeRainbowTrendLadderConfig(state.__rainbowTrendLadderConfig ?? state.__snapshotConfig)
       : createRainbowTrendLadderDefaultConfig();
+    const kamaRainbowMartinConfig = isKamaRainbowMartin
+      ? normalizeKamaRainbowMartinConfig(state[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY] ?? state.__snapshotConfig)
+      : createKamaRainbowMartinDefaultConfig();
     const v41Config = isV41
       ? normalizeV41Config(state[V41_CONFIG_KEY] ?? state.__snapshotConfig)
       : createV41DefaultConfig();
@@ -699,17 +738,18 @@ function StrategiesContent() {
       direction: s.direction as StrategyForm["direction"],
       orderType: s.orderType as StrategyForm["orderType"],
       maxPositionPct: s.maxPositionPct,
-      stopLossPct: s.stopLossPct,
-      takeProfitPct: isTrendLadder ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbow ? String(rainbowConfig.Take_Profit_Pct) : s.takeProfitPct,
+      stopLossPct: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.hardStopLossPct) : s.stopLossPct,
+      takeProfitPct: isKamaRainbowMartin ? "0" : isTrendLadder ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbow ? String(rainbowConfig.Take_Profit_Pct) : s.takeProfitPct,
       maxDailyLoss: s.maxDailyLoss,
-      martinMultiplier: isTrendLadder ? String(firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : ((s as any).martinMultiplier ?? "1"),
-      maxMartinLevel: isTrendLadder ? String(trendLadderConfig.Max_Layers) : String((s as any).maxMartinLevel ?? 1),
-      martinSpacingPct: isTrendLadder ? String(firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : ((s as any).martinSpacingPct ?? "0"),
+      martinMultiplier: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.multiplier) : isTrendLadder ? String(firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : ((s as any).martinMultiplier ?? "1"),
+      maxMartinLevel: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.maxLayers) : isTrendLadder ? String(trendLadderConfig.Max_Layers) : String((s as any).maxMartinLevel ?? 1),
+      martinSpacingPct: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.gapPct) : isTrendLadder ? String(firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : ((s as any).martinSpacingPct ?? "0"),
       strategyKey,
       ...v40EntryGate,
       v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
       v2_0: rainbowConfig,
       rainbowTrendLadder: trendLadderConfig,
+      kamaRainbowMartin: kamaRainbowMartinConfig,
       v4_1: v41Config,
       // 從 martinState.__v35Config 載入 V3.7 優化參數（若存在）
       ...((): Pick<StrategyForm, "martinLayersJson" | "maxLossPct" | "callbackPct" | "kLinePeriod" | "reentryOnTrend" | "maxLossUsdt" | "Initial_Capital" | "First_Order_Pct" | "Max_Loss_Pct" | "martin_mode"> => {
@@ -782,10 +822,12 @@ function StrategiesContent() {
     const isV25 = form.strategyKey === V25_STRATEGY_KEY;
     const isRainbow = form.strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isTrendLadder = form.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const isKamaRainbowMartin = form.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
     const isV41 = form.strategyKey === V41_STRATEGY_KEY;
     const v25Validation = isV25 ? validateV25Config(form.v2_5) : null;
     const rainbowValidation = isRainbow ? validateRainbow20415Config(form.v2_0) : null;
     const trendLadderValidation = isTrendLadder ? validateRainbowTrendLadderConfig(form.rainbowTrendLadder) : null;
+    const kamaRainbowMartinValidation = isKamaRainbowMartin ? validateKamaRainbowMartinConfig(form.kamaRainbowMartin) : null;
     const v41Validation = isV41 ? validateV41Config(form.v4_1) : null;
     if (v25Validation && !v25Validation.valid) {
       return toast.error(`V2.5 參數設定錯誤：${v25Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
@@ -796,11 +838,15 @@ function StrategiesContent() {
     if (trendLadderValidation && !trendLadderValidation.valid) {
       return toast.error(`七彩虹線階梯參數設定錯誤：${trendLadderValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
+    if (kamaRainbowMartinValidation && !kamaRainbowMartinValidation.valid) {
+      return toast.error(`Kama 彩虹馬丁參數設定錯誤：${kamaRainbowMartinValidation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
+    }
     if (v41Validation && !v41Validation.valid) {
       return toast.error(`V4.1 參數設定錯誤：${v41Validation.issues.map((issue) => `${issue.path} ${issue.message}`).join("；")}`);
     }
     const rainbowConfig = rainbowValidation?.config;
     const trendLadderConfig = trendLadderValidation?.config;
+    const kamaRainbowMartinConfig = kamaRainbowMartinValidation?.config;
     const v41Config = v41Validation?.config;
     const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
     const firstTrendLadderMartinLayer = trendLadderConfig?.Martin_Layers.find(
@@ -843,7 +889,7 @@ function StrategiesContent() {
 
     // O1：Martin_Layers 提交前驗證（重疊/非法値）
     // V4.5：僅在階梯式模式下驗證 layers
-    if (!isRainbow && !isTrendLadder && form.martin_mode === "layered" && form.martinLayersJson.trim()) {
+    if (!isRainbow && !isTrendLadder && !isKamaRainbowMartin && form.martin_mode === "layered" && form.martinLayersJson.trim()) {
       const layersErr = validateLayersUI(parseLayersValue(form.martinLayersJson));
       if (layersErr) return toast.error(`階梯式馬丁分層設定錯誤：${layersErr}`);
     }
@@ -877,12 +923,14 @@ function StrategiesContent() {
       direction: form.direction,
       orderType: form.orderType,
       maxPositionPct: parseFloat(form.maxPositionPct) || 0,
-      stopLossPct: isRainbow || isTrendLadder ? 0 : isV41 ? (v41Config?.Max_Loss_Pct ?? 0) : (parseFloat(form.stopLossPct) || 0),
-      takeProfitPct: isTrendLadder ? (trendLadderConfig?.Trailing_Activation_Pct ?? 0) : isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : isV41 ? (v41Config?.Target_TP_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
+      stopLossPct: isKamaRainbowMartin ? (kamaRainbowMartinConfig?.hardStopLossPct ?? 0) : isRainbow || isTrendLadder ? 0 : isV41 ? (v41Config?.Max_Loss_Pct ?? 0) : (parseFloat(form.stopLossPct) || 0),
+      takeProfitPct: isKamaRainbowMartin ? 0 : isTrendLadder ? (trendLadderConfig?.Trailing_Activation_Pct ?? 0) : isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : isV41 ? (v41Config?.Target_TP_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
       maxDailyLoss: parseFloat(form.maxDailyLoss) || 0,
-      martinMultiplier: isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : isV41 ? (v41Config?.Martin_Multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
-      maxMartinLevel: isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : isV41 ? (v41Config?.Max_Layers ?? 1) : (parseInt(form.maxMartinLevel) || 1),
-      martinSpacingPct: isTrendLadder
+      martinMultiplier: isKamaRainbowMartin ? (kamaRainbowMartinConfig?.multiplier ?? 1) : isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : isV41 ? (v41Config?.Martin_Multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
+      maxMartinLevel: isKamaRainbowMartin ? (kamaRainbowMartinConfig?.maxLayers ?? 1) : isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : isV41 ? (v41Config?.Max_Layers ?? 1) : (parseInt(form.maxMartinLevel) || 1),
+      martinSpacingPct: isKamaRainbowMartin
+        ? (kamaRainbowMartinConfig?.gapPct ?? 0)
+        : isTrendLadder
         ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0)
         : isRainbow
         ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct ?? 0 : firstRainbowRange?.spacingPct ?? 0)
@@ -894,8 +942,9 @@ function StrategiesContent() {
       v25Config: isV25 ? v25Validation?.config : undefined,
       v41Config: isV41 && v41Config ? { ...v41Config, Martin_Layers: v41Config.Martin_Layers.map((layer) => ({ ...layer })) } : undefined,
       rainbowTrendLadderConfig: isTrendLadder && trendLadderConfig ? { ...trendLadderConfig } : undefined,
+      kamaRainbowMartinConfig: isKamaRainbowMartin && kamaRainbowMartinConfig ? { ...kamaRainbowMartinConfig } : undefined,
       // V3.7 優化參數（後端存入 martinState.__v35Config）
-      v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && form.strategyKey !== V41_STRATEGY_KEY && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
+      v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && form.strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY && form.strategyKey !== V41_STRATEGY_KEY && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
         Martin_Layers: form.martin_mode === "layered" ? (form.martinLayersJson.trim() || "") : "",
         Reentry_On_Trend: form.reentryOnTrend,
         ...(form.strategyKey === V40_STRATEGY_KEY ? {
@@ -1974,7 +2023,7 @@ function StrategiesContent() {
       >
         <DialogContent
           className={
-            form.strategyKey === V25_STRATEGY_KEY || form.strategyKey === RAINBOW_20415_STRATEGY_KEY || form.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+            form.strategyKey === V25_STRATEGY_KEY || form.strategyKey === RAINBOW_20415_STRATEGY_KEY || form.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY || form.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
               ? "max-h-[92dvh] overflow-x-hidden overflow-y-auto overscroll-contain p-4 sm:max-w-6xl sm:p-6"
               : "max-h-[90dvh] overflow-x-hidden overflow-y-auto overscroll-contain sm:max-w-lg"
           }
@@ -2209,6 +2258,19 @@ function StrategiesContent() {
                     context="snapshot"
                   />
                 )}
+                {snapshotImportSource.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+                  <KamaRainbowMartinConfigPanel
+                    value={snapshotImportSource.config}
+                    onChange={() => undefined}
+                    disabled
+                    context="snapshot"
+                    positionMode={form.positionMode}
+                    positionSize={Number(form.positionValue) || 0}
+                    referencePrice={tickerQuery.data?.price}
+                    quantityPrecision={selectedSpec ? `minQty ${selectedSpec.minOrderQty ?? "—"} / qtyStep ${selectedSpec.qtyStep ?? "—"}` : undefined}
+                    pricePrecision={selectedSpec ? "價格依該交易所合約精度正規化" : undefined}
+                  />
+                )}
                 {snapshotImportSource.strategyKey === V40_STRATEGY_KEY && (
                   <V40EntryGatePanel
                     value={snapshotImportSource.config}
@@ -2303,6 +2365,30 @@ function StrategiesContent() {
                   }));
                 }}
                 context="strategy"
+              />
+            ) : form.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY ? (
+              <KamaRainbowMartinConfigPanel
+                value={form.kamaRainbowMartin}
+                onChange={(nextConfig) => {
+                  setForm((prev) => ({
+                    ...prev,
+                    kamaRainbowMartin: nextConfig,
+                    stopLossPct: String(nextConfig.hardStopLossPct),
+                    takeProfitPct: "0",
+                    callbackPct: String(nextConfig.trailing.callbackPct),
+                    martinMultiplier: String(nextConfig.multiplier),
+                    maxMartinLevel: String(nextConfig.maxLayers),
+                    martinSpacingPct: String(nextConfig.gapPct),
+                    martin_mode: "fixed",
+                    kLinePeriod: String(KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[nextConfig.timeframe]),
+                  }));
+                }}
+                context="strategy"
+                positionMode={form.positionMode}
+                positionSize={Number(form.positionValue) || 0}
+                referencePrice={tickerQuery.data?.price}
+                quantityPrecision={selectedSpec ? `minQty ${selectedSpec.minOrderQty ?? "—"} / qtyStep ${selectedSpec.qtyStep ?? "—"}` : undefined}
+                pricePrecision={selectedSpec ? "價格依該交易所合約精度正規化" : undefined}
               />
             ) : form.strategyKey === RAINBOW_20415_STRATEGY_KEY ? (
               <Rainbow20415ConfigPanel
@@ -2539,6 +2625,24 @@ function StrategiesContent() {
                           reentryOnTrend: nextConfig.Reentry_Wait_Next_M30_Close,
                         };
                       }
+                      if (v === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+                        const nextConfig = prev.kamaRainbowMartin ?? createKamaRainbowMartinDefaultConfig();
+                        return {
+                          ...prev,
+                          strategyKey: v,
+                          kamaRainbowMartin: nextConfig,
+                          stopLossPct: String(nextConfig.hardStopLossPct),
+                          takeProfitPct: "0",
+                          callbackPct: String(nextConfig.trailing.callbackPct),
+                          martinMultiplier: String(nextConfig.multiplier),
+                          maxMartinLevel: String(nextConfig.maxLayers),
+                          martinSpacingPct: String(nextConfig.gapPct),
+                          martinLayersJson: "[]",
+                          martin_mode: "fixed",
+                          kLinePeriod: String(KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[nextConfig.timeframe]),
+                          reentryOnTrend: false,
+                        };
+                      }
                       if (v === V41_STRATEGY_KEY) {
                         const nextConfig = prev.v4_1 ?? createV41DefaultConfig();
                         return {
@@ -2651,6 +2755,11 @@ function StrategiesContent() {
                 V4.1 必須啟用至少一個入場條件，且通過全部 canonical 驗證後才可建立或儲存。
               </p>
             )}
+            {kamaRainbowMartinSubmitBlocked && (
+              <p className="mr-auto max-w-md text-left text-xs leading-relaxed text-amber-300">
+                Kama 彩虹馬丁必須保留 2–32 條 KAMA、至少啟用兩條，且所有 KAMA／馬丁／止損／trailing 參數通過 canonical 驗證後才可建立或儲存。
+              </p>
+            )}
             <Button
               variant="outline"
               onClick={() => {
@@ -2660,7 +2769,7 @@ function StrategiesContent() {
             >
               取消
             </Button>
-            <Button onClick={handleSubmit} disabled={saving || v41SubmitBlocked}>
+            <Button onClick={handleSubmit} disabled={saving || v41SubmitBlocked || kamaRainbowMartinSubmitBlocked}>
               {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
               {form.id ? "儲存變更" : "建立策略"}
             </Button>
@@ -3604,6 +3713,36 @@ function V61ConfigPanel({
  * 顯示每次 Heartbeat 輪詢的結果（HOLD/信號/下單/失敗/錯誤）
  * 支持翻頁和每頁數量選擇
  */
+function KrmHeartbeatTraceBadges({ trace }: { trace: KamaRainbowMartinHeartbeatTrace | null }) {
+  if (!trace) return null;
+  const modeLabels: Record<string, string> = {
+    SINGLE_EXCLUSIVE: "S1",
+    MULTI_POSITION: "M2",
+    HEDGE_GUARDED: "H3",
+  };
+  const fields = [
+    trace.executionMode ? (modeLabels[trace.executionMode] ?? trace.executionMode) : null,
+    trace.reasonCode,
+    trace.layerNum == null ? null : `L${trace.layerNum}`,
+    trace.cycleId ? `cycle:${trace.cycleId}` : null,
+    trace.legId ? `leg:${trace.legId}` : null,
+    trace.configRevision ? `rev:${trace.configRevision}` : null,
+    trace.eventKey ? `event:${trace.eventKey}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return (
+    <div data-testid="krm-heartbeat-trace" className="mt-1 flex flex-wrap gap-1">
+      {fields.map((field, index) => (
+        <code
+          key={`${field}-${index}`}
+          className="max-w-full break-all rounded border border-cyan-500/30 bg-cyan-500/[0.08] px-1 py-0.5 text-[8px] text-cyan-300"
+        >
+          {field}
+        </code>
+      ))}
+    </div>
+  );
+}
+
 function HeartbeatLogsPanel({ strategyId }: { strategyId: number }) {
   const [pageSize, setPageSize] = useState(5);
   const [page, setPage] = useState(0);
@@ -3744,7 +3883,8 @@ function HeartbeatLogsPanel({ strategyId }: { strategyId: number }) {
               return (merged as any[]).map((item: any, idx: number) => {
                 if (item.type === 'hold_group') {
                   // 簡化顯示的 detail：去掉 [type] 前綴
-                  const displayDetail = (item.detail || '').replace(/^\[[^\]]+\]\s*/, '');
+                  const decodedDetail = parseKamaRainbowMartinHeartbeatDetail(item.detail);
+                  const displayDetail = decodedDetail.detail.replace(/^\[[^\]]+\]\s*/, '');
                   return (
                     <div
                       key={`hold-group-${idx}`}
@@ -3764,11 +3904,13 @@ function HeartbeatLogsPanel({ strategyId }: { strategyId: number }) {
                           {displayDetail}
                         </p>
                       )}
+                      <KrmHeartbeatTraceBadges trace={decodedDetail.trace} />
                     </div>
                   );
                 }
                 const log = item.log;
-                const logDetail = (log.detail || log.errorMessage || '').replace(/^\[[^\]]+\]\s*/, '');
+                const decodedDetail = parseKamaRainbowMartinHeartbeatDetail(log.detail || log.errorMessage || '');
+                const logDetail = decodedDetail.detail.replace(/^\[[^\]]+\]\s*/, '');
                 return (
                   <div
                     key={log.id}
@@ -3799,6 +3941,7 @@ function HeartbeatLogsPanel({ strategyId }: { strategyId: number }) {
                         {logDetail}
                       </p>
                     )}
+                    <KrmHeartbeatTraceBadges trace={decodedDetail.trace} />
                   </div>
                 );
               });

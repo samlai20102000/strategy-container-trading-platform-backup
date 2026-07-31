@@ -2392,3 +2392,44 @@
 - [x] 以 production-like DB 驗證 owner isolation、revision/idempotency、preflight persistence、mode switch flat Gate 與 legacy migration
 - [x] 完成部署工作台桌面／行動瀏覽器 QA：主預覽真實資料、三模式入口、blocker/history 區、策略導流與 390×844 響應式長頁通過；confirm/error/action matrix 另由 typed model、tRPC regression 與 build 驗證，全程未提交 lifecycle 或交易所 mutation
 - [x] 合併隔離工作樹回主專案、更新完成報告、核對 todo、保存 checkpoint 並自動發布；全程未自動啟用實盤部署
+
+## Kama彩虹馬丁策略：規劃分析與投產審批（本輪只規劃，2026-07-31）
+- [x] 完整解析 `pasted_content.txt`，建立入場、持倉豁免、馬丁、移動止盈、硬止損、時間週期、動態 KAMA 與 UI 參數需求契約，並標記文件內部歧義及不可直接照抄的示例缺陷
+- [x] 精準定位「七彩虹線趨勢跟蹤階梯馬丁策略」的 canonical strategyKey、版本、邏輯入口、共用計算器、回測路徑、監控／Heartbeat、策略 CRUD、快照、部署及所有 UI 觸點
+- [x] 建立來源策略與「Kama彩虹馬丁策略」逐功能差異矩陣，列明保留、重用、改寫、刪除、隔離及向後相容範圍
+- [x] 擬定新策略 identity、版本化 canonical config／schema、動態 KAMA 清單驗證、確定性 Bar-close evaluator、原因碼與 artifact compatibility 契約
+- [x] 擬定策略交易、策略新建／編輯、回測中心、參數快照庫、從快照導入、策略工作室、部署工作台及監控卡片的完整 UI／資料流更新方案
+- [x] 擬定 S1／M2／H3 能力 manifest、leg-scoped 狀態、preflight、生命週期、canonical runtime guard、close-only 維運與預設 DRAFT／disabled 安全方案
+- [x] 擬定資料庫／遷移判斷、測試矩陣、回測一致性基準、模擬帳戶驗收、零自動送單證據、分階段發布與回滾方案
+- [x] 完成最詳盡規劃執行報告並逐項交叉核對；本輪不得修改功能程式碼、資料庫 schema／資料、排程、部署生命週期或交易所狀態
+- [x] 提交規劃報告供使用者確認；未收到明確投產批准前，不開始生產實作、不保存會自動發布功能變更的 checkpoint
+
+## Kama彩虹馬丁策略：全鏈路生產實作（已批准，2026-07-31）
+- [x] 鎖定報告建議值：`KAMA_RAINBOW_MARTIN_V1`、`kamaRainbowMartin.v1`、兩條預設 KAMA `(10,2,30)`／`(20,2,30)`、五層含底倉、移除無語義 target profit、exit-first、active-leg config pinning、entry 收線／風控 fresh quote、leg-scoped M2／H3
+- [x] 執行開發前 TypeScript、全套 Vitest、production build、資料表與 active deployment／signal／trade 基線；確認既有來源策略回歸基準（90 檔通過、1 檔略過；814 項通過、4 項略過；新 key 相關 decision／intent／fill／signal／trade 均為 0）
+- [x] 新增獨立 shared canonical contract：key、名稱、版本、dynamic KAMA lines、normalizer、validator、衍生值、stable ids、2–32 條限制與百分點單位
+- [x] 新增逐棒 KAMA batch／streaming 純核心，固定 seed／warm-up、zero-volatility、`fast=slow` 警告與 `fast>slow` fail-closed（contract／math targeted Vitest 11/11 通過）
+- [x] 新增任意線對 cross／touch lock、全升／全降、mixed／not-ready、Bar-Lock 與完整 `KRM_*` reason codes；持倉腿優先跳過 KAMA（entry／contract／math targeted Vitest 17/17 通過）
+- [x] 新增 leg-scoped 固定間距指數馬丁、實際 fill 錨點、加權平均成本、每事件最多一層、拒單／部分成交冪等狀態
+- [x] 新增 exit-first 的 KILL／hard-stop／stepped-trailing／martingale action resolver，多空鏡像，並在實際加倉成交後重置 trailing（entry／management／contract／math targeted Vitest 24/24 通過，TypeScript 通過）
+- [x] 新增 OKX／Bybit exchange-aware closed-candle provider，支援 M5／M15／M30／H1／H4／D1／W1，統一排序、去重、收線與資料身份
+- [x] 註冊獨立內建策略、runtime namespace、S1 capability artifact、martingale capability 與策略工作室 metadata；來源策略檔案及 key 不修改
+- [x] 貫通策略 CRUD：create／update／readback、私有配置鍵 `__kamaRainbowMartinConfig`、owner isolation、禁止 key mutation、新建預設 disabled
+- [x] 新增 `KamaRainbowMartinConfigPanel` 與專用 safety controls；貫通策略新建、編輯、動態 KAMA 表、驗證摘要、initial-position 預估量與交易所精度提示（KRM／studio／capability／snapshot targeted Vitest 89/89 通過，TypeScript 通過）
+- [x] 貫通回測中心：同源 evaluator、費用／滑點、確定性 intrabar 事件、終點會計、multi-leg mode results 與無額外跨日／最大持倉退出
+- [x] 貫通參數快照庫：自訂快照名稱、artifact key／version／logic revision／checksum、round-trip、wrong-key rejection、從快照導入 disabled instance
+- [x] 接入 auto signal generator 與 guarded executor：closed-bar entry、fresh-quote risk、密封 action、fill-driven state、precise reduce-only close、部分成交冪等與 Bar-Lock
+- [x] 完成 S1 single-exclusive 行為與來源安全底座，並驗證持倉期間完全跳過 KAMA、只以 fresh quote 執行合法風控（KRM targeted Vitest 37/37 通過，TypeScript 通過）
+- [x] 完成 M2 long／short 獨立腿與 H3 primary／hedge guard；`hedgeTrigger=4% < hardStop=5%`、保護腿馬丁預設關閉、精確關腿與 flat gate
+- [x] 完成 Dashboard、訊號／交易／輪詢日誌、KAMA 唯讀監控、layer／avg cost／trailing／reason code 與三模式部署工作台顯示
+- [x] 訊號日誌新增 KRM 封印決策稽核面板，顯示 reason code、S1／M2／H3 mode、cycle／leg ID、layer、config revision 與 event key；舊記錄缺欄時明示未封印且不以目前策略狀態反推
+- [x] 修正 Dashboard KRM Runtime 面板以錯誤 strategy key 判斷而無法啟用，並補齊 cycle、最後加倉成交、trailing trigger、KAMA slope／lock 與更新時間等唯讀腿級證據
+- [x] Heartbeat 輪詢日誌保留並解碼 KRM reason code、mode、cycle／leg、layer、config revision 與 event key；既有非 KRM 日誌相容不變且不新增資料表
+- [x] 部署工作台顯示最近 canonical mode decisions、target leg、reason code 與風險／狀態證據，讓 KRM S1／M2／H3 可由工作台追溯
+- [x] 交易日誌以關聯 signal 的封印 payload 唯讀補充 KRM mode、cycle／leg、layer 與 reason，不修改成交或損益真相來源
+- [x] 恢復 /signals 與 /positions 真實路由，移除重導 Dashboard 的不可達缺口，確保 KRM 訊號與交易稽核頁可由側欄直接進入
+- [x] 新增 config、math、entry、management、backtest、snapshot、CRUD、isolation、S1／M2／H3、runtime guard 與零誤關倉 Vitest
+- [x] 執行 TypeScript、全套 Vitest、production build、桌面及 390×844 行動 UI、secret/log/network 靜態掃描與 source strategy regression
+- [x] 以唯讀基線／審計證明新策略、deployment、decision、intent、fill、signal、trade 未被自動啟用或提交真實交易所 mutation
+- [x] 更新完成報告與 todo，保存唯一穩定 checkpoint 並自動發布；交付版本維持 disabled，實盤需後續另行明確確認
+- [x] 修正 KRM advanced position leg 還原時 `totalCost` 與 ledger `quantity × avgEntryPrice` 不一致造成下一層平均成本錯算，並以 M2 腿級測試鎖定

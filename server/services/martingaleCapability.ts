@@ -29,6 +29,7 @@ const PRIVATE_CONFIG_KEYS = [
   "__v70Config",
   "__v2_0Config",
   "__rainbowTrendLadderConfig",
+  "__kamaRainbowMartinConfig",
 ] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

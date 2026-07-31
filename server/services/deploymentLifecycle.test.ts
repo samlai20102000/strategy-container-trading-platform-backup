@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultExecutionPolicy } from "../../shared/executionModes";
 import {
+  KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+} from "../../shared/strategies/kamaRainbowMartin";
+import {
   assertDeploymentTransitionAllowed,
   assertFreshPassingPreflight,
   buildDeploymentPreflightReport,
@@ -37,6 +41,28 @@ function manifest() {
   });
 }
 
+function krmManifest() {
+  const strategyLogicHash = buildStrategyLogicHash({
+    strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+    strategyVersion: 1,
+    logicSource: "kama-rainbow-martin-v1-leg-scoped-advanced-runtime-v1",
+  });
+  return createVersionedCapabilityManifest({
+    strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+    strategyVersion: 1,
+    strategyLogicHash,
+    certification: "CERTIFIED",
+    capabilities: {
+      supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+      martingaleLayers: true,
+      independentLegState: true,
+      hedgeGuard: true,
+      preciseLegClose: true,
+      reason: "KRM leg-scoped M2/H3 runtime",
+    },
+  });
+}
+
 function deployment(overrides: Partial<DeploymentDescriptor> = {}): DeploymentDescriptor {
   const currentManifest = manifest();
   return {
@@ -56,6 +82,26 @@ function deployment(overrides: Partial<DeploymentDescriptor> = {}): DeploymentDe
     symbol: "BTCUSDT",
     ...overrides,
   };
+}
+
+function krmDeployment(
+  mode: "MULTI_POSITION" | "HEDGE_GUARDED",
+  overrides: Partial<DeploymentDescriptor> = {},
+): DeploymentDescriptor {
+  const currentManifest = krmManifest();
+  const basePolicy = createDefaultExecutionPolicy(mode);
+  const executionPolicy = mode === "HEDGE_GUARDED"
+    ? { ...basePolicy, primaryLossTriggerPct: 4, hedgeMartinEnabled: false }
+    : basePolicy;
+  return deployment({
+    strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+    strategyVersion: 1,
+    executionMode: mode,
+    executionPolicy,
+    capabilitySnapshot: currentManifest,
+    strategyConfig: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+    ...overrides,
+  });
 }
 
 function facts(overrides: Partial<DeploymentPreflightFacts> = {}): DeploymentPreflightFacts {
@@ -97,6 +143,10 @@ function facts(overrides: Partial<DeploymentPreflightFacts> = {}): DeploymentPre
     requireFlat: true,
     ...overrides,
   };
+}
+
+function krmFacts(overrides: Partial<DeploymentPreflightFacts> = {}): DeploymentPreflightFacts {
+  return facts({ currentManifest: krmManifest(), ...overrides });
 }
 
 describe("deployment deterministic preflight", () => {
@@ -216,6 +266,50 @@ describe("deployment deterministic preflight", () => {
     expect(blocked.blockerCodes).toContain("LEDGER_FLAT");
     expect(inspection.blockerCodes).not.toContain("LEDGER_FLAT");
     expect(inspection.blockerCodes).not.toContain("NO_ACTIVE_HEDGE_RELATIONSHIP");
+  });
+
+  it("admits certified KRM M2 with a valid same-key canonical config", () => {
+    const report = buildDeploymentPreflightReport(
+      krmDeployment("MULTI_POSITION"),
+      krmFacts(),
+    );
+
+    expect(report.eligible).toBe(true);
+    expect(report.checks.find(check => check.code === "KRM_CANONICAL_CONFIG_VALID")?.status)
+      .toBe("PASS");
+    expect(report.blockerCodes).not.toContain("EXECUTION_MODE_CERTIFIED");
+  });
+
+  it("admits KRM H3 only when the fixed 4% protection trigger precedes the 5% hard stop", () => {
+    const safe = buildDeploymentPreflightReport(
+      krmDeployment("HEDGE_GUARDED"),
+      krmFacts(),
+    );
+    const unsafePolicy = {
+      ...createDefaultExecutionPolicy("HEDGE_GUARDED"),
+      primaryLossTriggerPct: 5,
+      hedgeMartinEnabled: false,
+    };
+    const unsafe = buildDeploymentPreflightReport(
+      krmDeployment("HEDGE_GUARDED", { executionPolicy: unsafePolicy }),
+      krmFacts(),
+    );
+
+    expect(safe.eligible).toBe(true);
+    expect(safe.checks.find(check => check.code === "KRM_H3_PROTECTION_PRECEDES_HARD_STOP")?.status)
+      .toBe("PASS");
+    expect(unsafe.eligible).toBe(false);
+    expect(unsafe.blockerCodes).toContain("KRM_H3_PROTECTION_PRECEDES_HARD_STOP");
+  });
+
+  it("fails closed when KRM canonical config is absent", () => {
+    const report = buildDeploymentPreflightReport(
+      krmDeployment("MULTI_POSITION", { strategyConfig: undefined }),
+      krmFacts(),
+    );
+
+    expect(report.eligible).toBe(false);
+    expect(report.blockerCodes).toContain("KRM_CANONICAL_CONFIG_VALID");
   });
 });
 

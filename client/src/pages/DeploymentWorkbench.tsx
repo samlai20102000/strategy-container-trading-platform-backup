@@ -84,6 +84,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 
 type DeploymentRow = RouterOutputs["deployments"]["list"][number];
 type TransitionRow = RouterOutputs["deployments"]["getHistory"][number];
+type RecentModeDecisionRow = RouterOutputs["deployments"]["getStatus"]["recentDecisions"][number];
 
 interface PreflightCheckView {
   code: string;
@@ -112,6 +113,73 @@ interface PreflightReportView {
     marginUsagePct: number | null;
   };
   preflightHash: string;
+}
+
+function RecentModeDecisionsPanel({
+  rows,
+  isLoading,
+}: {
+  rows: RecentModeDecisionRow[];
+  isLoading: boolean;
+}) {
+  return (
+    <section
+      data-testid="canonical-mode-decisions"
+      className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.035] p-5"
+      aria-label="Canonical mode decisions"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="flex items-center gap-2 font-semibold">
+            <ShieldCheck className="h-4 w-4 text-cyan-300" />Canonical mode decisions
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            最近 runtime 授權決策的唯讀證據；target leg 為空代表該候選未指向既有腿，介面不會自行推斷。
+          </p>
+        </div>
+        <Badge variant="outline" className="border-cyan-500/30 text-cyan-300">{rows.length} 筆</Badge>
+      </div>
+
+      {isLoading ? (
+        <div className="mt-4 space-y-2"><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
+      ) : rows.length === 0 ? (
+        <div className="mt-4 rounded-lg border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
+          尚無 canonical mode decision；部署仍可保持 DRAFT／停用，不代表已取得交易授權。
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-2">
+          {rows.slice(0, 10).map(row => {
+            const mode = asMode(row.executionMode);
+            const allowed = String(row.outcome).toUpperCase() === "ALLOW";
+            return (
+              <article key={row.decisionId} className="rounded-lg border border-border/60 bg-background/55 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  {modeBadge(mode)}
+                  <Badge
+                    variant="outline"
+                    className={allowed
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                      : "border-amber-500/30 bg-amber-500/10 text-amber-300"}
+                  >
+                    {String(row.outcome)}
+                  </Badge>
+                  <code className="break-all rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-foreground">{row.reasonCode}</code>
+                  <time className="ml-auto text-[10px] text-muted-foreground">{formatDate(row.createdAt)}</time>
+                </div>
+                <dl className="mt-2 grid gap-x-4 gap-y-1 text-[11px] sm:grid-cols-[90px_1fr_90px_1fr]">
+                  <dt className="text-muted-foreground">Source</dt><dd className="font-mono">{row.source}</dd>
+                  <dt className="text-muted-foreground">Target leg</dt><dd className="break-all font-mono">{row.legId ?? "—（未封印）"}</dd>
+                  <dt className="text-muted-foreground">Cycle</dt><dd className="break-all font-mono">{row.cycleId ?? "—（未封印）"}</dd>
+                  <dt className="text-muted-foreground">Candidate</dt><dd className="break-all font-mono">{row.candidateId}</dd>
+                  <dt className="text-muted-foreground">Decision</dt><dd className="break-all font-mono sm:col-span-3">{row.decisionId}</dd>
+                </dl>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 const EXECUTION_MODES: ExecutionMode[] = [
@@ -978,6 +1046,11 @@ export default function DeploymentWorkbench() {
                               ))}
                             </div>
                           </div>
+
+                          <RecentModeDecisionsPanel
+                            rows={statusQuery.data?.recentDecisions ?? []}
+                            isLoading={statusQuery.isLoading}
+                          />
 
                           <div className="grid gap-4 lg:grid-cols-3">
                             {EXECUTION_MODES.map(mode => {

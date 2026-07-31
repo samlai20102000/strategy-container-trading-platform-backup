@@ -21,6 +21,13 @@ import {
   unregisterStrategy,
   validateStrategyCode,
 } from "./services/strategyStudio";
+import { StrategyKamaRainbowMartin } from "./strategies/builtin/strategyKamaRainbowMartin";
+import {
+  KAMA_RAINBOW_MARTIN_RUNTIME_NAMESPACE,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_NAME,
+  createKamaRainbowMartinDefaultConfig,
+} from "../shared/strategies/kamaRainbowMartin";
 
 /* ==================== 馬丁倉位計算 ==================== */
 
@@ -161,6 +168,70 @@ describe("Strategy20415 七彩虹註冊橋接", () => {
   });
 });
 
+describe("Kama 彩虹馬丁註冊橋接", () => {
+  const engine = new StrategyKamaRainbowMartin();
+  const config = createKamaRainbowMartinDefaultConfig();
+  const instance = {
+    id: 91,
+    symbol: "BTCUSDT",
+    direction: "both" as const,
+    positionSize: 100,
+    leverage: 3,
+    config,
+  };
+
+  it("公開獨立 key、名稱、V1 canonical config 與馬丁 capability", () => {
+    expect(engine.key).toBe(KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
+    expect(engine.name).toBe(KAMA_RAINBOW_MARTIN_STRATEGY_NAME);
+    expect(engine.defaultConfig.version).toBe("kamaRainbowMartin.v1");
+    expect(engine.defaultConfig.kamaLines).toHaveLength(2);
+    expect(engine.capabilities.martingaleLayers).toBe(true);
+    expect(engine.validateConfig(engine.defaultConfig).valid).toBe(true);
+  });
+
+  it("明確手動 BUY／SELL 只在空倉且方向允許時橋接", () => {
+    expect(engine.generateActions(
+      { action: "BUY", symbol: "BTCUSDT", price: 50_000 },
+      instance,
+      null,
+      { lossCount: 0, currentLot: 0, lastEntryPrice: 0 },
+    )).toMatchObject({ action: "OPEN_LONG", lotSize: 100 });
+    expect(engine.generateActions(
+      { action: "SELL", symbol: "BTCUSDT", price: 50_000 },
+      { ...instance, direction: "long" as const },
+      null,
+      { lossCount: 0, currentLot: 0, lastEntryPrice: 0 },
+    )).toMatchObject({ action: "HOLD" });
+  });
+
+  it("專用 runtime 已持倉時由 fresh-quote 核心接管，不重複開倉", () => {
+    const action = engine.generateActions(
+      { action: "BUY", symbol: "BTCUSDT", price: 50_000 },
+      instance,
+      null,
+      {
+        lossCount: 0,
+        currentLot: 100,
+        lastEntryPrice: 50_000,
+        [KAMA_RAINBOW_MARTIN_RUNTIME_NAMESPACE]: {
+          currentLayer: 1,
+          totalQuantity: 0.002,
+        },
+      } as MartinState,
+    );
+    expect(action).toMatchObject({ action: "HOLD" });
+    expect(action.reason).toContain("KRM_POSITION_MANAGED");
+  });
+
+  it("拒絕只啟用一條 KAMA 的配置", () => {
+    const invalid = {
+      ...config,
+      kamaLines: config.kamaLines.map((line, index) => ({ ...line, enabled: index === 0 })),
+    };
+    expect(engine.validateConfig(invalid).valid).toBe(false);
+  });
+});
+
 /* ==================== 代碼安全驗證 ==================== */
 
 describe("validateStrategyCode 安全驗證", () => {
@@ -217,6 +288,8 @@ describe("內建策略保護機制", () => {
   it("strategy_20415 屬於內建 key", async () => {
     await initStrategyStudio();
     expect(isBuiltInKey("strategy_20415")).toBe(true);
+    expect(isBuiltInKey(KAMA_RAINBOW_MARTIN_STRATEGY_KEY)).toBe(true);
+    expect(getStrategy(KAMA_RAINBOW_MARTIN_STRATEGY_KEY)).toBeInstanceOf(StrategyKamaRainbowMartin);
     expect(isBuiltInKey("my_custom")).toBe(false);
   });
 

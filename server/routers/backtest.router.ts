@@ -59,6 +59,12 @@ import {
   V41_CONFIG_KEY,
   V41_STRATEGY_KEY,
 } from "../../shared/strategies/kama3kMartinV41";
+import {
+  assertValidKamaRainbowMartinConfig,
+  getKamaRainbowMartinTimeframeMinutes,
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+} from "../../shared/strategies/kamaRainbowMartin";
 import { deriveV41StrategyColumns } from "../services/v41StrategyConfig";
 
 const executionModeSchema = z.enum([
@@ -160,6 +166,10 @@ export function normalizeSnapshotConfigForStrategy(
     if (strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
       return { ...assertValidRainbowTrendLadderConfig(rawConfig) };
     }
+    if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+      const nestedConfig = rawConfig[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY];
+      return { ...assertValidKamaRainbowMartinConfig(nestedConfig ?? rawConfig) };
+    }
     return { ...rawConfig };
   } catch (error) {
     const label = strategyKey === V41_STRATEGY_KEY
@@ -168,7 +178,9 @@ export function normalizeSnapshotConfigForStrategy(
         ? "20415 七彩虹"
         : strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
           ? "七彩虹線趨勢跟蹤階梯馬丁"
-          : "V2.5";
+          : strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+            ? "Kama 彩虹馬丁"
+            : "V2.5";
     throw new Error(
       `${label}快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
     );
@@ -262,6 +274,10 @@ export function validateBacktestRequest(input: z.infer<typeof backtestRequestSch
     } else if (input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
       const config = assertValidRainbowTrendLadderConfig(input.config);
       input.config = { ...config };
+    } else if (input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+      const nestedConfig = input.config[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY];
+      const config = assertValidKamaRainbowMartinConfig(nestedConfig ?? input.config);
+      input.config = { ...input.config, ...config };
     } else if (input.strategyKey === V25_STRATEGY_KEY) {
       const config = assertValidV25Config(input.config);
       input.config = { ...config };
@@ -319,7 +335,16 @@ export const backtestRouter = router({
       const userId = ctx.user?.id;
       if (!userId) throw new Error("請先登入");
       const { timeout, strategyName, tradeAmount, ...rest } = input;
-      const request = validateBacktestRequest(rest);
+      const requestInput = input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && tradeAmount
+        ? {
+            ...rest,
+            config: {
+              ...(rest.config ?? {}),
+              Position_Size_Value: tradeAmount,
+            },
+          }
+        : rest;
+      const request = validateBacktestRequest(requestInput);
       const jobId = await backtestJobManager.submit(request, userId, {
         timeoutSeconds: timeout,
         strategyName,
@@ -584,6 +609,26 @@ export const backtestRouter = router({
                       baseLotSizeMode: String((storedConfig.Base_Lot_Size as { mode?: unknown })?.mode ?? "quantity"),
                       configJson: storedConfig,
                     }
+                  : input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+                    ? {
+                        tradeAmount: finiteNumber(
+                          input.backtestSettings.baseLotSize ?? input.backtestSettings.tradeAmount,
+                          100,
+                        ),
+                        baseLotSize: finiteNumber(
+                          input.backtestSettings.baseLotSize ?? input.backtestSettings.tradeAmount,
+                          100,
+                        ),
+                        baseLotSizeMode: input.backtestSettings.baseLotSizeMode === "quantity"
+                          ? "quantity"
+                          : "usdt",
+                        timeframe: timeframeForMinutes(
+                          getKamaRainbowMartinTimeframeMinutes(
+                            assertValidKamaRainbowMartinConfig(storedConfig).timeframe,
+                          ),
+                        ),
+                        configJson: storedConfig,
+                      }
                 : {}),
           }
         : null;
@@ -611,7 +656,12 @@ export const backtestRouter = router({
         slippage: input.environment?.slippage !== undefined ? String(input.environment.slippage) : null,
       });
 
-      return { success: true, snapshotName, artifact };
+      const compatibility = assessStrategyArtifactCompatibility({
+        artifact,
+        targetManifest: capabilityManifest,
+        integrityValid: true,
+      });
+      return { success: true, snapshotName, artifact, compatibility };
     }),
 
   /** 獲取參數快照列表（可按策略過濾） */
@@ -753,6 +803,9 @@ export const backtestRouter = router({
       const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
         ? assertValidRainbowTrendLadderConfig(config)
         : undefined;
+      const kamaRainbowMartinConfig = snapshotKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+        ? assertValidKamaRainbowMartinConfig(config)
+        : undefined;
       const firstLadderRange = ladderConfig?.Martin_Layers.find(
         (range) => range.enabled && range.layer <= ladderConfig.Max_Layers,
       );
@@ -773,16 +826,19 @@ export const backtestRouter = router({
             executionPolicy: artifactBundle.artifact.executionPolicy,
             executionPolicyVersion: artifactBundle.artifact.executionPolicyVersion,
           } : {}),
-          martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
+          martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
           maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
               : ladderConfig
                 ? ladderConfig.Max_Layers
-                : config.Max_Layers ?? (strategy as any).maxMartinLevel),
+                : kamaRainbowMartinConfig
+                  ? kamaRainbowMartinConfig.maxLayers
+                  : config.Max_Layers ?? (strategy as any).maxMartinLevel),
           martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
-            nextLadderRange?.triggerSpacingPct
+            kamaRainbowMartinConfig?.gapPct
+              ?? nextLadderRange?.triggerSpacingPct
               ?? (firstRainbowRange
                 ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
                 : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct),
@@ -808,6 +864,11 @@ export const backtestRouter = router({
             takeProfitPct: String(ladderConfig.Trailing_Activation_Pct),
             kLinePeriod: ladderConfig.Entry_Timeframe_Minutes,
             reentryEnabled: ladderConfig.Reentry_Wait_Next_M30_Close,
+          } : kamaRainbowMartinConfig ? {
+            stopLossPct: String(kamaRainbowMartinConfig.hardStopLossPct),
+            takeProfitPct: "0",
+            kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
+            reentryEnabled: false,
           } : {}),
         })
         .where(eq(strategies.id, input.targetStrategyId));
@@ -881,6 +942,9 @@ export const backtestRouter = router({
       const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
         ? assertValidRainbowTrendLadderConfig(config)
         : undefined;
+      const kamaRainbowMartinConfig = snapshotKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+        ? assertValidKamaRainbowMartinConfig(config)
+        : undefined;
       const firstLadderRange = ladderConfig?.Martin_Layers.find(
         (range) => range.enabled && range.layer <= ladderConfig.Max_Layers,
       );
@@ -917,19 +981,22 @@ export const backtestRouter = router({
         ...buildDisabledSnapshotDeploymentFields(artifactBundle.artifact),
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
-        stopLossPct: v41Columns?.stopLossPct ?? String(rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
-        takeProfitPct: v41Columns?.takeProfitPct ?? String(ladderConfig?.Trailing_Activation_Pct ?? rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0)),
+        stopLossPct: v41Columns?.stopLossPct ?? String(kamaRainbowMartinConfig?.hardStopLossPct ?? (rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0)))),
+        takeProfitPct: v41Columns?.takeProfitPct ?? String(kamaRainbowMartinConfig ? 0 : (ladderConfig?.Trailing_Activation_Pct ?? rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0))),
         maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
-        martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
+        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
         maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbowConfig
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
             : ladderConfig
               ? ladderConfig.Max_Layers
-              : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1)))),
+              : kamaRainbowMartinConfig
+                ? kamaRainbowMartinConfig.maxLayers
+                : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1)))),
         martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
-          nextLadderRange?.triggerSpacingPct
+          kamaRainbowMartinConfig?.gapPct
+            ?? nextLadderRange?.triggerSpacingPct
             ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0),
@@ -950,8 +1017,18 @@ export const backtestRouter = router({
         ),
         strategyKey: snapshotKey,
         tradeMode: 'webhook',
-        kLinePeriod: v41Columns?.kLinePeriod ?? ladderConfig?.Entry_Timeframe_Minutes ?? rainbowConfig?.Entry_Timeframe_Minutes ?? resolveKLineMinutes(config, backtestSettings.timeframe),
-        reentryEnabled: v41Columns?.reentryEnabled ?? ladderConfig?.Reentry_Wait_Next_M30_Close ?? rainbowConfig?.Reentry_Enabled ?? config.Reentry_On_Trend !== false,
+        kLinePeriod: v41Columns?.kLinePeriod
+          ?? (kamaRainbowMartinConfig
+            ? getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe)
+            : ladderConfig?.Entry_Timeframe_Minutes
+              ?? rainbowConfig?.Entry_Timeframe_Minutes
+              ?? resolveKLineMinutes(config, backtestSettings.timeframe)),
+        reentryEnabled: v41Columns?.reentryEnabled
+          ?? (kamaRainbowMartinConfig
+            ? false
+            : ladderConfig?.Reentry_Wait_Next_M30_Close
+              ?? rainbowConfig?.Reentry_Enabled
+              ?? config.Reentry_On_Trend !== false),
       });
 
       const newId = insertResult?.[0]?.insertId;
@@ -1041,6 +1118,9 @@ export const backtestRouter = router({
       const ladderConfig = snapshotKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
         ? assertValidRainbowTrendLadderConfig(config)
         : undefined;
+      const kamaRainbowMartinConfig = snapshotKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+        ? assertValidKamaRainbowMartinConfig(config)
+        : undefined;
       const firstLadderRange = ladderConfig?.Martin_Layers.find(
         (range) => range.enabled && range.layer <= ladderConfig.Max_Layers,
       );
@@ -1056,16 +1136,19 @@ export const backtestRouter = router({
           disabledReason: "策略配置已更新；必須重新通過部署 preflight 後才可啟用",
           capabilitySnapshot: capabilityManifest as unknown as Record<string, unknown>,
           strategyVersion: capabilityManifest.strategyVersion,
-          martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
+          martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
           maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
               ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges))
               : ladderConfig
                 ? ladderConfig.Max_Layers
-                : config.Max_Layers ?? (instance as any).maxMartinLevel),
+                : kamaRainbowMartinConfig
+                  ? kamaRainbowMartinConfig.maxLayers
+                  : config.Max_Layers ?? (instance as any).maxMartinLevel),
           martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
-            nextLadderRange?.triggerSpacingPct
+            kamaRainbowMartinConfig?.gapPct
+              ?? nextLadderRange?.triggerSpacingPct
               ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct),
@@ -1091,6 +1174,11 @@ export const backtestRouter = router({
             takeProfitPct: String(ladderConfig.Trailing_Activation_Pct),
             kLinePeriod: ladderConfig.Entry_Timeframe_Minutes,
             reentryEnabled: ladderConfig.Reentry_Wait_Next_M30_Close,
+          } : kamaRainbowMartinConfig ? {
+            stopLossPct: String(kamaRainbowMartinConfig.hardStopLossPct),
+            takeProfitPct: "0",
+            kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
+            reentryEnabled: false,
           } : {}),
         })
         .where(eq(strategies.id, input.targetInstanceId));

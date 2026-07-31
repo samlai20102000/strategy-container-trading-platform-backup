@@ -14,6 +14,8 @@ import { startV50Monitor, runV50Check } from "../services/v50Monitor";
 import { sdk } from "./sdk";
 import { initStrategyStudio } from "../services/strategyStudio";
 import { V41_STRATEGY_KEY } from "../../shared/strategies/kama3kMartinV41";
+import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "../../shared/strategies/kamaRainbowMartin";
+import { appendKamaRainbowMartinHeartbeatTrace } from "../../shared/observability/kamaRainbowMartinTrace";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { backtestWsService } from "../services/wsService";
@@ -281,11 +283,22 @@ async function startServer() {
         // Record heartbeat log: HOLD with detailed reason
         try {
           const { createHeartbeatLog } = await import("../db");
+          const rawHoldDetail = `[${holdType}] ${holdDetailText}`;
+          const holdReasonCode = holdDetailText.match(/\[(KRM_[A-Z0-9_]+)\]/)?.[1] ?? null;
+          const holdExecutionMode = strategy.executionMode === "MULTI_POSITION" || strategy.executionMode === "HEDGE_GUARDED"
+            ? strategy.executionMode
+            : "SINGLE_EXCLUSIVE";
           await createHeartbeatLog({
             strategyId,
             userId: strategy.userId,
             result: "hold",
-            detail: `[${holdType}] ${holdDetailText}`,
+            detail: strategy.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+              ? appendKamaRainbowMartinHeartbeatTrace(rawHoldDetail, {
+                  action: "HOLD",
+                  reasonCode: holdReasonCode,
+                  executionMode: holdExecutionMode,
+                })
+              : rawHoldDetail,
           });
         } catch (e) { console.warn("[Heartbeat] Failed to log HOLD:", e); }
         return res.json({ ok: true, message: holdDetailText, holdType, ranAt: new Date().toISOString() });
@@ -321,6 +334,8 @@ async function startServer() {
       const result = await executeSignal(strategy, parsedSignal, signalId, {
         source: "AUTO",
         eventKey: signal.barTimestamp ? `bar:${signal.barTimestamp}` : `signal:${signalId}`,
+        cycleId: (signal as any).kamaRainbowMartinCycleId,
+        legId: (signal as any).kamaRainbowMartinLegId,
       });
       console.log(`[Heartbeat/AutoTrade] 💰 Execution result: status=${result.status} orderId=${result.orderId || 'none'} msg=${result.message}`);
 
@@ -364,13 +379,26 @@ async function startServer() {
       try {
         const { createHeartbeatLog } = await import("../db");
         const logResult = result.status === "executed" ? "executed" : result.status === "failed" ? "failed" : "signal";
+        const baseDetail = `${signal.action.toUpperCase()} @ ${signal.price || 'market'} → ${result.status}: ${result.message}`;
+        const sealedSignal = signal as any;
         await createHeartbeatLog({
           strategyId,
           userId: strategy.userId,
           result: logResult as any,
           signalAction: signal.action,
           signalPrice: signal.price?.toString() || null,
-          detail: `${signal.action.toUpperCase()} @ ${signal.price || 'market'} → ${result.status}: ${result.message}`,
+          detail: sealedSignal.kamaRainbowMartinDecision === true
+            ? appendKamaRainbowMartinHeartbeatTrace(baseDetail, {
+                action: sealedSignal.kamaRainbowMartinAction,
+                reasonCode: sealedSignal.kamaRainbowMartinReasonCode,
+                executionMode: sealedSignal.kamaRainbowMartinExecutionMode,
+                cycleId: sealedSignal.kamaRainbowMartinCycleId,
+                legId: sealedSignal.kamaRainbowMartinLegId,
+                layerNum: sealedSignal.kamaRainbowMartinLayerNum,
+                configRevision: sealedSignal.kamaRainbowMartinConfigRevision,
+                eventKey: sealedSignal.kamaRainbowMartinEventKey,
+              })
+            : baseDetail,
         });
       } catch (e) { console.warn("[Heartbeat] Failed to log result:", e); }
 

@@ -12,6 +12,7 @@ import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { BaseStrategy, type StrategyCapabilities } from "../strategies/base";
 import { Strategy20415 } from "../strategies/builtin/strategy20415";
+import { StrategyKamaRainbowMartin } from "../strategies/builtin/strategyKamaRainbowMartin";
 import { StrategyRainbowTrendLadder } from "../strategies/builtin/strategyRainbowTrendLadder";
 import { StrategyKama3kBreakoutV25 } from "../strategies/v25/strategy_kama_3k_breakout_v25";
 import { StrategyKama3kV35 } from "../strategies/v35/strategy_kama_3k_v35";
@@ -34,6 +35,7 @@ const CUSTOM_DIR = path.resolve(__dirname, "../strategies/custom");
 export const BUILT_IN_KEYS = [
   "strategy_20415",
   "RAINBOW_TREND_LADDER_V1",
+  "KAMA_RAINBOW_MARTIN_V1",
   "KAMA_3K_BREAKOUT_V25",
   "20415_KAMA_MARTIN_V35",
   "20415_KAMA_MARTIN_V41",
@@ -52,6 +54,7 @@ const BUILT_IN_CAPABILITIES: Readonly<Record<
 >> = Object.freeze({
   strategy_20415: Object.freeze({ martingaleLayers: true }),
   RAINBOW_TREND_LADDER_V1: Object.freeze({ martingaleLayers: true }),
+  KAMA_RAINBOW_MARTIN_V1: Object.freeze({ martingaleLayers: true }),
   KAMA_3K_BREAKOUT_V25: Object.freeze({ martingaleLayers: true }),
   "20415_KAMA_MARTIN_V35": Object.freeze({ martingaleLayers: true }),
   "20415_KAMA_MARTIN_V41": Object.freeze({ martingaleLayers: true }),
@@ -62,6 +65,7 @@ const BUILT_IN_CAPABILITIES: Readonly<Record<
 const NO_STRATEGY_CAPABILITIES = Object.freeze({ martingaleLayers: false });
 
 const ADVANCED_MODE_KEYS = new Set<string>([
+  "KAMA_RAINBOW_MARTIN_V1",
   "20415_KAMA_MARTIN_V35",
   "KAMA_3K_ULTIMATE_V50",
   "KAMA_3K_HF_V61",
@@ -341,13 +345,14 @@ export async function initStrategyStudio(): Promise<void> {
   // 1. 註冊內建策略
   register(new Strategy20415());
   register(new StrategyRainbowTrendLadder());
+  register(new StrategyKamaRainbowMartin());
   register(new StrategyKama3kBreakoutV25());
   register(new StrategyKama3kV35());
   register(new StrategyKama3kV41());
   register(new StrategyKama3kV50());
   register(new StrategyKama3kV61());
   register(new StrategyKama3kV70());
-  console.log("[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, 20415_KAMA_MARTIN_V41, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70");
+  console.log("[StrategyStudio] 內建策略已註冊: strategy_20415, RAINBOW_TREND_LADDER_V1, KAMA_RAINBOW_MARTIN_V1, KAMA_3K_BREAKOUT_V25, 20415_KAMA_MARTIN_V35, 20415_KAMA_MARTIN_V41, KAMA_3K_ULTIMATE_V50, KAMA_3K_HF_V61, KAMA_3K_TORNADO_V70");
 
   // 2. 從 DB 重載所有啟用中的自訂策略
   try {

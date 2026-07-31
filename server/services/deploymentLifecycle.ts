@@ -16,6 +16,10 @@ import {
   normalizeVersionedCapabilityManifest,
   type VersionedStrategyCapabilityManifest,
 } from "./strategyArtifacts";
+import {
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  validateKamaRainbowMartinConfig,
+} from "../../shared/strategies/kamaRainbowMartin";
 
 export const DEPLOYMENT_PREFLIGHT_CONTRACT_VERSION = "deployment-preflight-v1" as const;
 
@@ -53,6 +57,8 @@ export interface DeploymentDescriptor {
   apiKeyId: number;
   exchange: "bybit" | "okx";
   symbol: string;
+  /** Canonical strategy configuration bound to this exact strategy key. */
+  strategyConfig?: unknown;
 }
 
 export interface DeploymentPreflightFacts {
@@ -250,6 +256,10 @@ export function buildDeploymentPreflightReport(
   const grossPct = equity && gross !== null ? rounded((gross / equity) * 100) : null;
   const marginPct = equity && usedMargin !== null ? rounded((usedMargin / equity) * 100) : null;
   const advancedMode = policy.mode !== "SINGLE_EXCLUSIVE";
+  const isKamaRainbowMartin = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
+  const kamaRainbowMartinValidation = isKamaRainbowMartin
+    ? validateKamaRainbowMartinConfig(deployment.strategyConfig)
+    : null;
 
   addCheck(checks, {
     code: "DEPLOYMENT_IDENTITY_VALID",
@@ -303,6 +313,37 @@ export function buildDeploymentPreflightReport(
       supportedModes: facts.currentManifest.capabilities.supportedModes,
     },
   });
+  if (isKamaRainbowMartin) {
+    addCheck(checks, {
+      code: "KRM_CANONICAL_CONFIG_VALID",
+      category: "ARTIFACT",
+      passed: deployment.strategyConfig !== undefined
+        && kamaRainbowMartinValidation?.valid === true,
+      message: "Kama彩虹馬丁部署必須綁定同 strategy key 的合法 canonical 配置。",
+      evidence: {
+        present: deployment.strategyConfig !== undefined,
+        issueCodes: kamaRainbowMartinValidation?.issues.map(issue => issue.code) ?? [],
+      },
+    });
+  }
+  if (isKamaRainbowMartin && policy.mode === "HEDGE_GUARDED") {
+    const hardStopLossPct = kamaRainbowMartinValidation?.config.hardStopLossPct ?? null;
+    addCheck(checks, {
+      code: "KRM_H3_PROTECTION_PRECEDES_HARD_STOP",
+      category: "RISK",
+      passed: kamaRainbowMartinValidation?.valid === true
+        && policy.primaryLossTriggerPct === 4
+        && hardStopLossPct !== null
+        && policy.primaryLossTriggerPct < hardStopLossPct
+        && policy.hedgeMartinEnabled === false,
+      message: "Kama彩虹馬丁 H3 必須在主腿 -4% 觸發保護，且門檻早於硬止損；保護腿禁止馬丁。",
+      evidence: {
+        primaryLossTriggerPct: policy.primaryLossTriggerPct,
+        hardStopLossPct,
+        hedgeMartinEnabled: policy.hedgeMartinEnabled,
+      },
+    });
+  }
   for (const blocker of [...(facts.artifactCompatibilityBlockers ?? [])].sort()) {
     addCheck(checks, {
       code: `ARTIFACT_${blocker}`,

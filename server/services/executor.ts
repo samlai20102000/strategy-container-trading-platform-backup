@@ -17,11 +17,25 @@ import type { ExchangeAdapter } from "../exchanges/types";
 import type { MartinState, StrategyState } from "../strategies/base";
 import { BaseStrategyV35, createInitialStrategyState } from "../strategies/base";
 import { getStrategy, initStrategyStudio } from "./strategyStudio";
-import { acquireBarLock } from "./barLock";
+import { acquireBarLock, releaseAllLocks } from "./barLock";
 import { MartingaleEngine, parseMartinLayers } from "./martingaleEngine";
 import { calculateMaxLayersFromConfig } from "./parameterValidator";
 import { loadStrategyState, saveStrategyState } from "./strategyStateManager";
 import { normalizeQtyForSymbol } from "./symbolSpecs";
+import {
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  validateKamaRainbowMartinConfig,
+} from "../../shared/strategies/kamaRainbowMartin";
+import {
+  applyKamaRainbowMartinCloseToState,
+  applyKamaRainbowMartinFillToState,
+  applyKamaRainbowMartinPartialCloseToState,
+  type KamaRainbowMartinCloseReason,
+} from "../strategies/kamaRainbowMartin/management";
+import type { KamaRainbowMartinPositionSize } from "../strategies/kamaRainbowMartin/core";
+import { fetchKamaRainbowMartinFreshQuote } from "./kamaRainbowMartinMarketData";
+import { executeKamaRainbowMartinSignal } from "./kamaRainbowMartinExecutor";
 import { TradingPairManager } from "./tradingPairManager";
 import { StrategySymbolAdapter, StrategyAdapters } from "./strategySymbolAdapter";
 import { calculateV35RealizedPnl } from "./v35Accounting";
@@ -125,6 +139,18 @@ export interface ParsedSignal {
   rainbowTrendLadderOrderSize?: RainbowTrendLadderBaseLot;
   /** KILL 只可由受保護的伺服器程序注入；收到後先永久鎖定，再驗證持倉所有權。 */
   rainbowTrendLadderKill?: boolean;
+  rainbowTrendLadderMarginKill?: boolean;
+  kamaRainbowMartinDecision?: boolean;
+  kamaRainbowMartinAction?: "OPEN_LONG" | "OPEN_SHORT" | "ADD_LONG" | "ADD_SHORT" | "CLOSE";
+  kamaRainbowMartinReasonCode?: string;
+  kamaRainbowMartinEventKey?: string;
+  kamaRainbowMartinLayerNum?: number;
+  kamaRainbowMartinOrderSize?: KamaRainbowMartinPositionSize;
+  kamaRainbowMartinCloseReason?: KamaRainbowMartinCloseReason;
+  kamaRainbowMartinConfigRevision?: string;
+  kamaRainbowMartinExecutionMode?: "SINGLE_EXCLUSIVE" | "MULTI_POSITION" | "HEDGE_GUARDED";
+  kamaRainbowMartinCycleId?: string;
+  kamaRainbowMartinLegId?: string;
 }
 
 /**
@@ -229,8 +255,9 @@ export async function executeSignal(
     return { status: "failed", message: "找不到策略綁定的 API 金鑰" };
   }
   let adapter: ExchangeAdapter;
+  let rawAdapter: ExchangeAdapter;
   try {
-    const rawAdapter = createAdapter(apiKeyRecord);
+    rawAdapter = createAdapter(apiKeyRecord);
     const source = options.source ?? (signalId > 0 ? "WEBHOOK" : "AUTO");
     const eventKey = options.eventKey
       ?? (signal.barTimestamp ? `bar:${signal.barTimestamp}` : signalId > 0 ? `signal:${signalId}` : `runtime:${Date.now()}`);
@@ -276,6 +303,17 @@ export async function executeSignal(
       v25Engine,
       adapter,
       apiKeyRecord,
+    );
+  }
+
+  // Kama 彩虹馬丁必須先於通用 close／策略引擎分派，確保腿級 ownership 與精確 reduce-only 生效。
+  if (strategy.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+    return executeKamaRainbowMartinSignal(
+      strategy,
+      signal,
+      signalId,
+      rawAdapter,
+      options,
     );
   }
 

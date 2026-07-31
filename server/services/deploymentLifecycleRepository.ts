@@ -40,7 +40,10 @@ import {
   capabilityManifestSupportsMode,
   type VersionedStrategyCapabilityManifest,
 } from "./strategyArtifacts";
-import { pickStrategyConfigState } from "./strategySnapshotConfig";
+import {
+  getBoundStrategyConfig,
+  pickStrategyConfigState,
+} from "./strategySnapshotConfig";
 
 type DeploymentDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 type DeploymentTransaction = Parameters<Parameters<DeploymentDb["transaction"]>[0]>[0];
@@ -229,6 +232,9 @@ function toDescriptor(row: Strategy): DeploymentDescriptor {
     apiKeyId: row.apiKeyId,
     exchange: row.exchange,
     symbol: row.symbol,
+    strategyConfig: row.strategyKey
+      ? getBoundStrategyConfig(row.martinState, row.strategyKey)
+      : undefined,
   };
 }
 

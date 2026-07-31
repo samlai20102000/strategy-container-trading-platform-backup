@@ -54,9 +54,15 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { toast } from "sonner";
 import { Link } from "wouter";
 import DashboardLayout from "@/components/DashboardLayout";
+import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "@shared/strategies/kamaRainbowMartin";
 
 // ─── Constants ───────────────────────────────────────────────────
 const SIGNAL_PAGE_SIZE = 25;
+const KRM_MODE_LABELS: Record<string, string> = {
+  SINGLE_EXCLUSIVE: "S1 單倉獨佔",
+  MULTI_POSITION: "M2 多倉獨立",
+  HEDGE_GUARDED: "H3 保護對沖",
+};
 
 // ─── Main Export ─────────────────────────────────────────────────
 export default function Home() {
@@ -1808,6 +1814,34 @@ function PositionDrawer({
     ? strategies.find((strategy) => strategy.id === position.strategyId)
     : undefined;
   const martinState = (matchedStrategy?.martinState ?? {}) as any;
+  const isKamaRainbowMartin = matchedStrategy?.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
+  const { data: krmMonitor, isLoading: krmMonitorLoading } = trpc.strategies.kamaRainbowMartinRuntimeMonitor.useQuery(
+    { strategyId: matchedStrategy?.id ?? 0 },
+    {
+      enabled: isKamaRainbowMartin && Boolean(matchedStrategy?.id),
+      refetchInterval: 10_000,
+      staleTime: 5_000,
+    },
+  );
+  const s1Runtime = (martinState.kamaRainbowMartinRuntime ?? {}) as Record<string, any>;
+  const renderKamaLines = (lineValues: Record<string, number> | undefined) => {
+    const entries = Object.entries(lineValues ?? {}).filter(([, value]) => Number.isFinite(Number(value)));
+    if (entries.length === 0) return <span className="text-xs text-muted-foreground">行情資料尚未就緒</span>;
+    return (
+      <div className="grid grid-cols-2 gap-1.5 font-mono text-[10px] sm:grid-cols-3">
+        {entries.map(([key, value]) => (
+          <span key={key} className={cn(
+            "rounded border px-1.5 py-1",
+            key.startsWith("red") ? "border-rose-500/30 text-rose-300"
+              : key.startsWith("green") ? "border-emerald-500/30 text-emerald-300"
+                : "border-sky-500/30 text-sky-300",
+          )}>
+            {key}: {Number(value).toFixed(4)}
+          </span>
+        ))}
+      </div>
+    );
+  };
   const nativePnlPct = typeof position.unrealizedPnlRatioPct === "number"
     ? position.unrealizedPnlRatioPct
     : position.positionMargin > 0
@@ -1926,6 +1960,86 @@ function PositionDrawer({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {isKamaRainbowMartin && (
+            <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-semibold text-cyan-200">Kama 彩虹馬丁 · 唯讀 Runtime</h4>
+                  <p className="text-[10px] text-muted-foreground">每 10 秒讀取腿級 ledger；此區不提供下單或狀態 mutation。</p>
+                </div>
+                <Badge variant="outline" className="border-cyan-500/40 text-[10px] text-cyan-300">
+                  {krmMonitor?.legs.length ? `${krmMonitor.legs.length} 腿` : "S1 Runtime／無進階腿"}
+                </Badge>
+              </div>
+
+              {krmMonitorLoading ? (
+                <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> 載入 KRM runtime…
+                </div>
+              ) : krmMonitor?.legs.length ? (
+                <div className="space-y-3">
+                  {krmMonitor.legs.map((leg) => (
+                    <div key={leg.legId} className="rounded-md border border-border/70 bg-background/60 p-3 space-y-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="secondary" className="text-[10px]">
+                          {KRM_MODE_LABELS[leg.executionMode] ?? leg.executionMode}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px]">{leg.role}</Badge>
+                        <SideBadge side={leg.side} />
+                        <span className="ml-auto font-mono text-[9px] text-muted-foreground">{leg.legId}</span>
+                      </div>
+                      <p className="break-all font-mono text-[9px] text-muted-foreground">Cycle：{leg.cycleId}</p>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div><span className="text-muted-foreground">層級</span><div><LayerBadge layer={leg.currentLayer} /></div></div>
+                        <div><span className="text-muted-foreground">均價</span><p className="font-mono">{leg.avgEntryPrice == null ? "—" : formatPrice(leg.avgEntryPrice)}</p></div>
+                        <div><span className="text-muted-foreground">數量</span><p className="font-mono">{formatSize(leg.quantity)}</p></div>
+                        <div><span className="text-muted-foreground">未實現 PnL</span><p className="font-mono">{leg.unrealizedPnl == null ? "—" : leg.unrealizedPnl.toFixed(4)}</p></div>
+                        <div><span className="text-muted-foreground">最後加倉成交</span><p className="font-mono">{leg.lastLayerFillPrice > 0 ? formatPrice(leg.lastLayerFillPrice) : "—"}</p></div>
+                        <div><span className="text-muted-foreground">Trailing 觸發線</span><p className="font-mono">{leg.triggerProfitPct == null ? "—" : `${leg.triggerProfitPct.toFixed(2)}%`}</p></div>
+                        <div><span className="text-muted-foreground">移動止盈</span><p>{leg.trailingActive ? `已啟動 · 峰值 ${leg.peakProfitPct.toFixed(2)}%` : "未啟動"}</p></div>
+                        <div><span className="text-muted-foreground">方向判定</span><p>{leg.direction}</p></div>
+                      </div>
+                      {renderKamaLines(leg.currentLineValues)}
+                      <div className="grid grid-cols-1 gap-1.5 text-[10px] sm:grid-cols-2">
+                        <div className="rounded border border-border/60 bg-secondary/20 p-2">
+                          <p className="text-muted-foreground">KAMA Pair Lock</p>
+                          <p className="mt-0.5 break-all font-mono">{leg.lockedPair?.join(" ↔ ") ?? "未鎖定"}</p>
+                        </div>
+                        <div className="rounded border border-border/60 bg-secondary/20 p-2">
+                          <p className="text-muted-foreground">KAMA Slopes</p>
+                          <p className="mt-0.5 break-all font-mono">
+                            {Object.entries(leg.lineSlopes ?? {}).length
+                              ? Object.entries(leg.lineSlopes).map(([key, value]) => `${key}:${Number(value).toFixed(6)}`).join(" · ")
+                              : "尚無 slope 證據"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="rounded border border-border/60 bg-secondary/30 p-2 text-[10px]">
+                        <p className="font-mono text-cyan-300">{leg.lastDecisionCode}</p>
+                        <p className="mt-0.5 text-muted-foreground">{leg.lastDecisionReason}</p>
+                        <p className="mt-1 text-[9px] text-muted-foreground">Ledger 更新：{new Date(leg.updatedAt).toLocaleString("zh-TW")}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-border/70 bg-background/60 p-3 space-y-2">
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div><span className="text-muted-foreground">層級</span><div><LayerBadge layer={Number(martinState.currentLayer) || 0} /></div></div>
+                    <div><span className="text-muted-foreground">均價</span><p className="font-mono">{Number(martinState.avgEntryPrice || martinState.entryPrice) > 0 ? formatPrice(Number(martinState.avgEntryPrice || martinState.entryPrice)) : "—"}</p></div>
+                    <div><span className="text-muted-foreground">移動止盈</span><p>{s1Runtime.trailingActive === true ? `已啟動 · 峰值 ${Number(s1Runtime.peakProfitPct ?? 0).toFixed(2)}%` : "未啟動"}</p></div>
+                    <div><span className="text-muted-foreground">方向判定</span><p>{String(s1Runtime.direction ?? "INSUFFICIENT")}</p></div>
+                  </div>
+                  {renderKamaLines(s1Runtime.currentLineValues as Record<string, number> | undefined)}
+                  <div className="rounded border border-border/60 bg-secondary/30 p-2 text-[10px]">
+                    <p className="font-mono text-cyan-300">{String(s1Runtime.lastDecisionCode ?? "KRM_DATA_NOT_READY")}</p>
+                    <p className="mt-0.5 text-muted-foreground">{String(s1Runtime.lastDecisionReason ?? "目前無 active advanced leg；S1 狀態保持唯讀。")}</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

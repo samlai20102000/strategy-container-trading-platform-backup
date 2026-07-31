@@ -38,6 +38,7 @@ import { AlertTriangle, Star, Trash2, Play, Eye, Database, Plus, RefreshCw } fro
 import { toast } from "sonner";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
+import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
 import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
 import {
   RAINBOW_20415_STRATEGY_KEY,
@@ -47,6 +48,13 @@ import {
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
   normalizeRainbowTrendLadderConfig,
 } from "@shared/strategies/rainbowTrendLadder";
+import {
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  getKamaRainbowMartinTimeframeMinutes,
+  normalizeKamaRainbowMartinConfig,
+  validateKamaRainbowMartinConfig,
+} from "@shared/strategies/kamaRainbowMartin";
 import {
   V41_CONFIG_KEY,
   V41_STRATEGY_KEY,
@@ -70,11 +78,22 @@ function getV41SnapshotDisplay(strategyKey: string | null | undefined, rawSnapsh
   return { canonicalCandidate, config, validation };
 }
 
+function getKamaRainbowMartinSnapshotDisplay(strategyKey: string | null | undefined, rawSnapshotConfig: unknown) {
+  if (strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY) return null;
+  const canonicalCandidate = isRecord(rawSnapshotConfig) && isRecord(rawSnapshotConfig[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY])
+    ? rawSnapshotConfig[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]
+    : rawSnapshotConfig;
+  const validation = validateKamaRainbowMartinConfig(canonicalCandidate);
+  const config = validation.config ?? normalizeKamaRainbowMartinConfig(canonicalCandidate);
+  return { canonicalCandidate, config, validation };
+}
+
 export default function ParameterSnapshots() {
   const [sortBy, setSortBy] = useState<"totalReturn" | "winRate" | "sharpeRatio" | "createdAt">("createdAt");
   const [filterStrategy, setFilterStrategy] = useState<string>("all");
   const [viewConfig, setViewConfig] = useState<Record<string, unknown> | null>(null);
   const [viewStrategyKey, setViewStrategyKey] = useState<string | null>(null);
+  const [viewSnapshotId, setViewSnapshotId] = useState<number | null>(null);
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [targetStrategyId, setTargetStrategyId] = useState<string>("");
@@ -137,9 +156,21 @@ export default function ParameterSnapshots() {
     () => getV41SnapshotDisplay(selectedSnapshot?.strategyKey, selectedSnapshot?.config),
     [selectedSnapshot],
   );
+  const selectedKamaRainbowMartinDisplay = useMemo(
+    () => getKamaRainbowMartinSnapshotDisplay(selectedSnapshot?.strategyKey, selectedSnapshot?.config),
+    [selectedSnapshot],
+  );
   const viewV41Display = useMemo(
     () => getV41SnapshotDisplay(viewStrategyKey, viewConfig),
     [viewConfig, viewStrategyKey],
+  );
+  const viewKamaRainbowMartinDisplay = useMemo(
+    () => getKamaRainbowMartinSnapshotDisplay(viewStrategyKey, viewConfig),
+    [viewConfig, viewStrategyKey],
+  );
+  const viewSnapshot = useMemo(
+    () => snapshots.find((snapshot) => snapshot.id === viewSnapshotId) ?? null,
+    [snapshots, viewSnapshotId],
   );
 
   const handleDelete = async (id: number) => {
@@ -336,6 +367,22 @@ export default function ParameterSnapshots() {
                               </div>
                             );
                           })()}
+                          {s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (() => {
+                            const display = getKamaRainbowMartinSnapshotDisplay(s.strategyKey, s.config);
+                            if (!display) return null;
+                            return (
+                              <div className="mt-2 flex min-w-56 flex-wrap items-center gap-1.5">
+                                <Badge variant="outline" className="border-cyan-500/40 text-[10px] text-cyan-200">
+                                  {getKamaRainbowMartinTimeframeMinutes(display.config.timeframe)}m
+                                </Badge>
+                                <Badge variant="outline" className="text-[10px]">{display.config.kamaLines.length} KAMA</Badge>
+                                <Badge variant="outline" className="text-[10px]">{display.config.maxLayers} 層</Badge>
+                                {!display.validation.valid && (
+                                  <Badge variant="outline" className="border-amber-500/45 text-[10px] text-amber-300">需複核</Badge>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className={`text-right font-mono ${(s.totalReturn ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                           {fmtNum(s.totalReturn)}%
@@ -363,6 +410,7 @@ export default function ParameterSnapshots() {
                               onClick={() => {
                                 setViewConfig(s.config);
                                 setViewStrategyKey(s.strategyKey);
+                                setViewSnapshotId(s.id);
                               }}
                               title="查看參數"
                             >
@@ -403,7 +451,8 @@ export default function ParameterSnapshots() {
                             ?? cfg.Base_Lot_Size
                             ?? 30,
                         );
-                        const rawSnapshotPositionMode = rainbowConfig?.Base_Lot_Size.mode
+                        const rawSnapshotPositionMode = bs?.baseLotSizeMode
+                          ?? rainbowConfig?.Base_Lot_Size.mode
                           ?? rainbowLadderConfig?.Base_Lot_Size.mode
                           ?? "usdt";
                         const snapshotPositionMode: "usdt" | "quantity" = rawSnapshotPositionMode === "quantity"
@@ -453,13 +502,56 @@ export default function ParameterSnapshots() {
           if (!open) {
             setViewConfig(null);
             setViewStrategyKey(null);
+            setViewSnapshotId(null);
           }
         }}>
           <DialogContent className="max-h-[86vh] max-w-[calc(100vw-1rem)] overflow-y-auto sm:max-w-5xl">
             <DialogHeader>
               <DialogTitle>參數詳情</DialogTitle>
             </DialogHeader>
-            {viewConfig && viewV41Display ? (
+            {viewConfig && viewKamaRainbowMartinDisplay ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{viewKamaRainbowMartinDisplay.config.version}</Badge>
+                    <Badge variant="outline">{getKamaRainbowMartinTimeframeMinutes(viewKamaRainbowMartinDisplay.config.timeframe)}m</Badge>
+                    <Badge variant="outline">{viewKamaRainbowMartinDisplay.config.kamaLines.length} 條 KAMA</Badge>
+                    <Badge variant="outline">{viewKamaRainbowMartinDisplay.config.maxLayers} 層含底倉</Badge>
+                  </div>
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                    此處唯讀覆核 canonical 策略配置；Position_Size／Mode 來自快照頂層回測設定，不會回寫策略配置。
+                  </p>
+                </div>
+                {!viewKamaRainbowMartinDisplay.validation.valid && (
+                  <div role="alert" className="rounded-lg border border-amber-500/35 bg-amber-500/8 p-3 text-xs text-amber-100">
+                    <p className="font-semibold">Canonical 驗證失敗，伺服器將拒絕套用或導入。</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-4 text-amber-100/75">
+                      {viewKamaRainbowMartinDisplay.validation.issues.map((issue) => (
+                        <li key={`${issue.path}:${issue.message}`}>{issue.path}：{issue.message}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {viewSnapshot && (
+                  <div className="grid gap-2 rounded-lg border border-border/60 bg-muted/20 p-3 text-xs sm:grid-cols-2">
+                    <span>Artifact：<strong className={viewSnapshot.compatibility.compatible ? "text-emerald-300" : "text-amber-300"}>{viewSnapshot.compatibility.compatible ? "相容" : "封鎖"}</strong></span>
+                    <span>Integrity：<strong className={viewSnapshot.integrityValid ? "text-emerald-300" : "text-amber-300"}>{viewSnapshot.integrityValid ? "有效" : "需複核"}</strong></span>
+                    <span>Scope：{viewSnapshot.artifact?.artifactScope ?? "LEGACY"}</span>
+                    <span>Strategy version：{viewSnapshot.artifact?.strategyVersion ?? "—"}</span>
+                    <span className="break-all sm:col-span-2">Logic hash：{viewSnapshot.artifact?.strategyLogicHash ?? "—"}</span>
+                    <span className="break-all sm:col-span-2">Artifact checksum：{viewSnapshot.artifact?.artifactHash ?? viewSnapshot.compatibility.artifactHash ?? "—"}</span>
+                  </div>
+                )}
+                <KamaRainbowMartinConfigPanel
+                  value={viewKamaRainbowMartinDisplay.canonicalCandidate}
+                  onChange={() => undefined}
+                  disabled
+                  context="snapshot"
+                  positionMode={viewSnapshot?.backtestSettings?.baseLotSizeMode === "quantity" ? "quantity" : "usdt"}
+                  positionSize={Number(viewSnapshot?.backtestSettings?.baseLotSize ?? viewSnapshot?.backtestSettings?.tradeAmount ?? 0)}
+                />
+              </div>
+            ) : viewConfig && viewV41Display ? (
               <div className="space-y-4">
                 <div>
                   <p className="text-sm font-semibold">V4.1 入場條件契約覆核</p>
@@ -537,13 +629,26 @@ export default function ParameterSnapshots() {
                 )}
               </div>
             )}
+            {selectedKamaRainbowMartinDisplay && (
+              <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-3 text-xs leading-relaxed">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{selectedKamaRainbowMartinDisplay.config.version}</Badge>
+                  <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.kamaLines.length} KAMA</Badge>
+                  <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.maxLayers} 層</Badge>
+                </div>
+                <p className="mt-2 text-muted-foreground">只允許套用至相同 KRM strategy key；套用後會停用並要求重新 preflight。</p>
+                {!selectedKamaRainbowMartinDisplay.validation.valid && (
+                  <p className="mt-2 text-amber-300">Canonical 驗證失敗，伺服器將 fail-closed 拒絕套用。</p>
+                )}
+              </div>
+            )}
             <div className="py-4">
               <Select value={targetStrategyId} onValueChange={setTargetStrategyId}>
                 <SelectTrigger>
                   <SelectValue placeholder="選擇目標策略實例" />
                 </SelectTrigger>
                 <SelectContent>
-                  {(userStrategiesQuery.data ?? []).map((s: any) => (
+                  {(userStrategiesQuery.data ?? []).filter((s: any) => s.strategyKey === selectedSnapshot?.strategyKey).map((s: any) => (
                     <SelectItem key={s.id} value={String(s.id)}>
                       {s.name} ({s.exchange} {s.symbol})
                     </SelectItem>
@@ -585,6 +690,16 @@ export default function ParameterSnapshots() {
                 </div>
                 <p className="mt-2 text-muted-foreground">{summarizeV41EntryConfig(selectedV41Display.config)}</p>
                 <p className="mt-2 text-amber-200">V4.1 快照複製為新策略後預設停用，必須人工覆核後才可啟用。</p>
+              </div>
+            )}
+            {selectedKamaRainbowMartinDisplay && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{selectedKamaRainbowMartinDisplay.config.version}</Badge>
+                  <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.kamaLines.length} KAMA</Badge>
+                  <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.maxLayers} 層</Badge>
+                </div>
+                <p className="mt-2 text-amber-200">KRM 快照複製後固定為停用；canonical 配置與頂層部署倉位分離，必須重新通過 preflight。</p>
               </div>
             )}
             <div className="space-y-4 py-4">

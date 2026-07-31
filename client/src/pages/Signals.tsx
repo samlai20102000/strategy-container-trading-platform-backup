@@ -13,6 +13,11 @@ import {
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import {
+  parseKamaRainbowMartinSignalPayload,
+  type KamaRainbowMartinSignalTrace,
+  type KamaRainbowMartinTraceMode,
+} from "@shared/observability/kamaRainbowMartinSignalTrace";
+import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -24,6 +29,86 @@ import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 25;
+
+export const parseKrmSignalTrace = parseKamaRainbowMartinSignalPayload;
+
+const KRM_MODE_LABELS: Record<KamaRainbowMartinTraceMode, string> = {
+  SINGLE_EXCLUSIVE: "S1 單倉獨佔",
+  MULTI_POSITION: "M2 多倉獨立",
+  HEDGE_GUARDED: "H3 保護對沖",
+};
+
+const KRM_ACTION_LABELS: Record<string, string> = {
+  OPEN_LONG: "建立多腿",
+  OPEN_SHORT: "建立空腿",
+  ADD_LONG: "多腿馬丁加倉",
+  ADD_SHORT: "空腿馬丁加倉",
+  CLOSE: "精確關腿",
+};
+
+function KrmAuditField({
+  label,
+  value,
+  mono = false,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  wide?: boolean;
+}) {
+  return (
+    <div className={`min-w-0 rounded-md border border-border/70 bg-background/70 px-2.5 py-2 ${wide ? "xl:col-span-2" : ""}`}>
+      <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={`${mono ? "font-mono-nums" : ""} break-all text-xs text-foreground`}>{value}</p>
+    </div>
+  );
+}
+
+function KrmSignalAuditPanel({ rawPayload }: { rawPayload: string | null }) {
+  const trace = parseKrmSignalTrace(rawPayload);
+  if (!trace) return null;
+  const missingIdentity = "—（此事件未封印）";
+  return (
+    <section
+      data-testid="krm-signal-audit"
+      className="rounded-lg border border-cyan-500/30 bg-cyan-500/[0.06] p-3.5 space-y-3"
+      aria-label="Kama 彩虹馬丁訊號稽核"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300">
+          KRM 封印決策
+        </Badge>
+        <span className="font-semibold text-foreground">
+          {trace.action ? (KRM_ACTION_LABELS[trace.action] ?? trace.action) : "未知動作"}
+        </span>
+        <code className="rounded bg-background/80 px-1.5 py-0.5 text-[11px] text-cyan-700 dark:text-cyan-300 break-all">
+          {trace.reasonCode ?? "KRM_REASON_MISSING"}
+        </code>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <KrmAuditField
+          label="執行模式"
+          value={trace.executionMode ? KRM_MODE_LABELS[trace.executionMode] : "—（舊記錄未封印模式）"}
+        />
+        <KrmAuditField label="馬丁層級" value={trace.layerNum === null ? "—" : `L${trace.layerNum}`} />
+        <KrmAuditField label="配置版本" value={trace.configRevision ?? missingIdentity} mono />
+        <KrmAuditField label="關腿原因" value={trace.closeReason ?? "—"} mono />
+        <KrmAuditField label="Cycle ID" value={trace.cycleId ?? missingIdentity} mono wide />
+        <KrmAuditField label="Leg ID" value={trace.legId ?? missingIdentity} mono wide />
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-2">
+        <KrmAuditField label="決策原因" value={trace.reason ?? "—"} wide />
+        <KrmAuditField label="Event Key" value={trace.eventKey ?? missingIdentity} mono wide />
+      </div>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        此區只解碼伺服器已封印的 KRM 訊號；未封印欄位不會由目前策略狀態反推，避免歷史稽核失真。
+      </p>
+    </section>
+  );
+}
 
 /** 來源 Badge 組件 */
 function SourceBadge({ source }: { source?: string | null }) {
@@ -296,8 +381,9 @@ function SignalsContent() {
                       </tr>
                       {expandedId === sig.id && (
                         <tr className="border-b border-border/50">
-                          <td colSpan={9} className="py-3 px-4 bg-secondary/20">
+                          <td colSpan={10} className="py-3 px-4 bg-secondary/20">
                             <div className="space-y-3 text-xs">
+                              <KrmSignalAuditPanel rawPayload={sig.rawPayload} />
                               <div>
                                 <p className="text-muted-foreground mb-1 font-medium">
                                   原始 Payload

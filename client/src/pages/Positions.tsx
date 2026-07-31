@@ -8,10 +8,42 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { useMemo } from "react";
 import { toast } from "sonner";
+
+type KrmTradeTrace = NonNullable<RouterOutputs["performance"]["trades"][number]["kamaRainbowMartinTrace"]>;
+
+const KRM_TRADE_MODE_LABELS: Record<string, string> = {
+  SINGLE_EXCLUSIVE: "S1",
+  MULTI_POSITION: "M2",
+  HEDGE_GUARDED: "H3",
+};
+
+function KrmTradeTraceCell({ trace }: { trace: KrmTradeTrace | null }) {
+  if (!trace) return <span className="text-muted-foreground">—</span>;
+  const fields = [
+    trace.executionMode ? (KRM_TRADE_MODE_LABELS[trace.executionMode] ?? trace.executionMode) : null,
+    trace.reasonCode,
+    trace.layerNum == null ? null : `L${trace.layerNum}`,
+    trace.cycleId ? `cycle:${trace.cycleId}` : null,
+    trace.legId ? `leg:${trace.legId}` : null,
+    trace.configRevision ? `rev:${trace.configRevision}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return (
+    <div data-testid="krm-trade-trace" className="flex min-w-[150px] max-w-[280px] flex-wrap gap-1">
+      {fields.length ? fields.map((field, index) => (
+        <code key={`${field}-${index}`} className="max-w-full break-all rounded border border-cyan-500/30 bg-cyan-500/[0.08] px-1 py-0.5 text-[8px] text-cyan-300">
+          {field}
+        </code>
+      )) : <span className="text-[9px] text-muted-foreground">KRM 交易；舊記錄無封印欄位</span>}
+      <span className="w-full text-[8px] text-muted-foreground">
+        {trace.evidenceSource === "sealed_signal" ? "證據：關聯 signal payload" : "證據：canonical trade 欄位"}
+      </span>
+    </div>
+  );
+}
 
 export default function PositionsPage() {
   return (
@@ -238,6 +270,7 @@ function PositionsContent() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">近期交易記錄</CardTitle>
+          <p className="text-xs text-muted-foreground">成交與盈虧維持交易表真相；KRM 稽核欄僅從 signalId 關聯封印 payload 或 canonical trade 欄位讀取。</p>
         </CardHeader>
         <CardContent>
           {!recentTrades || recentTrades.length === 0 ? (
@@ -257,6 +290,7 @@ function PositionsContent() {
                     <th className="pb-2 pr-4 font-medium text-right">價格</th>
                     <th className="pb-2 pr-4 font-medium">觸發來源</th>
                     <th className="pb-2 pr-4 font-medium">成交真值</th>
+                    <th className="pb-2 pr-4 font-medium">KRM 稽核</th>
                     <th className="pb-2 font-medium">狀態</th>
                   </tr>
                 </thead>
@@ -294,6 +328,7 @@ function PositionsContent() {
                           {fillTruthLabel(t.priceSource, t.sizeSource)}
                         </Badge>
                       </td>
+                      <td className="py-2.5 pr-4"><KrmTradeTraceCell trace={t.kamaRainbowMartinTrace} /></td>
                       <td className="py-2.5">
                         <Badge
                           variant="outline"

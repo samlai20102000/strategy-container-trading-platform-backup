@@ -21,6 +21,11 @@ interface BuiltInRelease {
 const BUILT_IN_RELEASES: Readonly<Record<(typeof BUILT_IN_KEYS)[number], BuiltInRelease>> = Object.freeze({
   strategy_20415: { version: 1, logicRevision: "strategy-20415-v2-runtime", advancedCertified: false },
   RAINBOW_TREND_LADDER_V1: { version: 1, logicRevision: "rainbow-trend-ladder-v1", advancedCertified: false },
+  KAMA_RAINBOW_MARTIN_V1: {
+    version: 1,
+    logicRevision: "kama-rainbow-martin-v1-leg-scoped-advanced-runtime-v1",
+    advancedCertified: true,
+  },
   KAMA_3K_BREAKOUT_V25: { version: 1, logicRevision: "kama-breakout-v25", advancedCertified: false },
   "20415_KAMA_MARTIN_V35": { version: 1, logicRevision: "advanced-kama-v35-portfolio-v1", advancedCertified: true },
   "20415_KAMA_MARTIN_V41": { version: 1, logicRevision: "kama-v41-source-parity", advancedCertified: false },

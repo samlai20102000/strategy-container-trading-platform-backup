@@ -59,6 +59,7 @@ import type { BaseStrategy, MartinState, StrategyInstanceConfig } from "../../st
 import { StrategyKama3kBreakoutV25 } from "../../strategies/v25/strategy_kama_3k_breakout_v25";
 import { Strategy20415 } from "../../strategies/builtin/strategy20415";
 import { StrategyRainbowTrendLadder } from "../../strategies/builtin/strategyRainbowTrendLadder";
+import { StrategyKamaRainbowMartin } from "../../strategies/builtin/strategyKamaRainbowMartin";
 import {
   applyV25CloseToState,
   applyV25FillToState,
@@ -82,6 +83,13 @@ import {
 } from "../../../shared/strategies/rainbow20415";
 import { RAINBOW_TREND_LADDER_STRATEGY_KEY } from "../../../shared/strategies/rainbowTrendLadder";
 import { runRainbowTrendLadderBacktest } from "./rainbowTrendLadderBacktest";
+import {
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  assertValidKamaRainbowMartinConfig,
+  getKamaRainbowMartinTimeframeMinutes,
+} from "../../../shared/strategies/kamaRainbowMartin";
+import { runKamaRainbowMartinBacktest } from "./kamaRainbowMartinBacktest";
 import {
   BACKTEST_ENGINE_VERSION,
   BACKTEST_INTRABAR_POLICY_VERSION,
@@ -358,9 +366,20 @@ export class BacktestEngine {
     const isV25 = request.strategyKey === V25_STRATEGY_KEY;
     const isRainbow20415 = request.strategyKey === RAINBOW_20415_STRATEGY_KEY;
     const isRainbowTrendLadder = request.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY;
+    const isKamaRainbowMartin = request.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
+    const rawKamaRainbowMartinConfig = request.config[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]
+      ?? request.config;
+    const kamaRainbowMartinConfig = isKamaRainbowMartin
+      ? assertValidKamaRainbowMartinConfig(rawKamaRainbowMartinConfig)
+      : null;
     const effectiveRequest = isRainbowTrendLadder
       ? { ...request, timeframe: "30m" }
-      : request;
+      : kamaRainbowMartinConfig
+        ? {
+            ...request,
+            timeframe: `${getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe)}m`,
+          }
+        : request;
     effectiveRequest.executionMode = executionPolicy.mode;
     effectiveRequest.executionPolicy = executionPolicy;
 
@@ -369,6 +388,8 @@ export class BacktestEngine {
     const v41Config = isV41 ? assertValidV41Config(rawV41Config) : null;
     const config: Record<string, unknown> = v41Config
       ? { ...v41Config }
+      : kamaRainbowMartinConfig
+        ? { ...request.config, ...kamaRainbowMartinConfig }
       : {
           ...strategy.defaultConfig,
           ...request.config,
@@ -378,9 +399,12 @@ export class BacktestEngine {
       Object.assign(config, v40EntryGateConfig);
     }
     const endPositionPolicy = resolveEndPositionPolicy(
-      request.endPositionPolicy ?? config.Backtest_End_Position_Policy,
+      request.endPositionPolicy
+        ?? kamaRainbowMartinConfig?.backtestEndPositionPolicy
+        ?? config.Backtest_End_Position_Policy,
     );
-    if (!isV41) config.Backtest_End_Position_Policy = endPositionPolicy;
+    if (!isV41 && !isKamaRainbowMartin) config.Backtest_End_Position_Policy = endPositionPolicy;
+    if (isKamaRainbowMartin) config.backtestEndPositionPolicy = endPositionPolicy;
     // 專用策略會先把設定清洗成各自的強型別契約；政策屬於回測請求而非交易參數，
     // 因此在派送前回寫到 request，確保所有分支都取得同一個已正規化值。
     request.endPositionPolicy = endPositionPolicy;
@@ -470,6 +494,24 @@ export class BacktestEngine {
       return this.finalizeV25Result(await runRainbowTrendLadderBacktest(
         effectiveRequest,
         strategy,
+        config,
+        candles,
+        startMs,
+        endMs,
+        commission,
+        slippage,
+        onProgress,
+      ), effectiveRequest, startMs, endMs, continuousData.quality);
+    }
+
+    // KRM：動態 KAMA 七線掃描與腿級 exit-first 管理共用實盤純核心；來源策略不受影響。
+    if (isKamaRainbowMartin) {
+      if (!(strategy instanceof StrategyKamaRainbowMartin)) {
+        throw new Error("Kama 彩虹馬丁回測引擎類型不一致");
+      }
+      return this.finalizeV25Result(runKamaRainbowMartinBacktest(
+        effectiveRequest,
+        strategy.name,
         config,
         candles,
         startMs,

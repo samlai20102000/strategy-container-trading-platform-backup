@@ -25,6 +25,11 @@ import {
   buildStrategyLogicHash,
   createVersionedCapabilityManifest,
 } from "./strategyArtifacts";
+import {
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  createKamaRainbowMartinDefaultConfig,
+} from "../../shared/strategies/kamaRainbowMartin";
 
 describe("通用快照部署契約", () => {
   it("未知未來策略應完整保存原始配置，而不錯誤回退到 V3.5", () => {
@@ -161,6 +166,31 @@ describe("通用快照部署契約", () => {
     expect(getV41ConfigHash(getBoundStrategyConfig(state, V41_STRATEGY_KEY) as typeof config))
       .toBe(getV41ConfigHash(config));
     expect((state.__v41Config as Record<string, unknown>).enableKamaFastSlowCross).toBe(false);
+  });
+
+  it("KRM 快照以獨立私有鍵保存動態 KAMA，並對錯誤策略 identity fail closed", () => {
+    const config = createKamaRainbowMartinDefaultConfig();
+    config.kamaLines.push({
+      id: "KAMA_3",
+      name: "KAMA 30",
+      enabled: true,
+      erPeriod: 30,
+      fastEma: 2,
+      slowEma: 30,
+      color: "#A78BFA",
+    });
+    const state = attachSnapshotConfig({}, KAMA_RAINBOW_MARTIN_STRATEGY_KEY, config, {
+      snapshotId: 501,
+      snapshotName: "KRM 三線參數",
+      importedAt: 5_010,
+    });
+
+    expect(state[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]).toEqual(config);
+    expect(state[SNAPSHOT_CONFIG_STATE_KEY]).toEqual(config);
+    expect(getBoundStrategyConfig(state, KAMA_RAINBOW_MARTIN_STRATEGY_KEY)).toEqual(config);
+    expect(getBoundStrategyConfig(state, "RAINBOW_TREND_LADDER_V1")).toBeUndefined();
+    expect(pickStrategyConfigState({ ...state, currentLayer: 4 }))
+      .toHaveProperty(KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY, config);
   });
 
   it("停止或重置策略時應保留所有雙底線配置，包括未來新增的鍵", () => {

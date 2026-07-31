@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   apiKeys,
@@ -332,6 +332,23 @@ export async function listSignals(
     .where(where);
 
   return { items, total: Number(countResult[0]?.count ?? 0) };
+}
+
+export async function listSignalsByIds(userId: number, ids: number[]) {
+  const db = await getDb();
+  const uniqueIds = Array.from(new Set(ids.filter(id => Number.isSafeInteger(id) && id > 0)));
+  if (!db || uniqueIds.length === 0) return [];
+  return db.select({
+    id: signals.id,
+    userId: signals.userId,
+    rawPayload: signals.rawPayload,
+    executionMode: signals.executionMode,
+    cycleId: signals.cycleId,
+    legId: signals.legId,
+    reasonCode: signals.reasonCode,
+  })
+    .from(signals)
+    .where(and(eq(signals.userId, userId), inArray(signals.id, uniqueIds)));
 }
 
 /* ==================== 交易記錄 ==================== */

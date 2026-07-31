@@ -26,7 +26,7 @@ describe("V4.1 三頁共用 UI 接線契約", () => {
   it("策略交易頁用 canonical 空白預設並同時封鎖無效表單及無效快照", () => {
     expect(strategiesSource).toContain("const nextConfig = prev.v4_1 ?? createV41DefaultConfig()");
     expect(strategiesSource).toContain("const v41SubmitBlocked = snapshotImportSource?.strategyKey === V41_STRATEGY_KEY");
-    expect(strategiesSource).toContain("disabled={saving || v41SubmitBlocked}");
+    expect(strategiesSource).toContain("disabled={saving || v41SubmitBlocked || kamaRainbowMartinSubmitBlocked}");
     expect(strategiesSource).toContain("startsDisabled: variables.strategyKey === V41_STRATEGY_KEY");
     expect(strategiesSource).toContain("V4.1 新策略預設停用，目前不會自動下單");
   });

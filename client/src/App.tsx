@@ -5,6 +5,8 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
+import Positions from "./pages/Positions";
+import Signals from "./pages/Signals";
 import Strategies from "./pages/Strategies";
 import Studio from "./pages/Studio";
 
@@ -22,8 +24,8 @@ function Router() {
       <Route path={"/strategies"} component={Strategies} />
       <Route path={"/deployments"} component={DeploymentWorkbench} />
       <Route path={"/studio"} component={Studio} />
-      <Route path={"/signals"}>{() => { window.location.href = '/'; return null; }}</Route>
-      <Route path={"/positions"}>{() => { window.location.href = '/'; return null; }}</Route>
+      <Route path={"/signals"} component={Signals} />
+      <Route path={"/positions"} component={Positions} />
       <Route path={"/api-keys"} component={ApiKeys} />
       <Route path={"/backtest"} component={Backtest} />
       <Route path={"/snapshots"} component={ParameterSnapshots} />

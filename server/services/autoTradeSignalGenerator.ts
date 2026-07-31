@@ -16,6 +16,7 @@ import type { ParsedSignal } from "./executor";
 import { getStrategy, initStrategyStudio } from "./strategyStudio";
 import { BaseStrategyV35, KLineData, MarketData, StrategySignal, StrategyAction, StrategyInstanceConfig } from "../strategies/base";
 import { Strategy } from "../../drizzle/schema";
+import { normalizeExecutionModePolicy } from "../../shared/executionModes";
 import { loadStrategyState, reconcileWithExchange, saveStrategyState } from "./strategyStateManager";
 import { TradingPairManager } from "./tradingPairManager";
 import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
@@ -43,6 +44,19 @@ import {
 } from "../strategies/rainbowTrendLadder/core";
 import { evaluateRainbowTrendLadderManagement } from "../strategies/rainbowTrendLadder/management";
 import { fetchRainbowTrendLadderMarketQuote } from "./rainbowTrendLadderMarketQuote";
+import {
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  getKamaRainbowMartinMinimumHistoryBars,
+  validateKamaRainbowMartinConfig,
+} from "../../shared/strategies/kamaRainbowMartin";
+import { evaluateKamaRainbowMartinEntry } from "../strategies/kamaRainbowMartin/core";
+import { evaluateKamaRainbowMartinManagement } from "../strategies/kamaRainbowMartin/management";
+import {
+  fetchKamaRainbowMartinClosedCandles,
+  fetchKamaRainbowMartinFreshQuote,
+} from "./kamaRainbowMartinMarketData";
+import { generateKamaRainbowMartinAdvancedSignal } from "./kamaRainbowMartinAdvancedSignal";
 import {
   evaluateV40EntryGates,
   V40_STRATEGY_KEY,
@@ -194,6 +208,152 @@ export async function generateTradingSignal(
 
     // 建立交易所轉接器。20415 會在抓 K 線前先對賬，避免本地狀態剛被重置時仍錯用 M1 進場。
     const adapter = createAdapter(apiKeyRecord);
+
+    if (strategy.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+      const { getStrategyById } = await import("../db");
+      const freshStrategy = await getStrategyById(strategy.id);
+      const effectiveStrategy = freshStrategy || strategy;
+      const state = loadStrategyState(effectiveStrategy);
+      const effectiveMartinState = effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
+        ? effectiveStrategy.martinState as Record<string, unknown>
+        : {};
+      const rawConfig = getBoundStrategyConfig(effectiveMartinState, KAMA_RAINBOW_MARTIN_STRATEGY_KEY)
+        ?? effectiveMartinState[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]
+        ?? initialSnapshotConfig
+        ?? {};
+      const validation = validateKamaRainbowMartinConfig(rawConfig);
+      if (!validation.valid) {
+        const detail = `Kama 彩虹馬丁配置無效：${validation.issues.map(issue => `${issue.path} ${issue.message}`).join("；")}`;
+        if (withReason) return { signal: null, holdReason: { type: "validation_failed", detail } };
+        return null;
+      }
+      const config = validation.config;
+      const executionPolicy = normalizeExecutionModePolicy(
+        effectiveStrategy.executionPolicy ?? { mode: effectiveStrategy.executionMode || "SINGLE_EXCLUSIVE" },
+      );
+      if (executionPolicy.mode !== "SINGLE_EXCLUSIVE") {
+        const advancedResult = await generateKamaRainbowMartinAdvancedSignal({
+          strategy: effectiveStrategy,
+          config,
+          globalState: state,
+          mode: executionPolicy.mode,
+        });
+        console.log(
+          `[AutoTradeSignalGenerator][KamaRainbowMartin] mode=${executionPolicy.mode} action=${advancedResult.signal?.kamaRainbowMartinAction ?? "HOLD"}`,
+        );
+        if (withReason) return advancedResult;
+        return advancedResult.signal;
+      }
+      const hasPosition = state.currentLayer > 0 && state.totalSize > 0 && state.avgPrice > 0;
+      let action: "OPEN_LONG" | "OPEN_SHORT" | "ADD_LONG" | "ADD_SHORT" | "CLOSE" | "HOLD";
+      let reason: string;
+      let reasonCode: string;
+      let price = 0;
+      let barTimestamp: number | undefined;
+      let eventKey = "";
+      let layerNum: number | undefined;
+      let orderSize: { mode: "quantity" | "usdt"; value: number } | undefined;
+      let closeReason: "HARD_STOP" | "TRAILING_TAKE_PROFIT" | "KILL" | "MANUAL" | "OTHER" | undefined;
+      let nextState = state;
+
+      if (!hasPosition) {
+        const requiredBars = getKamaRainbowMartinMinimumHistoryBars(config);
+        const batch = await fetchKamaRainbowMartinClosedCandles(
+          effectiveStrategy.exchange as "okx" | "bybit",
+          effectiveStrategy.symbol,
+          config.timeframe,
+          Math.min(1_000, Math.max(requiredBars, requiredBars + 5)),
+        );
+        if (batch.candles.length === 0 || !batch.lastClosedBarIdentity) {
+          const detail = `Kama 彩虹馬丁無法取得 ${effectiveStrategy.symbol} ${config.timeframe} 已收盤 K 線`;
+          if (withReason) return { signal: null, holdReason: { type: "no_data", detail } };
+          return null;
+        }
+        const decision = evaluateKamaRainbowMartinEntry({
+          candles: batch.candles,
+          state,
+          rawConfig: config,
+          allowedDirection: effectiveStrategy.direction as "long" | "short" | "both",
+          lastBarClosed: true,
+          configRevision: config.version,
+        });
+        action = decision.action === "OPEN_LONG"
+          ? "OPEN_LONG"
+          : decision.action === "OPEN_SHORT"
+            ? "OPEN_SHORT"
+            : "HOLD";
+        reason = decision.reason;
+        reasonCode = decision.reasonCode;
+        price = decision.price;
+        barTimestamp = decision.barTimestamp;
+        eventKey = batch.lastClosedBarIdentity;
+        nextState = decision.nextState;
+      } else {
+        let quote;
+        try {
+          quote = await fetchKamaRainbowMartinFreshQuote(
+            effectiveStrategy.exchange as "okx" | "bybit",
+            effectiveStrategy.symbol,
+          );
+        } catch (error: any) {
+          const detail = `Kama 彩虹馬丁 fresh quote 取得失敗，禁止新增曝險：${error.message}`;
+          if (withReason) return { signal: null, holdReason: { type: "no_data", detail } };
+          return null;
+        }
+        price = state.isLong ? quote.bid : quote.ask;
+        eventKey = `${quote.exchange}:${quote.symbol}:risk:${quote.capturedAt}:${price}`;
+        const decision = evaluateKamaRainbowMartinManagement(
+          { currentPrice: price, now: quote.capturedAt, riskEventKey: eventKey },
+          state,
+          config,
+        );
+        action = decision.action === "add_long"
+          ? "ADD_LONG"
+          : decision.action === "add_short"
+            ? "ADD_SHORT"
+            : decision.action === "close"
+              ? "CLOSE"
+              : "HOLD";
+        reason = decision.reason;
+        reasonCode = decision.reasonCode;
+        layerNum = decision.layerNum;
+        orderSize = decision.orderSize;
+        closeReason = decision.closeReason;
+        nextState = decision.nextState;
+      }
+
+      const currentRuntime = (state as any).kamaRainbowMartinRuntime ?? {};
+      const nextRuntime = (nextState as any).kamaRainbowMartinRuntime ?? {};
+      if (JSON.stringify(currentRuntime) !== JSON.stringify(nextRuntime)) {
+        await saveStrategyState(effectiveStrategy.id, nextState);
+      }
+      console.log(`[AutoTradeSignalGenerator][KamaRainbowMartin] mode=${hasPosition ? "FRESH-RISK" : `CLOSED-${config.timeframe}`} action=${action} reasonCode=${reasonCode}`);
+      if (action === "HOLD") {
+        const detail = `Kama 彩虹馬丁觀望 [${reasonCode}]：${reason}`;
+        if (withReason) return { signal: null, holdReason: { type: "strategy_hold", detail } };
+        return null;
+      }
+
+      const sealedSignal: ParsedSignal = {
+        action: action === "CLOSE" ? "close" : action === "OPEN_LONG" || action === "ADD_LONG" ? "buy" : "sell",
+        symbol: effectiveStrategy.symbol,
+        price,
+        barTimestamp,
+        reason,
+        confidence: 1,
+        kamaRainbowMartinDecision: true,
+        kamaRainbowMartinAction: action,
+        kamaRainbowMartinReasonCode: reasonCode,
+        kamaRainbowMartinEventKey: eventKey,
+        kamaRainbowMartinLayerNum: layerNum,
+        kamaRainbowMartinOrderSize: orderSize,
+        kamaRainbowMartinCloseReason: closeReason,
+        kamaRainbowMartinConfigRevision: config.version,
+        kamaRainbowMartinExecutionMode: executionPolicy.mode,
+      };
+      if (withReason) return { signal: sealedSignal, holdReason: null };
+      return sealedSignal;
+    }
 
     if (strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
       const { getStrategyById } = await import("../db");

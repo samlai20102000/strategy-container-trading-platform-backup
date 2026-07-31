@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import {
   executionDecisions,
   executionFills,
@@ -47,6 +47,14 @@ function extractInsertId(result: unknown): number {
 export type PositionLegStatus = NonNullable<InsertPositionLeg["status"]>;
 export type OrderIntentStatus = NonNullable<InsertExecutionOrderIntent["status"]>;
 export type HedgeRelationshipStatus = NonNullable<InsertHedgeRelationship["status"]>;
+
+export const ACTIVE_POSITION_LEG_STATUSES = [
+  "PENDING",
+  "OPEN",
+  "REDUCING",
+  "RECONCILIATION_REQUIRED",
+  "BLOCKED",
+] as const satisfies readonly PositionLegStatus[];
 
 const LEG_TRANSITIONS: Readonly<Record<PositionLegStatus, readonly PositionLegStatus[]>> = {
   PENDING: ["OPEN", "BLOCKED", "RECONCILIATION_REQUIRED", "CLOSED"],
@@ -202,6 +210,54 @@ export async function createOrGetPositionLeg(input: CreatePositionLegInput): Pro
   return { leg: created[0], deduplicated: false };
 }
 
+export async function listActivePositionLegs(input: {
+  userId: number;
+  strategyId: number;
+}): Promise<PositionLeg[]> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  return db.select().from(positionLegs).where(and(
+    eq(positionLegs.userId, input.userId),
+    eq(positionLegs.strategyId, input.strategyId),
+    inArray(positionLegs.status, [...ACTIVE_POSITION_LEG_STATUSES]),
+  ));
+}
+
+export async function getOwnedPositionLeg(input: {
+  userId: number;
+  strategyId: number;
+  legId: string;
+}): Promise<PositionLeg | null> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  const rows = await db.select().from(positionLegs).where(and(
+    eq(positionLegs.userId, input.userId),
+    eq(positionLegs.strategyId, input.strategyId),
+    eq(positionLegs.legId, input.legId),
+  )).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function updatePositionLegRuntime(
+  legId: string,
+  patch: Partial<Pick<InsertPositionLeg,
+    "quantity" | "avgEntryPrice" | "realizedPnl" | "unrealizedPnl" | "martinState" | "riskState"
+  >>,
+): Promise<PositionLeg> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  return db.transaction(async tx => {
+    await tx.execute(sql`SELECT id FROM position_legs WHERE legId = ${legId} FOR UPDATE`);
+    const current = await tx.select().from(positionLegs).where(eq(positionLegs.legId, legId)).limit(1);
+    if (!current[0]) throw new Error("position leg 不存在");
+    if (current[0].status === "CLOSED") throw new Error("已關閉 leg 不可更新 runtime state");
+    await tx.update(positionLegs).set(patch).where(eq(positionLegs.legId, legId));
+    const updated = await tx.select().from(positionLegs).where(eq(positionLegs.legId, legId)).limit(1);
+    if (!updated[0]) throw new Error("position leg runtime 更新後無法讀回");
+    return updated[0];
+  });
+}
+
 export async function transitionPositionLeg(
   legId: string,
   nextStatus: PositionLegStatus,
@@ -336,6 +392,24 @@ export async function createOrGetHedgeRelationship(
     if (!created[0]) throw new Error("hedge relationship 建立後無法讀回");
     return { relationship: created[0], deduplicated: false };
   });
+}
+
+export async function listActiveHedgeRelationshipsForLeg(input: {
+  userId: number;
+  strategyId: number;
+  legId: string;
+}): Promise<HedgeRelationship[]> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  return db.select().from(hedgeRelationships).where(and(
+    eq(hedgeRelationships.userId, input.userId),
+    eq(hedgeRelationships.strategyId, input.strategyId),
+    inArray(hedgeRelationships.status, ["ARMING", "ACTIVE", "UNWINDING", "BLOCKED"]),
+    or(
+      eq(hedgeRelationships.primaryLegId, input.legId),
+      eq(hedgeRelationships.hedgeLegId, input.legId),
+    ),
+  ));
 }
 
 export async function transitionHedgeRelationship(

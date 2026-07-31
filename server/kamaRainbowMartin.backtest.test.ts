@@ -1,0 +1,188 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  createKamaRainbowMartinDefaultConfig,
+  type KamaRainbowMartinBacktestEndPositionPolicy,
+} from "../shared/strategies/kamaRainbowMartin";
+import { V25_END_OF_DATA_EXIT_REASON } from "./services/backtest/backtestContracts";
+import type { OHLCVRow } from "./services/backtest/backtestDatabase";
+import type { BacktestRequest } from "./services/backtest/backtestEngine";
+
+const saveBacktestResult = vi.fn();
+const savePerformanceMetrics = vi.fn();
+
+vi.mock("./services/backtest/backtestDatabase", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./services/backtest/backtestDatabase")>();
+  return {
+    ...actual,
+    getBacktestDatabase: () => ({ saveBacktestResult, savePerformanceMetrics }),
+  };
+});
+
+import { runKamaRainbowMartinBacktest } from "./services/backtest/kamaRainbowMartinBacktest";
+
+function makeTrendingCandles(count = 42): OHLCVRow[] {
+  const start = Date.UTC(2026, 0, 1, 0, 0, 0, 0);
+  return Array.from({ length: count }, (_, index) => {
+    const close = 100 + index;
+    return {
+      symbol: "BTC-USDT",
+      timeframe: "30m",
+      timestamp: start + index * 30 * 60_000,
+      open: close - 0.25,
+      high: close + 0.5,
+      low: close - 0.5,
+      close,
+      volume: 1,
+    };
+  });
+}
+
+function makeConfig(policy: KamaRainbowMartinBacktestEndPositionPolicy) {
+  return {
+    ...createKamaRainbowMartinDefaultConfig(),
+    backtestEndPositionPolicy: policy,
+    Position_Size_Value: 100,
+    Position_Size_Mode: "usdt",
+  };
+}
+
+function makeRequest(candles: OHLCVRow[], policy: KamaRainbowMartinBacktestEndPositionPolicy): BacktestRequest {
+  return {
+    strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+    symbol: "BTC-USDT",
+    timeframe: "30m",
+    startDate: candles[0].timestamp,
+    endDate: candles.at(-1)!.timestamp,
+    initialCapital: 10_000,
+    commission: 0,
+    slippage: 0,
+    config: makeConfig(policy),
+    exchange: "okx",
+  };
+}
+
+describe("Kama 彩虹馬丁同源回測", () => {
+  beforeEach(() => {
+    saveBacktestResult.mockClear();
+    savePerformanceMetrics.mockClear();
+  });
+
+  it("只使用已收盤 canonical timeframe，mark-to-market 保留終點持倉並完成單一帳本對帳", () => {
+    const candles = makeTrendingCandles();
+    const request = makeRequest(candles, "mark_to_market");
+    const progress: Array<{ pct: number; message: string }> = [];
+
+    const result = runKamaRainbowMartinBacktest(
+      request,
+      "Kama彩虹馬丁策略",
+      request.config,
+      candles,
+      request.startDate,
+      request.endDate,
+      0,
+      0,
+      (pct, message) => progress.push({ pct, message }),
+    );
+
+    expect(result.strategyKey).toBe(KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
+    expect(result.candleCount).toBe(candles.length);
+    expect(result.config.timeframe).toBe("M30");
+    expect(result.endPositionPolicy).toBe("mark_to_market");
+    expect(result.session.closedCandles).toHaveLength(candles.length);
+    expect(result.session.positionMeta?.layers).toHaveLength(1);
+    expect(result.accounting.openPositionCount).toBe(1);
+    expect(result.accounting.syntheticForceCloseCount).toBe(0);
+    expect(result.accounting.reconciled).toBe(true);
+    expect(result.equityCurve.at(-1)?.timestamp).toBe(candles.at(-1)?.timestamp);
+    expect(progress.at(-1)?.pct).toBe(100);
+    expect(saveBacktestResult).toHaveBeenCalledTimes(1);
+    expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
+  });
+
+  it("force-close 只在全域資料終點產生一筆合成平倉，且不保留未平倉部位", () => {
+    const candles = makeTrendingCandles();
+    const request = makeRequest(candles, "force_close");
+
+    const result = runKamaRainbowMartinBacktest(
+      request,
+      "Kama彩虹馬丁策略",
+      request.config,
+      candles,
+      request.startDate,
+      request.endDate,
+      0,
+      0,
+    );
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].exitReason).toBe(V25_END_OF_DATA_EXIT_REASON);
+    expect(result.trades[0].exitTime).toBe(candles.at(-1)?.timestamp);
+    expect(result.accounting.openPositionCount).toBe(0);
+    expect(result.accounting.openPosition).toBeNull();
+    expect(result.accounting.syntheticForceCloseCount).toBe(1);
+    expect(result.accounting.reconciled).toBe(true);
+    expect(result.session.positionMeta).toBeNull();
+  });
+
+  it("跨分片續跑與單次回測完全等價，中間片不結算也不持久化", () => {
+    const candles = makeTrendingCandles();
+    const request = makeRequest(candles, "force_close");
+    const oneShot = runKamaRainbowMartinBacktest(
+      request,
+      "Kama彩虹馬丁策略",
+      request.config,
+      candles,
+      request.startDate,
+      request.endDate,
+      0,
+      0,
+    );
+
+    saveBacktestResult.mockClear();
+    savePerformanceMetrics.mockClear();
+    const splitIndex = 21;
+    const firstSlice = candles.slice(0, splitIndex);
+    const secondSlice = candles.slice(splitIndex);
+    const partial = runKamaRainbowMartinBacktest(
+      request,
+      "Kama彩虹馬丁策略",
+      request.config,
+      firstSlice,
+      firstSlice[0].timestamp,
+      firstSlice.at(-1)!.timestamp,
+      0,
+      0,
+      undefined,
+      { finalize: false },
+    );
+
+    expect(partial.session.candleCount).toBe(firstSlice.length);
+    expect(saveBacktestResult).not.toHaveBeenCalled();
+    expect(savePerformanceMetrics).not.toHaveBeenCalled();
+
+    const segmented = runKamaRainbowMartinBacktest(
+      request,
+      "Kama彩虹馬丁策略",
+      request.config,
+      secondSlice,
+      secondSlice[0].timestamp,
+      secondSlice.at(-1)!.timestamp,
+      0,
+      0,
+      undefined,
+      { session: partial.session, finalize: true },
+    );
+
+    expect(segmented.candleCount).toBe(candles.length);
+    expect(segmented.trades).toEqual(oneShot.trades);
+    expect(segmented.metrics).toEqual(oneShot.metrics);
+    expect(segmented.accounting).toEqual(oneShot.accounting);
+    expect(segmented.session.state).toEqual(oneShot.session.state);
+    expect(segmented.session.positionMeta).toEqual(oneShot.session.positionMeta);
+    expect(segmented.session.closedCandles).toEqual(oneShot.session.closedCandles);
+    expect(segmented.session.equityCurve).toEqual(oneShot.session.equityCurve);
+    expect(saveBacktestResult).toHaveBeenCalledTimes(1);
+    expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
+  });
+});

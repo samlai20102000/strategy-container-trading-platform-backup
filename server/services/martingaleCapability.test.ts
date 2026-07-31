@@ -112,4 +112,30 @@ describe("martingaleCapability", () => {
       reason: "enabled",
     });
   });
+
+  it("KRM 私有 canonical 配置以 maxLayers 提供逐層能力，並受 DB 上限約束", () => {
+    getStrategyCapabilitiesMock.mockImplementation((key: string) => ({
+      martingaleLayers: key === "KAMA_RAINBOW_MARTIN_V1",
+    }));
+    getStrategyMock.mockImplementation((key: string) => key === "KAMA_RAINBOW_MARTIN_V1"
+      ? { capabilities: { martingaleLayers: true }, defaultConfig: { maxLayers: 5 } }
+      : undefined);
+
+    expect(evaluateMartingaleStrategyInstance({
+      strategyKey: "KAMA_RAINBOW_MARTIN_V1",
+      maxMartinLevel: 4,
+      martinState: {
+        __kamaRainbowMartinConfig: {
+          maxLayers: 5,
+          multiplier: 2,
+          gapPct: 1,
+        },
+      },
+    })).toMatchObject({
+      isMartingale: true,
+      supportsMartingale: true,
+      maxLayers: 4,
+      reason: "enabled",
+    });
+  });
 });

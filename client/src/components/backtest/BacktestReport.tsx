@@ -29,10 +29,18 @@ import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { InstanceSelector } from "@/components/InstanceSelector";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
+import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
 import EquityChart from "./EquityChart";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
 import { RAINBOW_20415_STRATEGY_KEY } from "@shared/strategies/rainbow20415";
+import {
+  KAMA_RAINBOW_MARTIN_LOGIC_REVISION,
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  KAMA_RAINBOW_MARTIN_CONFIG_VERSION,
+  validateKamaRainbowMartinConfig,
+} from "@shared/strategies/kamaRainbowMartin";
 
 export interface ReportTrade {
   id: number;
@@ -179,8 +187,14 @@ export default function BacktestReport({
   const [showParams, setShowParams] = useState(false);
   const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss">("all");
   const [martinFilter, setMartinFilter] = useState<"all" | "martin" | "no-martin">("all");
-  const hasV25Metadata = Boolean(accounting || dataQuality || engineSemantics || environment);
+  const hasAuditMetadata = Boolean(accounting || dataQuality || engineSemantics || environment);
   const isForceClose = endPositionPolicy === "force_close";
+  const isKamaRainbowMartin = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
+  const kamaRainbowMartinDisplay = useMemo(() => {
+    if (!isKamaRainbowMartin) return null;
+    const nested = config[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY];
+    return validateKamaRainbowMartinConfig(nested ?? config);
+  }, [config, isKamaRainbowMartin]);
 
   const filteredTrades = useMemo(() => {
     return trades.filter((t) => {
@@ -298,6 +312,17 @@ export default function BacktestReport({
           maxLoss: metrics.maxLoss,
         },
         backtestSettings,
+        artifactScope: "PARAMETERS_ONLY",
+        sourceRunId: runId,
+        environment: environment
+          ? {
+              dataHash: environment.dataHash,
+              engineVersion: environment.engineVersion,
+              leverage: environment.leverage,
+              commission: environment.commission,
+              slippage: environment.slippage,
+            }
+          : undefined,
       });
       toast.success("✅ 參數快照已儲存到快照庫");
       onSaveSnapshot?.();
@@ -340,6 +365,30 @@ export default function BacktestReport({
           <CardContent>
             {strategyKey === RAINBOW_20415_STRATEGY_KEY ? (
               <Rainbow20415ConfigPanel value={config} onChange={() => undefined} disabled context="snapshot" />
+            ) : kamaRainbowMartinDisplay ? (
+              <div className="space-y-4">
+                <div className="grid gap-2 rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-3 text-xs sm:grid-cols-2">
+                  <span>Strategy key：<strong className="font-mono text-cyan-200">{KAMA_RAINBOW_MARTIN_STRATEGY_KEY}</strong></span>
+                  <span>Config version：<strong className="font-mono">{KAMA_RAINBOW_MARTIN_CONFIG_VERSION}</strong></span>
+                  <span className="sm:col-span-2">Logic revision：<strong className="font-mono">{saveSnapshotMutation.data?.artifact.strategyLogicHash ?? KAMA_RAINBOW_MARTIN_LOGIC_REVISION}</strong></span>
+                  <span className="break-all sm:col-span-2">Artifact checksum：<strong className="font-mono">{saveSnapshotMutation.data?.artifact.artifactHash ?? "儲存快照後由伺服器產生"}</strong></span>
+                  <span>Artifact scope：<strong>{saveSnapshotMutation.data?.artifact.artifactScope ?? "PARAMETERS_ONLY"}</strong></span>
+                  <span>Compatibility：<strong className={saveSnapshotMutation.data?.compatibility.compatible ? "text-emerald-300" : "text-muted-foreground"}>{saveSnapshotMutation.data ? (saveSnapshotMutation.data.compatibility.compatible ? "相容" : "封鎖") : "待儲存驗證"}</strong></span>
+                </div>
+                {!kamaRainbowMartinDisplay.valid && (
+                  <div role="alert" className="rounded-lg border border-amber-500/35 bg-amber-500/8 p-3 text-xs text-amber-200">
+                    Canonical 驗證失敗；快照儲存、套用與部署均會 fail-closed。
+                  </div>
+                )}
+                <KamaRainbowMartinConfigPanel
+                  value={kamaRainbowMartinDisplay.config}
+                  onChange={() => undefined}
+                  disabled
+                  context="snapshot"
+                  positionMode={backtestSettings?.baseLotSizeMode === "quantity" ? "quantity" : "usdt"}
+                  positionSize={Number(backtestSettings?.baseLotSize ?? backtestSettings?.tradeAmount ?? 0)}
+                />
+              </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 {Object.entries(config).map(([k, v]) => (
@@ -466,11 +515,11 @@ export default function BacktestReport({
         </CardContent>
       </Card>
 
-      {hasV25Metadata && (
+      {hasAuditMetadata && (
         <Card className="border-cyan-500/30 bg-slate-950/30">
           <CardHeader className="gap-3 border-b border-border/60 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <CardTitle className="text-sm">V2.5 對帳與資料口徑</CardTitle>
+              <CardTitle className="text-sm">{isKamaRainbowMartin ? "KRM 對帳與資料口徑" : "回測對帳與資料口徑"}</CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">
                 單一權益帳本、連續 Session 與全域終點政策的可稽核結果。
               </p>
@@ -480,7 +529,7 @@ export default function BacktestReport({
                 {isForceClose ? "終點：強制平倉" : "終點：按市價估值"}
               </Badge>
               <Badge variant="outline" className="font-mono text-[10px]">
-                {engineSemantics?.version ?? environment?.engineVersion ?? "V2.5"}
+                {engineSemantics?.version ?? environment?.engineVersion ?? "BACKTEST"}
               </Badge>
               {accounting && (
                 <Badge className={accounting.reconciled ? "bg-emerald-600 text-white" : "bg-red-600 text-white"}>
