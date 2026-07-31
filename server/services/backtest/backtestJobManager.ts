@@ -15,6 +15,7 @@ import { backtestWsService } from "../wsService";
 import { getDb } from "../../db";
 import { backtestJobs } from "../../../drizzle/schema";
 import { eq, and, desc, inArray } from "drizzle-orm";
+import { normalizeExecutionModePolicy } from "../../../shared/executionModes";
 
 export interface BacktestJobState {
   jobId: string;
@@ -44,6 +45,11 @@ export function buildBacktestResultPersistence(
   startedAt?: number,
   completedAt = new Date(),
 ) {
+  const policy = normalizeExecutionModePolicy(
+    result.execution?.executionPolicy
+      ?? request.executionPolicy
+      ?? { mode: request.executionMode ?? "SINGLE_EXCLUSIVE" },
+  );
   return {
     status: "completed" as const,
     progress: 100,
@@ -59,6 +65,12 @@ export function buildBacktestResultPersistence(
     dataQuality: result.dataQuality ?? null,
     engineSemantics: result.engineSemantics ?? null,
     environment: result.environment ?? null,
+    executionMode: result.execution?.executionMode ?? policy.mode,
+    executionPolicy: result.execution?.executionPolicy ?? policy,
+    executionPolicyVersion: result.execution?.executionPolicyVersion ?? policy.version,
+    executionContext: result.execution ?? null,
+    modeResults: result.modeResults ?? null,
+    legAccounting: result.legAccounting ?? null,
     startedAt: startedAt ? new Date(startedAt) : null,
     completedAt,
   };
@@ -99,6 +111,15 @@ class BacktestJobManager {
   ): Promise<string> {
     await this.initialize();
 
+    const executionPolicy = normalizeExecutionModePolicy(
+      request.executionPolicy ?? { mode: request.executionMode ?? "SINGLE_EXCLUSIVE" },
+    );
+    if (request.executionMode && request.executionMode !== executionPolicy.mode) {
+      throw new Error("executionMode 與 executionPolicy.mode 不一致");
+    }
+    request.executionMode = executionPolicy.mode;
+    request.executionPolicy = executionPolicy;
+
     const queuedCount = this.queue.length;
     if (queuedCount >= MAX_QUEUE_SIZE) {
       throw new Error(`回測佇列已滿（最多 ${MAX_QUEUE_SIZE} 個排隊任務），請稍後再試`);
@@ -137,6 +158,15 @@ class BacktestJobManager {
           initialCapital: String(request.initialCapital),
           tradeAmount: options?.tradeAmount ? String(options.tradeAmount) : null,
           config: request.config || {},
+          executionMode: executionPolicy.mode,
+          executionPolicy,
+          executionPolicyVersion: executionPolicy.version,
+          executionContext: {
+            executionMode: executionPolicy.mode,
+            executionPolicy,
+            executionPolicyVersion: executionPolicy.version,
+            status: "PENDING_FINALIZATION",
+          },
           endPositionPolicy: request.endPositionPolicy ?? "mark_to_market",
           status: "pending",
           progress: 0,
@@ -386,6 +416,10 @@ class BacktestJobManager {
           startDate: backtestJobs.startDate,
           endDate: backtestJobs.endDate,
           initialCapital: backtestJobs.initialCapital,
+          executionMode: backtestJobs.executionMode,
+          executionPolicy: backtestJobs.executionPolicy,
+          executionPolicyVersion: backtestJobs.executionPolicyVersion,
+          executionContext: backtestJobs.executionContext,
           status: backtestJobs.status,
           progress: backtestJobs.progress,
           message: backtestJobs.message,
@@ -397,6 +431,8 @@ class BacktestJobManager {
           dataQuality: backtestJobs.dataQuality,
           engineSemantics: backtestJobs.engineSemantics,
           environment: backtestJobs.environment,
+          modeResults: backtestJobs.modeResults,
+          legAccounting: backtestJobs.legAccounting,
           error: backtestJobs.error,
           createdAt: backtestJobs.createdAt,
           startedAt: backtestJobs.startedAt,

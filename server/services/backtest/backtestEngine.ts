@@ -23,6 +23,12 @@ import {
   type TradeRecord,
 } from "./performanceCalculator";
 import { getTimeframeMilliseconds } from "./timeframeParser";
+import type {
+  ExecutionMode,
+  ExecutionPolicy,
+  StrategyModeCapabilities,
+} from "../../../shared/executionModes";
+import { normalizeExecutionModePolicy } from "../../../shared/executionModes";
 
 import { getStrategy } from "../strategyStudio";
 import { validateRiskSettings, buildEnvironmentSnapshot } from "../riskSettingsValidator";
@@ -78,9 +84,15 @@ import { RAINBOW_TREND_LADDER_STRATEGY_KEY } from "../../../shared/strategies/ra
 import { runRainbowTrendLadderBacktest } from "./rainbowTrendLadderBacktest";
 import {
   BACKTEST_ENGINE_VERSION,
+  BACKTEST_INTRABAR_POLICY_VERSION,
+  BACKTEST_INTRABAR_EVENT_ORDER,
+  BACKTEST_RISK_MODEL_VERSION,
+  BACKTEST_SIMULATED_ADAPTER_VERSION,
   V25_END_OF_DATA_EXIT_REASON,
   assertSingleEquityLedger,
   buildAccountingSnapshot,
+  buildBacktestComparisonGroupId,
+  buildBacktestHash,
   buildOpenPositionSnapshot,
   createContinuousEngineSemantics,
   normalizeOHLCVData,
@@ -90,7 +102,14 @@ import {
   type BacktestDataQuality,
   type BacktestEndPositionPolicy,
   type BacktestEngineSemantics,
+  type BacktestLegAccounting,
+  type BacktestModeResults,
+  type BacktestVersionedExecutionContext,
 } from "./backtestContracts";
+import {
+  runAdvancedKamaPortfolioBacktest,
+  supportsAdvancedKamaPortfolio,
+} from "./advancedKamaPortfolioBacktest";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -106,6 +125,17 @@ export interface BacktestRequest {
   exchange?: "okx" | "bybit";
   /** V2.5 全域終點持倉政策；預設按市價估值並保留未平倉狀態。 */
   endPositionPolicy?: BacktestEndPositionPolicy;
+  /** canonical 三模式；省略時維持 S1 舊行為。 */
+  executionMode?: ExecutionMode;
+  /** 完整 canonical policy；若同時提供 executionMode，兩者必須一致。 */
+  executionPolicy?: ExecutionPolicy | Record<string, unknown>;
+  /** 策略版本與邏輯 hash 是跨 mode 公平比較身份的一部分。 */
+  strategyVersion?: string;
+  strategyLogicHash?: string;
+  /** 策略必須明確宣告進階模式能力；未知能力一律 fail closed。 */
+  strategyModeCapabilities?: StrategyModeCapabilities;
+  fundingModel?: string;
+  contractSpecification?: unknown;
 }
 
 export interface BacktestResult {
@@ -137,6 +167,9 @@ export interface BacktestResult {
   accounting?: BacktestAccountingSnapshot;
   dataQuality?: BacktestDataQuality;
   engineSemantics?: BacktestEngineSemantics;
+  execution?: BacktestVersionedExecutionContext;
+  modeResults?: BacktestModeResults;
+  legAccounting?: BacktestLegAccounting;
 }
 
 interface PositionLayer {
@@ -165,6 +198,116 @@ function toMs(ts: number): number {
 function num(v: unknown, fallback: number): number {
   const n = Number(v);
   return Number.isFinite(n) && n !== 0 ? n : Number.isFinite(n) && n === 0 ? 0 : fallback;
+}
+
+function buildLegacyS1LegAccounting(
+  result: BacktestResult,
+  request: BacktestRequest,
+  accounting: BacktestAccountingSnapshot,
+): BacktestLegAccounting {
+  const commission = request.commission ?? 0.0004;
+  const leverage = Math.max(1, num(result.environment?.leverage, 1));
+  const legs: BacktestLegAccounting["legs"] = result.trades.map((trade, index) => {
+    const turnover = (trade.entryPrice + trade.exitPrice) * trade.size;
+    const fees = turnover * commission;
+    const grossPnl = trade.side === "long"
+      ? (trade.exitPrice - trade.entryPrice) * trade.size
+      : (trade.entryPrice - trade.exitPrice) * trade.size;
+    return {
+      legId: `legacy-s1:${result.runId}:${trade.id}`,
+      side: trade.side,
+      sideCode: trade.side === "long" ? "LONG" : "SHORT",
+      role: "PRIMARY",
+      cycleId: `legacy-cycle:${result.runId}:${index + 1}`,
+      tradeCount: 1,
+      addCount: Math.max(0, trade.martinLayer),
+      realizedPnl: roundBacktestMoney(trade.pnl),
+      unrealizedPnl: 0,
+      grossPnl: roundBacktestMoney(grossPnl),
+      fees: roundBacktestMoney(fees),
+      funding: 0,
+      turnover: roundBacktestMoney(turnover),
+      maxNotional: roundBacktestMoney(Math.max(trade.entryPrice, trade.exitPrice) * trade.size),
+      mfePct: 0,
+      maePct: 0,
+      openedAt: trade.entryTime,
+      closedAt: trade.exitTime,
+      exitReason: trade.exitReason,
+    };
+  });
+  const openLegs: BacktestLegAccounting["openLegs"] = accounting.openPositions
+    ? [...accounting.openPositions]
+    : accounting.openPosition
+      ? [{
+          ...accounting.openPosition,
+          legId: `legacy-s1:${result.runId}:open`,
+          role: "PRIMARY",
+          sideCode: accounting.openPosition.side === "long" ? "LONG" : "SHORT",
+          martinLayer: 0,
+          lastEntryPrice: accounting.openPosition.averageEntryPrice,
+          openedAt: accounting.openPosition.entryTime,
+          mfePct: 0,
+          maePct: 0,
+        }]
+      : [];
+  const turnover = legs.reduce((sum, leg) => sum + leg.turnover, 0)
+    + openLegs.reduce((sum, leg) => sum + leg.entryNotional, 0);
+  const fees = legs.reduce((sum, leg) => sum + leg.fees, 0)
+    + openLegs.reduce((sum, leg) => sum + leg.entryFees, 0);
+  const grossExposurePeak = Math.max(
+    0,
+    ...legs.map(leg => leg.maxNotional),
+    ...openLegs.map(leg => leg.markPrice * leg.size),
+  );
+  return {
+    version: "backtest-leg-accounting-v1",
+    executionMode: "SINGLE_EXCLUSIVE",
+    legs,
+    openLegs,
+    hedgeRelationships: [],
+    grossExposurePeak: roundBacktestMoney(grossExposurePeak),
+    netExposureAbsPeak: roundBacktestMoney(grossExposurePeak),
+    marginUsagePeak: roundBacktestMoney(grossExposurePeak / leverage),
+    marginHeadroomLow: roundBacktestMoney(request.initialCapital - grossExposurePeak / leverage),
+    turnover: roundBacktestMoney(turnover),
+    fees: roundBacktestMoney(fees),
+    funding: 0,
+    overlapDurationMs: 0,
+    eventCount: 0,
+    decisionCount: 0,
+    rejectedDecisionCount: 0,
+  };
+}
+
+function normalizeAndAuthorizeBacktestMode(request: BacktestRequest): ExecutionPolicy {
+  const policy = normalizeExecutionModePolicy(
+    request.executionPolicy ?? { mode: request.executionMode ?? "SINGLE_EXCLUSIVE" },
+  );
+  if (request.executionMode && request.executionMode !== policy.mode) {
+    throw new Error("BACKTEST_MODE_POLICY_MISMATCH: executionMode 與 executionPolicy.mode 不一致");
+  }
+  request.executionMode = policy.mode;
+  request.executionPolicy = policy;
+  if (policy.mode === "SINGLE_EXCLUSIVE") return policy;
+
+  const capabilities = request.strategyModeCapabilities;
+  const blockers: string[] = [];
+  if (!capabilities || capabilities.contractVersion !== "strategy-mode-capabilities-v1") {
+    blockers.push("STRATEGY_MODE_CAPABILITIES_MISSING");
+  } else {
+    if (!capabilities.supportedModes.includes(policy.mode)) blockers.push("MODE_NOT_DECLARED_SUPPORTED");
+    if (!capabilities.independentLegState) blockers.push("INDEPENDENT_LEG_STATE_NOT_CERTIFIED");
+    if (!capabilities.preciseLegClose) blockers.push("PRECISE_LEG_CLOSE_NOT_CERTIFIED");
+    if (policy.mode === "HEDGE_GUARDED" && !capabilities.hedgeGuard) {
+      blockers.push("HEDGE_GUARD_NOT_CERTIFIED");
+    }
+  }
+  if (!request.strategyVersion?.trim()) blockers.push("STRATEGY_VERSION_REQUIRED");
+  if (!request.strategyLogicHash?.trim()) blockers.push("STRATEGY_LOGIC_HASH_REQUIRED");
+  if (blockers.length > 0) {
+    throw new Error(`BACKTEST_MODE_CAPABILITY_NOT_CERTIFIED:${blockers.join(",")}`);
+  }
+  return policy;
 }
 
 export class BacktestEngine {
@@ -206,6 +349,7 @@ export class BacktestEngine {
     if (!strategy) {
       throw new Error(`策略「${request.strategyKey}」未註冊，請確認策略 key 正確`);
     }
+    const executionPolicy = normalizeAndAuthorizeBacktestMode(request);
     const isV35 = request.strategyKey === V40_STRATEGY_KEY;
     const isV41 = request.strategyKey === V41_STRATEGY_KEY;
     const isV50 = request.strategyKey === "KAMA_3K_ULTIMATE_V50";
@@ -217,8 +361,10 @@ export class BacktestEngine {
     const effectiveRequest = isRainbowTrendLadder
       ? { ...request, timeframe: "30m" }
       : request;
+    effectiveRequest.executionMode = executionPolicy.mode;
+    effectiveRequest.executionPolicy = executionPolicy;
 
-    // 合併策略默認配置（與實盤 resolveConfig 邏輯一致，依選中策略的 defaultConfig）
+    // V4.1 快照使用專屬強型別契約；其他策略維持 defaultConfig + request.config 合併。
     const rawV41Config = request.config[V41_CONFIG_KEY] ?? request.config;
     const v41Config = isV41 ? assertValidV41Config(rawV41Config) : null;
     const config: Record<string, unknown> = v41Config
@@ -272,6 +418,30 @@ export class BacktestEngine {
       throw new Error(
         `歷史數據不足（僅 ${candles.length} 根 K 線），至少需要 120 根。請縮短時間框架或調整日期區間。`,
       );
+    }
+
+    // M2／H3 必須走真實 multi-leg portfolio kernel；未接入的策略一律 fail closed，
+    // 禁止落回任何 S1／單持倉近似路徑冒充進階模式結果。
+    if (executionPolicy.mode !== "SINGLE_EXCLUSIVE") {
+      if (!supportsAdvancedKamaPortfolio(request.strategyKey)) {
+        throw new Error(
+          `策略 ${request.strategyKey} 尚未通過 ${executionPolicy.mode} portfolio runner 認證，回測已 fail closed`,
+        );
+      }
+      onProgress?.(35, `數據就緒（${candles.length} 根），啟動 ${executionPolicy.mode} 多腿 portfolio kernel...`);
+      return this.finalizeV25Result(await runAdvancedKamaPortfolioBacktest({
+        request: effectiveRequest,
+        strategy,
+        config,
+        candles,
+        startMs,
+        endMs,
+        executionPolicy,
+        endPositionPolicy,
+        commission,
+        slippage,
+        onProgress,
+      }), effectiveRequest, startMs, endMs, continuousData.quality);
     }
 
     // 20415 七彩虹：M1 管理 + 已收盤 M30 七線掃描，逐步調用與實盤相同的純核心。
@@ -469,7 +639,6 @@ export class BacktestEngine {
     const v41EntryDiagnostics = v41Config
       ? createV41BacktestEntryDiagnostics(v41Config)
       : undefined;
-
     const startIdx = isV41
       ? Math.max(kamaFastLen, kamaSlowLen) + 2
       : Math.max(kamaFastLen + 2, 3);
@@ -517,36 +686,26 @@ export class BacktestEngine {
       const martinDepth = p.layers.length - 1;
       const kfNow = lastKamaFast;
       const ksNow = lastKamaSlow;
-      const isRiskExit = reason === "極限止損"
-        || reason === "每日虧損上限"
-        || reason === "硬止損"
-        || reason === "絕對金額限損";
-      if (isV41) {
-        // V4.1 不沿用 V4.0 隱性 Fast/Slow gate；真正重入方向由共用 evaluator 在下一根已收盤 K 重驗。
-        if (martinDepth > 0 || isRiskExit) {
-          cooldownUntil = exitTime + cooldownMs;
-        } else if (reentryOnTrend) {
-          reentryBox.req = { side: p.side, entryTrendBull: p.entryTrendBull };
-        }
-      } else {
-        const split = decideCloseSplit({
-          martinDepth,
-          exitReason: reason === "移動止盈" ? "trailing_stop" : reason,
-          entryTrendBull: p.entryTrendBull,
-          currentKamaFast: kfNow,
-          currentKamaSlow: ksNow,
-          kLinePeriod: tfMs / 60000,
-          cooldownBars: 2,
-          reentryEnabled: reentryOnTrend,
-        });
+      const split = decideCloseSplit({
+        martinDepth,
+        exitReason: reason === "移動止盈" ? "trailing_stop" : reason,
+        entryTrendBull: p.entryTrendBull,
+        currentKamaFast: kfNow,
+        currentKamaSlow: ksNow,
+        kLinePeriod: tfMs / 60000,
+        cooldownBars: 2,
+        reentryEnabled: reentryOnTrend,
+      });
 
-        if (split.action === "cooldown") {
-          cooldownUntil = exitTime + split.cooldownMs;
-        } else if (isRiskExit) {
-          cooldownUntil = exitTime + cooldownMs;
-        } else if (split.action === "reenter") {
-          reentryBox.req = { side: p.side, entryTrendBull: p.entryTrendBull };
-        }
+      if (split.action === "cooldown") {
+        // 分流 B：馬丁解套 → 強制冷卻
+        cooldownUntil = exitTime + split.cooldownMs;
+      } else if (reason === "極限止損" || reason === "每日虧損上限" || reason === "硬止損" || reason === "絕對金額限損") {
+        // 風控性平倉：即使無馬丁也強制冷卻（防止立即重入）
+        cooldownUntil = exitTime + cooldownMs;
+      } else if (split.action === "reenter") {
+        // 分流 A：第 0 層順勢重入（在主循環執行市價重入）
+        reentryBox.req = { side: p.side, entryTrendBull: p.entryTrendBull };
       }
       position = null;
     };
@@ -995,10 +1154,9 @@ export class BacktestEngine {
       config,
       summary,
       candleCount: candles.length,
-      environment: envSnapshotV35,
-      ...(v41EntryDiagnostics
-        ? { environment: { ...envSnapshotV35, v41EntryDiagnostics } }
-        : {}),
+      environment: v41EntryDiagnostics
+        ? { ...envSnapshotV35, v41EntryDiagnostics }
+        : envSnapshotV35,
       endPositionPolicy,
       accounting,
     }, request, startMs, endMs, continuousData.quality);
@@ -1061,6 +1219,25 @@ export class BacktestEngine {
     endMs: number,
     dataQuality: BacktestDataQuality,
   ): BacktestResult {
+    const executionPolicy = normalizeExecutionModePolicy(
+      result.execution?.executionPolicy
+        ?? request.executionPolicy
+        ?? { mode: request.executionMode ?? "SINGLE_EXCLUSIVE" },
+    );
+    if (request.executionMode && request.executionMode !== executionPolicy.mode) {
+      throw new Error("三模式回測契約違反：executionMode 與 executionPolicy.mode 不一致");
+    }
+    if (result.legAccounting && result.legAccounting.executionMode !== executionPolicy.mode) {
+      throw new Error("三模式回測契約違反：legAccounting.executionMode 與 policy 不一致");
+    }
+    if (
+      executionPolicy.mode !== "SINGLE_EXCLUSIVE"
+      && (!result.legAccounting || !result.modeResults)
+    ) {
+      throw new Error(
+        `BACKTEST_ADVANCED_MODE_KERNEL_REQUIRED:${executionPolicy.mode} 不得以舊單倉回測結果冒充`,
+      );
+    }
     const policy = resolveEndPositionPolicy(
       result.endPositionPolicy ?? request.endPositionPolicy ?? request.config.Backtest_End_Position_Policy,
     );
@@ -1072,7 +1249,11 @@ export class BacktestEngine {
     if (policy === "mark_to_market" && syntheticForceCloseCount > 0) {
       throw new Error("V2.5 契約違反：mark_to_market 不得建立全域終點合成平倉");
     }
-    if (policy === "force_close" && syntheticForceCloseCount > 1) {
+    if (
+      policy === "force_close"
+      && executionPolicy.mode === "SINGLE_EXCLUSIVE"
+      && syntheticForceCloseCount > 1
+    ) {
       throw new Error("V2.5 契約違反：force_close 在全域終點最多只能建立一筆合成平倉");
     }
 
@@ -1107,10 +1288,117 @@ export class BacktestEngine {
       throw new Error("V2.5 契約違反：force_close 完成後不得保留未平倉部位或未實現盈虧");
     }
 
-    return {
+    const strategyVersion = request.strategyVersion?.trim() || "legacy-unversioned";
+    const explicitStrategyLogicHash = request.strategyLogicHash?.trim();
+    const strategyLogicHash = explicitStrategyLogicHash
+      || buildBacktestHash({ strategyKey: request.strategyKey, strategyVersion, legacy: true });
+    const configHash = buildBacktestHash(result.config);
+    const policyHash = buildBacktestHash(executionPolicy);
+    const dataHash = result.environment?.dataHash
+      || buildBacktestHash({
+        symbol: request.symbol,
+        timeframe: request.timeframe,
+        startMs,
+        endMs,
+        candleCount: dataQuality.returnedCandles,
+        firstTimestamp: dataQuality.firstTimestamp,
+        lastTimestamp: dataQuality.lastTimestamp,
+      });
+    const comparisonGroupId = buildBacktestComparisonGroupId({
+      strategyKey: request.strategyKey,
+      strategyVersion,
+      strategyLogicHash,
+      configHash,
+      dataHash,
+      symbol: request.symbol,
+      timeframe: request.timeframe,
+      startDate: startMs,
+      endDate: endMs,
+      commission: request.commission ?? 0.0004,
+      slippage: request.slippage ?? 0.0001,
+      fundingModel: request.fundingModel,
+      contractSpecification: request.contractSpecification,
+      intrabarEventPolicy: "risk_first",
+      endPositionPolicy: policy,
+    });
+    const execution: BacktestVersionedExecutionContext = {
+      executionMode: executionPolicy.mode,
+      executionPolicy,
+      executionPolicyVersion: executionPolicy.version,
+      strategyVersion,
+      strategyLogicHash,
+      configHash,
+      policyHash,
+      dataHash,
+      intrabarEventPolicy: "risk_first",
+      intrabarEventPolicyVersion: BACKTEST_INTRABAR_POLICY_VERSION,
+      riskModelVersion: BACKTEST_RISK_MODEL_VERSION,
+      simulatedAdapterVersion: BACKTEST_SIMULATED_ADAPTER_VERSION,
+      engineVersion: BACKTEST_ENGINE_VERSION,
+      comparisonGroupId,
+    };
+    const legAccounting = result.legAccounting
+      ?? buildLegacyS1LegAccounting(result, request, accounting);
+    const fairnessBlockers = explicitStrategyLogicHash
+      ? []
+      : ["STRATEGY_LOGIC_HASH_NOT_EXPLICIT"];
+    const longRealizedPnl = legAccounting.legs
+      .filter(leg => leg.sideCode === "LONG")
+      .reduce((sum, leg) => sum + leg.realizedPnl, 0);
+    const shortRealizedPnl = legAccounting.legs
+      .filter(leg => leg.sideCode === "SHORT")
+      .reduce((sum, leg) => sum + leg.realizedPnl, 0);
+    const primaryRealizedPnl = legAccounting.legs
+      .filter(leg => leg.role === "PRIMARY")
+      .reduce((sum, leg) => sum + leg.realizedPnl, 0);
+    const hedgeRealizedPnl = legAccounting.legs
+      .filter(leg => leg.role === "HEDGE")
+      .reduce((sum, leg) => sum + leg.realizedPnl, 0);
+    const mergedFairnessBlockers = Array.from(new Set([
+      ...fairnessBlockers,
+      ...(result.modeResults?.fairnessBlockers ?? []),
+    ]));
+    const modeResults: BacktestModeResults = {
+      version: "backtest-mode-results-v1",
+      executionMode: executionPolicy.mode,
+      intrabarEventPolicy: "risk_first",
+      intrabarEventOrder: BACKTEST_INTRABAR_EVENT_ORDER,
+      grossExposurePeak: legAccounting.grossExposurePeak,
+      netExposureAbsPeak: legAccounting.netExposureAbsPeak,
+      marginHeadroomLow: legAccounting.marginHeadroomLow,
+      turnover: legAccounting.turnover,
+      fees: legAccounting.fees,
+      funding: legAccounting.funding,
+      longRealizedPnl: roundBacktestMoney(longRealizedPnl),
+      shortRealizedPnl: roundBacktestMoney(shortRealizedPnl),
+      primaryRealizedPnl: roundBacktestMoney(primaryRealizedPnl),
+      hedgeRealizedPnl: roundBacktestMoney(hedgeRealizedPnl),
+      pairPnl: roundBacktestMoney(
+        legAccounting.hedgeRelationships.reduce((sum, relation) => sum + relation.pairPnl, 0),
+      ),
+      hedgeCost: roundBacktestMoney(
+        legAccounting.hedgeRelationships.reduce((sum, relation) => sum + relation.hedgeCost, 0),
+      ),
+      counterfactualWithoutHedgePnl: roundBacktestMoney(
+        legAccounting.hedgeRelationships.reduce(
+          (sum, relation) => sum + relation.counterfactualWithoutHedgePnl,
+          0,
+        ),
+      ),
+      overlapDurationMs: legAccounting.overlapDurationMs,
+      ...result.modeResults,
+      comparisonGroupId,
+      fairComparisonEligible: mergedFairnessBlockers.length === 0,
+      fairnessBlockers: mergedFairnessBlockers,
+    };
+
+    const finalizedResult: BacktestResult = {
       ...result,
       endPositionPolicy: policy,
       accounting,
+      execution,
+      legAccounting,
+      modeResults,
       dataQuality,
       engineSemantics: createContinuousEngineSemantics(),
       environment: result.environment
@@ -1123,6 +1411,36 @@ export class BacktestEngine {
           }
         : result.environment,
     };
+
+    // 只保存通過所有 execution／accounting 守門的 canonical artifact。
+    // 測試或專用 runtime 的輕量 mock 可能沒有此新方法，因此以可選呼叫保持相容。
+    try {
+      const db = getBacktestDatabase();
+      db.saveFinalizedBacktestResult?.({
+        run: {
+          run_id: finalizedResult.runId,
+          strategy_key: finalizedResult.strategyKey,
+          symbol: request.symbol,
+          timeframe: request.timeframe,
+          start_date: startMs,
+          end_date: endMs,
+          initial_capital: request.initialCapital,
+          config: JSON.stringify(finalizedResult.config),
+          status: "completed",
+          created_at: Date.now(),
+          execution_context: JSON.stringify(execution),
+          mode_results: JSON.stringify(modeResults),
+          leg_accounting: JSON.stringify(legAccounting),
+        },
+        trades: finalizedResult.trades,
+        metrics: finalizedResult.metrics,
+        equityCurve: finalizedResult.equityCurve,
+      });
+    } catch (error) {
+      console.warn("[Backtest] finalized artifact 持久化失敗（不影響回傳）:", error);
+    }
+
+    return finalizedResult;
   }
 
   /**

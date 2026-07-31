@@ -2329,19 +2329,66 @@
 - [x] 編排逐檔實作批次、測試矩陣、快照 round-trip、真實資料驗證、零下單證據、發布閘門及回滾程序
 - [x] 交付最詳盡修改計畫供使用者確認；本輪不修改功能程式碼、不建立回測、不下單、不發布
 
-## V4.1 KAMA+3K 三條件 AND／OR 全鏈路本地實作（已獲批准；未批准發布）
-- [x] 記錄目前工作樹、V4.0 fixture、基線 `pnpm test`／`pnpm check`／`pnpm build` 與非預期失敗，禁止在基線不明時修改核心（66 test files／662 tests 通過；check、build 通過；外部 OKX／Bybit 憑證過期僅為既有警告）
-- [x] 新建 V4.1 canonical 配置契約：`20415_KAMA_MARTIN_V41`、`__v41Config`、Zod schema、normalizer、validator、stable hash、0/3 fail-closed 與 V4.0→V4.1 顯式草稿轉換（8 項契約測試與 `pnpm check` 通過）
-- [x] 新建無副作用 V4.1 evaluator：三 K 兩模式、Fast／Slow 持續方向、Price／Slow closed-bar、AND／OR、衝突 HOLD、原因碼、方向限制與重入安全規則（18 項 evaluator／重入測試、26 項累計 V4.1 測試與 `pnpm check` 通過）
-- [x] 新建獨立 V4.1 策略類別並接入策略工作室、schema dispatch、預設配置、馬丁／報表／symbol 能力集合，確認 V4.0 檔案及語義不變（32 項累計 V4.1 測試、`pnpm check`、重啟載入與註冊日誌均通過）
-- [x] 貫通策略 create／update、回測 run、快照 save／load／apply／clone 的嚴格 `__v41Config` 契約、同 key 身份鎖、hash round-trip 與新策略預設停用（API／快照 strict 契約與 round-trip 測試通過）
-- [x] 貫通回測引擎與背景 job：凍結完整配置、最新已收盤 K 對齊、三票／最終原因統計、歷史 V4.0 結果保真及不因目前表單切換而重算（離線 160 根 closed-bar 主引擎 runtime、診斷持久化、V2.5／V4.0 連續回歸與 50 項回測相關測試通過）
-- [x] 新建 `V41EntryConditionsPanel`：三開關、AND／OR、ENTRY CONDITIONS n/3、三 K A／B、獨立重入、公式／錯誤摘要、唯讀模式及桌面／手機無溢出（直接共用 canonical 型別與 normalizer；`pnpm check` 通過，三頁接線與跨尺寸視覺證據另列）
-- [x] 貫通 `Backtest.tsx`、`Strategies.tsx`、`ParameterSnapshots.tsx` 的新增／編輯／導入／預覽／複製流程，0/3 前端禁用且所有欄位完整 round-trip（`pnpm check` 0 錯誤；三頁 UI 接線 4 項契約測試通過）
-- [x] 貫通 auto、Raw Webhook、executor、Heartbeat、V35 馬丁監控與 generic risk 排除：共用 evaluator、HMAC 可信封印、既有跨 revision DB process lease、無 V4.1 隱性 Price gate、無重複監控（8 項實盤安全契約測試與 `pnpm check` 通過）
-- [x] 新增並通過配置、evaluator、API、快照、UI、parity、可信封印、執行安全、V4.0 與其他策略隔離測試；5 項 fail-closed 案例的交易所下單／平倉／撤單 mock 呼叫均為 0（Phase 10 聚焦矩陣 15 檔／104 項全通過）
-- [x] 執行全量 `pnpm test`、`pnpm check`、`pnpm build`、schema diff、round-trip JSON、真實歷史行情只讀驗證、日誌檢查及桌面／390px 視覺驗收（77 個測試檔：76 通過、1 跳過；734 項：730 通過、4 跳過；0 型別錯誤；production build 成功；無 schema 變更；99 根 OKX 公開已收盤 30m K 純 evaluator 驗證；V4.1 下單／執行日誌 0；DB strategy／signal／trade 皆 0；桌面與 390px 無溢出）
-- [x] 交付 V4.1 本地完成證據包供使用者第二次確認；在確認前不建立 checkpoint、不發布、不啟用任何 V4.1 策略、不下單（證據檔 SHA-256 清單與 ZIP 完整性檢查均通過）
-- [x] 記錄使用者於 2026-07-31 的第二次發布確認，執行 checkpoint 前最終核對：77 個測試檔中 76 通過、1 條件式跳過；734 項中 730 通過、4 條件式跳過、0 失敗；TypeScript／production build 通過；只讀 SQL 為 `strategy=0;enabled=0;signal=0;trade=0`
-- [x] 建立本次唯一 V4.1 checkpoint；依專案 auto-publish 設定立即發布，但不建立或啟用 V4.1 策略（已獲第二次明確確認，進入 checkpoint 操作）
-- [ ] 驗證發布版本、production runtime 與資料庫零副作用，確認 V4.1 strategy／signal／trade 仍為 0 後交付版本連結
+## 全策略三模式全系統實作（已批准，2026-07-31）
+
+- [x] 建立實作前安全基線：TypeScript、662 項 Vitest 與 production build 全綠；DB 基線為 4 個啟用 auto 策略、4 個 Heartbeat、511 signals、380 trades、2 個 open cycles；改於隔離 worktree 開發，新能力與新部署一律預設停用
+- [x] 建立 `SINGLE_EXCLUSIVE`、`MULTI_POSITION`、`HEDGE_GUARDED` 的 discriminated policy、策略版本能力 manifest、deployment／cycle／leg／relationship／decision／intent／fill／reconciliation 領域型別；canonical policy 正規化測試全綠
+- [x] 以 additive migration 擴充三模式資料表、索引、版本與相容欄位：7 張新表、51 個欄位與所需索引已套用；舊資料固定預設 S1／LEGACY，沒有 drop、rename 或既有欄位改義
+- [x] 建立共用 CandidateIntent → ModeDecision → RiskReservation → OrderIntent 核心，完成 S1 舊行為相容與 golden parity 測試
+- [x] 建立 leg-scoped 馬丁、止盈止損、冷卻、bar lock、成交帳本、精確 reduce／close、冪等與交易所能力探測
+- [x] 實作 M2 每部署最多一個 LONG 加一個 SHORT，兩腿狀態、風控、馬丁、止盈止損、訂單及損益完全隔離
+- [x] 實作 H3 PRIMARY／HEDGE 關係、雙條件啟動、固定對沖比例、gross／margin Gate、解除、再平衡、晉升及 fail-closed 狀態機；保護腿馬丁預設關閉
+- [x] 升級回測核心支援 S1／M2／H3、確定性事件排序、多腿會計、三模式公平比較、模式歸因及參數掃描
+- [x] 升級參數快照庫、策略工作室、策略建立／複製／快照導入：保存 mode policy、artifact scope、版本、能力與相容 diff；建立後保持停用
+- [ ] 建立三模式 deployment API、模式 preflight、帳戶／商品能力、風險彙總、對帳 case、Heartbeat lease 與監控 reason code
+- [ ] 改造策略交易卡片：每條策略可有多個獨立部署，每個部署單獨選用 S1／M2／H3；模式工作台嵌入卡片 Drawer／Dialog，不新增左側主導航
+- [ ] 改造回測、快照庫、策略工作室、控制中心、持倉、訊號與稽核 UI，所有模式／腿／gross／net／blocker／交易所真相可追溯
+- [ ] 新增及更新 Vitest，涵蓋 S1 parity、M2 跨腿隔離、H3 關係與解除、部分成交、重播去重、重啟、能力過期、快照相容及零誤關倉
+- [ ] 執行 TypeScript、全套 Vitest、production build、資料庫驗證、桌面與手機視覺驗收及 production 零自動交易副作用檢查
+- [ ] 所有 Gate 通過後建立穩定 checkpoint；因 auto-publish 會立即上線，發布後再次確認沒有自動啟用策略、沒有新 signals／trades／orders
+
+### Phase 6：三模式回測核心
+- [x] 擴充 BacktestRequest／BacktestResult 契約：executionMode、canonical policy／version、strategy／config／policy hash、intrabar event policy、simulation model version、comparisonGroupId 與公平比較資格
+- [x] 建立共用 deterministic multi-leg portfolio kernel：固定事件優先序、S1 單腿相容、M2 LONG／SHORT 隔離、H3 PRIMARY／HEDGE 關係與 ratio／cooldown／unwind、leg-scoped fill／fee／funding／MFE／MAE
+- [x] 將各策略回測路徑接入 canonical CandidateIntent → ModeDecision → simulated fill／PositionLeg projector；未通過能力認證的進階模式必須 fail closed，不得用 S1 結果冒充
+- [x] 擴充多腿會計與報告：gross／net peaks、margin low、turnover、LONG／SHORT／PRIMARY／HEDGE 歸因、H3 pair PnL／hedge cost／counterfactual、重疊時間與終點持倉政策
+- [x] 貫通 backtest router、job manager、資料庫歷史、參數掃描與多商品回測的 mode policy／modeResults／legAccounting 持久化與回傳
+- [x] 新增 Vitest：S1 golden parity、M2 跨腿隔離、H3 雙條件與解除、同 K 棒事件次序、重播確定性、公平比較 hash、force-close／mark-to-market 多腿會計
+
+### Phase 7：快照契約與策略能力註冊
+- [x] 建立版本化 StrategyArtifact／ParameterSnapshot canonical contract：artifact scope、strategy version／logic hash、execution policy／policy hash、capability manifest 與來源追溯
+- [x] 建立單一策略能力 registry，所有內建與自訂策略以版本為鍵明確宣告 S1／M2／H3、independent-leg、precise-close、hedge-guard 與認證狀態；未知或過期能力 fail closed
+- [x] 貫通參數快照建立、更新、複製、列表、詳情、導入及回測／策略工作室入口，完整 round-trip mode policy、版本與能力，不得默默降級為 S1
+- [x] 實作快照相容性 diff 與 artifact scope Gate：策略 key／版本／logic hash／schema／mode／capability 不相容時明示 blocker，禁止直接部署
+- [x] 從快照建立策略或 deployment 時一律保持停用，保留原策略設定與 policy hash，只有通過 Phase 8 preflight 後才允許另行啟用
+- [x] 新增 Vitest：legacy S1 migration、三模式 snapshot round-trip、cross-strategy rejection、stale capability rejection、copy/import disabled-by-default 與 hash determinism
+
+### Phase 8：部署 API 與模式生命週期
+- [x] 建立 deployment service／router：建立、複製、列表、詳情、更新 policy、preflight、啟用、暫停、恢復、停用、drain、block 與封存，所有 mutation 具 owner scope、revision optimistic lock、冪等 transition key 與審計 reason code
+- [x] 建立 deterministic preflight report：strategy／artifact／capability、帳戶、交易所 position mode、商品規格、精確關腿、資金／gross／margin、現存腿／未結委託與資料新鮮度 Gate
+- [x] 實作安全 activation state machine：DRAFT／DISABLED／PREFLIGHT_FAILED／READY_DISABLED／ACTIVE／PAUSED／DRAINING／BLOCKED／ARCHIVED；不得由 UI 布林值或 legacy setStatus 繞過
+- [x] 實作模式／policy 更新規則：任何變更停用並增加 revision；有 open legs／pending intents／hedge relationship 時禁止直接切換，僅允許 drain 或建立新 deployment
+- [x] 讓 legacy strategies CRUD 與 setStatus／snapshot import 對映到 canonical deployment，不自動啟用、不改動既有 S1 執行身份，且明示相容 blocker
+- [x] 新增 Vitest：preflight blocker 聚合、stale revision、非法狀態轉移、ACTIVE 模式切換拒絕、open-leg drain、idempotent activation、policy hash collision、legacy bypass 防護、owner isolation 與 webhookSecret redaction
+
+### Phase 9：三模式部署工作台
+- [x] 新增 owner-scoped 部署工作台路由與側邊欄入口，提供 S1／M2／H3、activation state、搜尋與封存篩選
+- [x] 建立部署摘要與詳情雙欄操作台：mode／state／revision／交易所／商品／策略 identity、風險預算與 policy 摘要
+- [x] 建立 readonly preflight 面板：總體 PASS／BLOCKED、有效期限、risk evidence、分類 Gate、blocker／warning 與清洗後 evidence
+- [x] 建立 lifecycle action matrix 與破壞性確認：preflight、activate、pause、fresh-preflight resume、drain、disable、block、archive；不提供 enabled 布林切換
+- [x] 建立模式／policy 編輯與複製部署流程；模式切換由 backend 執行 flat + fresh preflight，建立／複製一律 DRAFT/disabled
+- [x] 建立 revisioned transition history timeline、stale revision/conflict 錯誤回饋、loading／empty／error／mobile responsive 狀態
+- [x] 新增前端 Vitest：狀態 action matrix、mode metadata、transition key、preflight expiry 與 safety copy regression
+
+### Phase 10：Runtime 維運語義與既有頁面導流
+- [x] 將 canonical executionModeEngine 接入所有 webhook／auto／manual／risk 下單入口，在任何實際下單前持久化 mode decision
+- [x] 讓 PAUSED／DRAINING／BLOCKED 僅允許 reduce／close pipeline admission，ACTIVE 才可新增曝險；LEGACY S1 保持相容
+- [x] 將既有策略頁 canonical 卡片的啟用控制導流至部署工作台，保留 LEGACY S1 相容但不得繞過 preflight
+- [x] 在部署工作台／策略頁顯示 canonical activation/mode、ledger blocker、last decision 與 DRAINING/BLOCKED/PREFLIGHT_FAILED 告警，不把 enabled 當作唯一真相
+- [x] 修正進階模式單腿關倉 scope：將 posSide 帶入 CandidateIntent，decision 只核准對應 ledger leg，並將 reduce-only quantity 上限鎖定於該腿數量
+
+### Phase 11：完整驗證與交付
+- [x] 執行 schema migration 核對、targeted/full Vitest、TypeScript、正式 build 與 secret/log 靜態掃描
+- [x] 以 production-like DB 驗證 owner isolation、revision/idempotency、preflight persistence、mode switch flat Gate 與 legacy migration
+- [ ] 完成部署工作台桌面／行動瀏覽器 QA，驗證三模式、blocker、history、confirm 與錯誤狀態後修復回歸
+- [ ] 合併隔離工作樹回主專案、更新完成報告、核對 todo、保存 checkpoint 並自動發布；不得自動啟用實盤部署

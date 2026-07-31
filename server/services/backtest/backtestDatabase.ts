@@ -32,6 +32,22 @@ export interface BacktestRunRow {
   config: string;
   status: string;
   created_at: number;
+  execution_context?: string | null;
+  mode_results?: string | null;
+  leg_accounting?: string | null;
+}
+
+export interface BacktestTradeRowInput {
+  entryTime: number;
+  exitTime: number;
+  side: string;
+  entryPrice: number;
+  exitPrice: number;
+  size: number;
+  pnl: number;
+  pnlPct: number;
+  exitReason: string;
+  martinLayer: number;
 }
 
 export class BacktestDatabase {
@@ -80,7 +96,10 @@ export class BacktestDatabase {
         initial_capital REAL NOT NULL,
         config TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'completed',
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        execution_context TEXT,
+        mode_results TEXT,
+        leg_accounting TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_runs_created_at
@@ -111,6 +130,16 @@ export class BacktestDatabase {
         created_at INTEGER NOT NULL
       );
     `);
+
+    this.ensureBacktestRunColumn("execution_context", "TEXT");
+    this.ensureBacktestRunColumn("mode_results", "TEXT");
+    this.ensureBacktestRunColumn("leg_accounting", "TEXT");
+  }
+
+  private ensureBacktestRunColumn(name: string, definition: string): void {
+    const columns = this.db.prepare("PRAGMA table_info(backtest_runs)").all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === name)) return;
+    this.db.exec(`ALTER TABLE backtest_runs ADD COLUMN ${name} ${definition}`);
   }
 
   /** 批次插入 K 線（transaction 高速寫入，重複主鍵自動覆蓋） */
@@ -165,23 +194,14 @@ export class BacktestDatabase {
   /** 保存回測結果（run + trades） */
   saveBacktestResult(
     run: BacktestRunRow,
-    trades: Array<{
-      entryTime: number;
-      exitTime: number;
-      side: string;
-      entryPrice: number;
-      exitPrice: number;
-      size: number;
-      pnl: number;
-      pnlPct: number;
-      exitReason: string;
-      martinLayer: number;
-    }>,
+    trades: BacktestTradeRowInput[],
   ): void {
     const insertRun = this.db.prepare(`
       INSERT OR REPLACE INTO backtest_runs
-        (run_id, strategy_key, symbol, timeframe, start_date, end_date, initial_capital, config, status, created_at)
-      VALUES (@run_id, @strategy_key, @symbol, @timeframe, @start_date, @end_date, @initial_capital, @config, @status, @created_at)
+        (run_id, strategy_key, symbol, timeframe, start_date, end_date, initial_capital, config, status, created_at,
+         execution_context, mode_results, leg_accounting)
+      VALUES (@run_id, @strategy_key, @symbol, @timeframe, @start_date, @end_date, @initial_capital, @config, @status, @created_at,
+              @execution_context, @mode_results, @leg_accounting)
     `);
     const insertTrade = this.db.prepare(`
       INSERT INTO backtest_trades
@@ -189,7 +209,12 @@ export class BacktestDatabase {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const txn = this.db.transaction(() => {
-      insertRun.run(run);
+      insertRun.run({
+        ...run,
+        execution_context: run.execution_context ?? null,
+        mode_results: run.mode_results ?? null,
+        leg_accounting: run.leg_accounting ?? null,
+      });
       this.db.prepare(`DELETE FROM backtest_trades WHERE run_id = ?`).run(run.run_id);
       for (const t of trades) {
         insertTrade.run(
@@ -208,6 +233,21 @@ export class BacktestDatabase {
       }
     });
     txn();
+  }
+
+  /**
+   * 統一保存通過 finalize Gate 的完整 artifact。
+   * 舊策略可先走既有儲存，再由此以相同 run_id 覆寫為 canonical 最終版本；
+   * advanced runner 則直接由此建立本地歷史，避免 M2／H3 結果只存在記憶體。
+   */
+  saveFinalizedBacktestResult(input: {
+    run: BacktestRunRow;
+    trades: BacktestTradeRowInput[];
+    metrics: unknown;
+    equityCurve: unknown;
+  }): void {
+    this.saveBacktestResult(input.run, input.trades);
+    this.savePerformanceMetrics(input.run.run_id, input.metrics, input.equityCurve);
   }
 
   /** 保存績效指標與權益曲線 */

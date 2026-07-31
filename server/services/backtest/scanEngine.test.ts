@@ -5,6 +5,7 @@
  * - 敏感性分析
  */
 import { describe, it, expect } from "vitest";
+import { buildScanBacktestExecutionContext, type ScanConfig } from "./scanEngine";
 
 // 直接測試導出的函數和類型
 // 由於 calculateCompositeScore 和 computeParetoFront 是內部函數，
@@ -108,5 +109,58 @@ describe("參數掃描引擎 V5.0", () => {
         "totalReturn",
       ),
     ).rejects.toThrow("超過上限");
+  });
+
+  it("所有掃描衍生回測應完整繼承三模式與公平比較身份", () => {
+    const config: ScanConfig = {
+      strategyKey: "KAMA_3K_HF_V61",
+      symbols: ["BTC-USDT-SWAP"],
+      timeframe: "15m",
+      startDate: 1_700_000_000_000,
+      endDate: 1_700_086_400_000,
+      initialCapital: 10_000,
+      baseConfig: {},
+      parameters: [],
+      executionMode: "HEDGE_GUARDED",
+      executionPolicy: {
+        version: "execution-policy-v1",
+        mode: "HEDGE_GUARDED",
+        riskBudget: {
+          maxGrossExposure: 20_000,
+          maxNetExposure: 10_000,
+          maxReservedMargin: 5_000,
+        },
+        hedge: {
+          ratio: 0.4,
+          triggerDrawdownPct: 3,
+          unwindRecoveryPct: 1,
+          cooldownMs: 60_000,
+        },
+      },
+      strategyVersion: "v6.1.0",
+      strategyLogicHash: "sha256:test-strategy",
+      strategyModeCapabilities: {
+        contractVersion: "strategy-mode-capabilities-v1",
+        supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+        martingaleLayers: true,
+        independentLegState: true,
+        hedgeGuard: true,
+        preciseLegClose: true,
+      },
+      endPositionPolicy: "force_close",
+      fundingModel: "funding-model-v1",
+      contractSpecification: { contractValue: 1, settlementAsset: "USDT" },
+    };
+
+    expect(buildScanBacktestExecutionContext(config)).toEqual({
+      endPositionPolicy: config.endPositionPolicy,
+      executionMode: config.executionMode,
+      executionPolicy: config.executionPolicy,
+      strategyVersion: config.strategyVersion,
+      strategyLogicHash: config.strategyLogicHash,
+      strategyModeCapabilities: config.strategyModeCapabilities,
+      fundingModel: config.fundingModel,
+      contractSpecification: config.contractSpecification,
+    });
   });
 });

@@ -99,6 +99,38 @@ export interface Position {
   marginRatio?: number;
 }
 
+export type AccountPositionMode = "ONE_WAY" | "HEDGE" | "UNKNOWN";
+
+/**
+ * 僅由交易所只讀 API 建立的能力快照。不得用送測試單或修改帳戶設定來推測能力。
+ */
+export interface ExchangeCapabilitySnapshot {
+  exchange: "bybit" | "okx";
+  symbol: string;
+  positionMode: AccountPositionMode;
+  preciseLegClose: boolean;
+  observedAt: number;
+  source: string;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * 由交易所公開／只讀 API 建立的商品規格證據。數量統一為策略與 placeOrder 使用的 base 幣單位。
+ */
+export interface ExchangeInstrumentSnapshot {
+  exchange: "bybit" | "okx";
+  symbol: string;
+  exists: boolean;
+  active: boolean;
+  minOrderSize: number;
+  quantityStep: number;
+  contractValue?: number;
+  priceStep?: number;
+  observedAt: number;
+  source: string;
+  details?: Record<string, unknown>;
+}
+
 export interface ExchangeAdapter {
   readonly exchange: "bybit" | "okx";
 
@@ -116,6 +148,12 @@ export interface ExchangeAdapter {
 
   /** 查詢當前所有持倉 */
   getPositions(symbol?: string): Promise<Position[]>;
+
+  /** 只讀探測帳戶持倉模式與指定腿精確平倉能力；不得改變帳戶或送單。 */
+  probeCapabilities(symbol: string): Promise<ExchangeCapabilitySnapshot>;
+
+  /** 只讀探測商品是否可交易及下單規格；不得建立、修改或取消訂單。 */
+  probeInstrument(symbol: string): Promise<ExchangeInstrumentSnapshot>;
 
   /** 撤單 */
   cancelOrder(symbol: string, orderId: string): Promise<OrderResult>;

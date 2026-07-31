@@ -12,6 +12,7 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter } from "../exchanges/types";
 import type { MartinState, StrategyState } from "../strategies/base";
 import { BaseStrategyV35, createInitialStrategyState } from "../strategies/base";
@@ -168,6 +169,14 @@ export interface ExecutionResult {
   exchangeResponse?: string;
 }
 
+export interface ExecuteSignalOptions {
+  source?: "WEBHOOK" | "AUTO" | "MANUAL" | "RISK" | "RECONCILIATION";
+  /** 同一 runtime 事件重試應維持相同值。 */
+  eventKey?: string;
+  cycleId?: string | null;
+  legId?: string | null;
+}
+
 /**
  * 執行訊號：完整流程（風險檢查 → 下單 → 記錄）
  */
@@ -175,6 +184,7 @@ export async function executeSignal(
   strategy: Strategy,
   signal: ParsedSignal,
   signalId: number,
+  options: ExecuteSignalOptions = {},
 ): Promise<ExecutionResult> {
     // 0. 統一交易對驗證和標準化（應用於所有策略）
   // ★ 先獲取 API Key 的 isTestnet 狀態，用於交易對驗證
@@ -220,7 +230,21 @@ export async function executeSignal(
   }
   let adapter: ExchangeAdapter;
   try {
-    adapter = createAdapter(apiKeyRecord);
+    const rawAdapter = createAdapter(apiKeyRecord);
+    const source = options.source ?? (signalId > 0 ? "WEBHOOK" : "AUTO");
+    const eventKey = options.eventKey
+      ?? (signal.barTimestamp ? `bar:${signal.barTimestamp}` : signalId > 0 ? `signal:${signalId}` : `runtime:${Date.now()}`);
+    adapter = createRuntimeGuardedAdapter(rawAdapter, {
+      strategy,
+      source,
+      eventKey,
+      signalId,
+      barTimestamp: signal.barTimestamp,
+      reason: signal.reason,
+      cycleId: options.cycleId,
+      legId: options.legId,
+      signalPrice: signal.price,
+    });
   } catch (e: any) {
     return { status: "failed", message: `建立交易所連線失敗: ${e.message}` };
   }
@@ -2598,19 +2622,24 @@ export async function processWebhookSignal(
     return finish("rejected", "Secret token 驗證失敗");
   }
 
-  if (!strategy.enabled) {
-    return finish("rejected", `策略已停用${strategy.disabledReason ? `（${strategy.disabledReason}）` : ""}`);
-  }
-
   // 解析訊號
   const parsed = parseSignalPayload(payload);
   if (!parsed) {
     return finish("failed", "無法解析訊號內容，需包含 action: buy/sell/close", {});
   }
 
+  // LEGACY deployment 保持原 enabled 相容語義；canonical deployment 交由 runtime
+  // mode Gate 判斷 ACTIVE／PAUSED／DRAINING／BLOCKED 的增曝或 close-only admission。
+  if (!strategy.enabled && strategy.activationState === "LEGACY") {
+    return finish("rejected", `策略已停用${strategy.disabledReason ? `（${strategy.disabledReason}）` : ""}`);
+  }
+
   // 執行
   try {
-    const result = await executeSignal(strategy, parsed, signalId);
+    const result = await executeSignal(strategy, parsed, signalId, {
+      source: "WEBHOOK",
+      eventKey: `signal:${signalId}`,
+    });
     return finish(result.status, result.message, {
       orderId: result.orderId,
       exchangeResponse: result.exchangeResponse,

@@ -14,6 +14,13 @@ import {
 } from "./strategyStudio";
 import { attachSnapshotConfig } from "./strategySnapshotConfig";
 import {
+  assessStrategyArtifactCompatibility,
+  assertStrategyArtifactCompatible,
+  hydrateStrategyArtifactFromSnapshotRow,
+  type VersionedStrategyCapabilityManifest,
+} from "./strategyArtifacts";
+import { requireStrategyCapabilityManifest } from "./strategyCapabilityRegistry";
+import {
   assertValidV25Config,
   deriveV25MaxMartinLayer,
   V25_STRATEGY_KEY,
@@ -29,6 +36,8 @@ export interface RegistryDefinition {
   isActive: boolean;
   sourceType: "system" | "paste" | "upload";
   version: number;
+  capabilityManifest: VersionedStrategyCapabilityManifest;
+  modeCapabilities: VersionedStrategyCapabilityManifest["capabilities"];
   loaded: boolean;
   updatedAt: Date | null;
 }
@@ -86,7 +95,7 @@ export class RegistryManager {
     const defs = await db.listAllActiveStrategyDefinitions();
 
     // 合併：內建來自記憶體，自訂來自 DB（含未載入成功的）
-    const builtIns: RegistryDefinition[] = registered
+    const builtIns = registered
       .filter((s) => s.isBuiltIn)
       .map((b) => {
         // 嘗試從 DB 獲取 schemaConfig
@@ -106,7 +115,7 @@ export class RegistryManager {
         };
       });
 
-    const customs: RegistryDefinition[] = defs
+    const customs = defs
       .filter((d) => !d.isBuiltIn)
       .map((d) => ({
         key: d.key,
@@ -122,7 +131,14 @@ export class RegistryManager {
         updatedAt: d.updatedAt,
       }));
 
-    const result = [...builtIns, ...customs];
+    const result = await Promise.all([...builtIns, ...customs].map(async (definition) => {
+      const capabilityManifest = await requireStrategyCapabilityManifest(definition.key);
+      return {
+        ...definition,
+        capabilityManifest,
+        modeCapabilities: capabilityManifest.capabilities,
+      };
+    }));
     this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
     return result;
   }
@@ -146,6 +162,7 @@ export class RegistryManager {
       return null;
     }
 
+    const capabilityManifest = await requireStrategyCapabilityManifest(key);
     const result: RegistryDefinition = {
       key: memStrategy?.key ?? dbDef!.key,
       name: memStrategy?.name ?? dbDef!.name,
@@ -162,6 +179,8 @@ export class RegistryManager {
         | "paste"
         | "upload",
       version: dbDef?.version ?? 1,
+      capabilityManifest,
+      modeCapabilities: capabilityManifest.capabilities,
       loaded: !!memStrategy,
       updatedAt: dbDef?.updatedAt ?? null,
     };
@@ -265,6 +284,17 @@ export class RegistryManager {
     if (!definition?.loaded || !definition.isActive) {
       throw new Error(`快照綁定的策略引擎「${snapshotKey}」目前未載入或已停用`);
     }
+    const targetManifest = await requireStrategyCapabilityManifest(snapshotKey);
+    const hydrated = hydrateStrategyArtifactFromSnapshotRow(
+      snapshot as unknown as Record<string, unknown>,
+      targetManifest,
+    );
+    const compatibility = assessStrategyArtifactCompatibility({
+      artifact: hydrated.artifact,
+      targetManifest,
+      integrityValid: hydrated.integrityValid,
+    });
+    assertStrategyArtifactCompatible(compatibility);
     if (!instanceKey || snapshotKey !== instanceKey) {
       throw new Error(
         `快照的策略類型 (${snapshotKey}) 與目標實例 (${instanceKey || "未綁定"}) 不匹配，無法套用`,
@@ -295,7 +325,18 @@ export class RegistryManager {
       martinState: attachSnapshotConfig(prevState, snapshotKey, config, {
         snapshotId: snapshot.id,
         snapshotName: snapshot.snapshotName,
+        artifact: hydrated.artifact,
       }),
+      enabled: false,
+      activationState: "DISABLED",
+      disabledReason: "快照配置已更新；必須重新通過部署 preflight 後才可啟用",
+      capabilitySnapshot: hydrated.artifact.capabilityManifest as unknown as Record<string, unknown>,
+      strategyVersion: hydrated.artifact.strategyVersion,
+      ...(hydrated.artifact.artifactScope === "EXECUTION_PROFILE" ? {
+        executionMode: hydrated.artifact.executionMode,
+        executionPolicy: hydrated.artifact.executionPolicy,
+        executionPolicyVersion: hydrated.artifact.executionPolicyVersion,
+      } : {}),
       ...(v25Config ? {
         stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
         takeProfitPct: String(v25Config.Take_Profit_Pct),
@@ -307,7 +348,7 @@ export class RegistryManager {
       } : {}),
     });
 
-    return { success: true, message: "參數已成功套用到策略實例" };
+    return { success: true, message: "參數已套用並將策略安全設為停用；請重新通過部署 preflight 後再啟用" };
   }
 
   // ============================================================

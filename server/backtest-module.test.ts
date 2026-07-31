@@ -218,6 +218,55 @@ describe("backtestDatabase (SQLite)", () => {
     expect((perf!.metrics as Record<string, unknown>).totalReturn).toBe(5);
   });
 
+  it("保存 finalized 三模式 artifact 並可完整讀回", () => {
+    const db = getBacktestDatabase();
+    const runId = `test_three_mode_run_${runTs}`;
+    const executionContext = {
+      executionMode: "HEDGE_GUARDED",
+      executionPolicyVersion: "execution-policy-v1",
+      strategyLogicHash: "sha256:test-strategy",
+      comparisonGroupId: "comparison:test",
+      engineVersion: "backtest-engine-v3",
+    };
+    const modeResults = {
+      executionMode: "HEDGE_GUARDED",
+      fairComparisonEligible: true,
+      hedgeCost: 1.25,
+    };
+    const legAccounting = {
+      executionMode: "HEDGE_GUARDED",
+      legs: [{ legId: "primary-1", role: "PRIMARY", realizedPnl: 12.5 }],
+      hedgeRelationships: [{ relationshipId: "hedge-1", pairPnl: 11.25 }],
+    };
+
+    db.saveFinalizedBacktestResult({
+      run: {
+        run_id: runId,
+        strategy_key: "KAMA_3K_HF_V61",
+        symbol: testSymbol,
+        timeframe: "15m",
+        start_date: runTs,
+        end_date: runTs + 86_400_000,
+        initial_capital: 10_000,
+        config: JSON.stringify({ KAMA_Fast_Length: 21 }),
+        status: "completed",
+        created_at: Date.now(),
+        execution_context: JSON.stringify(executionContext),
+        mode_results: JSON.stringify(modeResults),
+        leg_accounting: JSON.stringify(legAccounting),
+      },
+      trades: [],
+      metrics: { totalReturn: 0.1125 },
+      equityCurve: [{ timestamp: runTs, equity: 10_011.25, price: 100 }],
+    });
+
+    const run = db.getBacktestRun(runId);
+    expect(JSON.parse(run!.execution_context!)).toEqual(executionContext);
+    expect(JSON.parse(run!.mode_results!)).toEqual(modeResults);
+    expect(JSON.parse(run!.leg_accounting!)).toEqual(legAccounting);
+    expect(db.getPerformanceMetrics(runId)?.metrics).toEqual({ totalReturn: 0.1125 });
+  });
+
   it("可用交易對清單包含測試交易對", () => {
     const db = getBacktestDatabase();
     expect(db.getAvailableSymbols()).toContain(testSymbol);

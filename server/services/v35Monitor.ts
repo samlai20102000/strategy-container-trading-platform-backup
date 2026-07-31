@@ -21,6 +21,7 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import type { Strategy } from "../../drizzle/schema";
 import type { V4Config, StrategyState, MartinLayer } from "./martingaleEngine";
@@ -154,6 +155,15 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     console.log(`[V35Monitor] 策略 #${strategy.id} 獲取持倉失敗: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
+
+  // readonly probe 完成後，任何加倉／重入／平倉 mutation 都必須先持久化 canonical mode decision。
+  adapter = createRuntimeGuardedAdapter(adapter, {
+    strategy,
+    source: "AUTO",
+    eventKey: `v35-monitor:${strategy.id}:${Math.floor(Date.now() / CHECK_INTERVAL_MS)}`,
+    reason: "V35 monitor maintenance",
+    signalPrice: currentPrice,
+  });
 
   const {
     config: cfg,

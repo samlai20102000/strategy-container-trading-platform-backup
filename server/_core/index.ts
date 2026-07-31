@@ -120,19 +120,24 @@ async function startServer() {
         return res.status(404).json({ error: `Strategy ${strategyId} not found` });
       }
 
-      // 檢查策略是否已啟用，disabled 策略不執行交易
-      if (!strategy.enabled) {
-        console.log(`[Heartbeat/AutoTrade] ⛔ Strategy ${strategyId} (${strategy.name}) is DISABLED, skipping`);
+      const { scheduledRuntimeAdmission, runtimeAdmissionReason } = await import("../services/deploymentRuntimeAdmission");
+      let runtimeAdmission = scheduledRuntimeAdmission(strategy);
+      if (runtimeAdmission === "BLOCKED") {
+        const reason = runtimeAdmissionReason(runtimeAdmission);
+        console.log(`[Heartbeat/AutoTrade] ⛔ Strategy ${strategyId} (${strategy.name}) lifecycle blocks runtime: ${reason}`);
         try {
           const { createHeartbeatLog } = await import("../db");
           await createHeartbeatLog({
             strategyId,
             userId: strategy.userId,
             result: "hold",
-            detail: "[disabled] 策略已停用，跳過執行",
+            detail: `[lifecycle-blocked] ${reason}`,
           });
         } catch (e) { console.warn("[Heartbeat] Failed to log skipped:", e); }
-        return res.json({ ok: true, message: "Strategy disabled, skipped", ranAt: new Date().toISOString() });
+        return res.json({ ok: true, message: "Deployment lifecycle blocked, skipped", ranAt: new Date().toISOString() });
+      }
+      if (runtimeAdmission === "CLOSE_ONLY") {
+        console.log(`[Heartbeat/AutoTrade] 🛡 Strategy ${strategyId}: close-only maintenance admission`);
       }
 
       let strategyKey = (strategy as any).strategyKey || "";
@@ -159,9 +164,10 @@ async function startServer() {
           .where(eq(strategies.id, strategyId))
           .limit(1);
         const freshStrategy = freshResult[0];
-        if (!freshStrategy?.enabled) {
-          console.log(`[Heartbeat/AutoTrade] ⛔ Strategy ${strategyId}: 取得租約後發現已停用，本輪跳過`);
-          return res.json({ ok: true, message: "Strategy disabled while waiting for lease", ranAt: new Date().toISOString() });
+        runtimeAdmission = freshStrategy ? scheduledRuntimeAdmission(freshStrategy) : "BLOCKED";
+        if (!freshStrategy || runtimeAdmission === "BLOCKED") {
+          console.log(`[Heartbeat/AutoTrade] ⛔ Strategy ${strategyId}: 取得租約後 lifecycle 已阻擋，本輪跳過`);
+          return res.json({ ok: true, message: "Deployment lifecycle blocked while waiting for lease", ranAt: new Date().toISOString() });
         }
         strategy = freshStrategy;
         strategyKey = (strategy as any).strategyKey || "";
@@ -206,6 +212,9 @@ async function startServer() {
               return res.json({ ok: true, message: "V61 TP/SL triggered, position closed", ranAt: new Date().toISOString() });
             }
           }
+        } else if (runtimeAdmission === "CLOSE_ONLY" && strategyKey === "KAMA_3K_ULTIMATE_V50") {
+          const { checkV50Strategy } = await import("../services/v50Monitor");
+          await checkV50Strategy(strategy);
         }
       } catch (e: any) {
         // V4.1 風控 monitor 失敗時不可繼續產生新曝險；舊策略維持原相容行為。
@@ -229,6 +238,23 @@ async function startServer() {
             ranAt: new Date().toISOString(),
           });
         }
+      }
+
+      if (runtimeAdmission === "CLOSE_ONLY") {
+        try {
+          const { createHeartbeatLog } = await import("../db");
+          await createHeartbeatLog({
+            strategyId,
+            userId: strategy.userId,
+            result: "hold",
+            detail: `[close-only] ${strategy.activationState} 已完成維運檢查，禁止產生新增曝險訊號`,
+          });
+        } catch (e) { console.warn("[Heartbeat] Failed to log close-only admission:", e); }
+        return res.json({
+          ok: true,
+          message: "Close-only maintenance completed; entry generation blocked",
+          ranAt: new Date().toISOString(),
+        });
       }
 
       // 產生交易信號
@@ -292,7 +318,10 @@ async function startServer() {
         reason: (signal as any).reason || `AutoTrade ${strategy.strategyKey || ''}`,
       };
 
-      const result = await executeSignal(strategy, parsedSignal, signalId);
+      const result = await executeSignal(strategy, parsedSignal, signalId, {
+        source: "AUTO",
+        eventKey: signal.barTimestamp ? `bar:${signal.barTimestamp}` : `signal:${signalId}`,
+      });
       console.log(`[Heartbeat/AutoTrade] 💰 Execution result: status=${result.status} orderId=${result.orderId || 'none'} msg=${result.message}`);
 
       // 更新信號狀態

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   SNAPSHOT_CONFIG_STATE_KEY,
   SNAPSHOT_META_STATE_KEY,
+  SNAPSHOT_ARTIFACT_STATE_KEY,
   attachSnapshotConfig,
+  getBoundStrategyArtifact,
   getBoundStrategyConfig,
   pickStrategyConfigState,
   resolveSnapshotPositionMode,
@@ -18,6 +20,11 @@ import {
   getV41ConfigHash,
   V41_STRATEGY_KEY,
 } from "../../shared/strategies/kama3kMartinV41";
+import {
+  buildStrategyArtifactEnvelope,
+  buildStrategyLogicHash,
+  createVersionedCapabilityManifest,
+} from "./strategyArtifacts";
 
 describe("通用快照部署契約", () => {
   it("未知未來策略應完整保存原始配置，而不錯誤回退到 V3.5", () => {
@@ -46,6 +53,49 @@ describe("通用快照部署契約", () => {
     const state = attachSnapshotConfig({}, "ENGINE_A", { risk: 0, enabled: false });
     expect(getBoundStrategyConfig(state, "ENGINE_A")).toEqual({ risk: 0, enabled: false });
     expect(getBoundStrategyConfig(state, "ENGINE_B")).toBeUndefined();
+  });
+
+  it("canonical artifact 與配置一同 round-trip，且錯誤策略 identity fail closed", () => {
+    const strategyKey = "20415_KAMA_MARTIN_V35";
+    const strategyLogicHash = buildStrategyLogicHash({
+      strategyKey,
+      strategyVersion: 1,
+      logicSource: "snapshot-state-bridge-test",
+    });
+    const capabilityManifest = createVersionedCapabilityManifest({
+      strategyKey,
+      strategyVersion: 1,
+      strategyLogicHash,
+      certification: "CERTIFIED",
+      capabilities: {
+        supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+        martingaleLayers: true,
+        independentLegState: true,
+        hedgeGuard: true,
+        preciseLegClose: true,
+      },
+    });
+    const config = { Initial_Capital: 10_000, Base_Lot_Size: 30 };
+    const artifact = buildStrategyArtifactEnvelope({
+      artifactScope: "EXECUTION_PROFILE",
+      strategyKey,
+      strategyVersion: 1,
+      strategyLogicHash,
+      config,
+      executionMode: "HEDGE_GUARDED",
+      capabilityManifest,
+      source: { origin: "PARAMETER_SNAPSHOT", sourceSnapshotId: 88 },
+    });
+    const state = attachSnapshotConfig({}, strategyKey, config, {
+      snapshotId: 88,
+      artifact,
+    });
+
+    expect(state[SNAPSHOT_ARTIFACT_STATE_KEY]).toEqual(artifact);
+    expect(getBoundStrategyArtifact(state, strategyKey)).toEqual(artifact);
+    expect(getBoundStrategyArtifact(state, "KAMA_3K_ULTIMATE_V50")).toBeUndefined();
+    expect(pickStrategyConfigState({ ...state, currentLayer: 3 }))
+      .toHaveProperty(SNAPSHOT_ARTIFACT_STATE_KEY, artifact);
   });
 
   it("既有策略應同時保存完整原始配置及相容欄位，但不改寫原始 Martin_Layers", () => {

@@ -12,6 +12,7 @@ import ApiKeys from "./pages/ApiKeys";
 import Backtest from "./pages/Backtest";
 import ParameterSnapshots from "./pages/ParameterSnapshots";
 import ParameterScan from "./pages/ParameterScan";
+import DeploymentWorkbench from "./pages/DeploymentWorkbench";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -19,6 +20,7 @@ function Router() {
     <Switch>
       <Route path={"/"} component={Home} />
       <Route path={"/strategies"} component={Strategies} />
+      <Route path={"/deployments"} component={DeploymentWorkbench} />
       <Route path={"/studio"} component={Studio} />
       <Route path={"/signals"}>{() => { window.location.href = '/'; return null; }}</Route>
       <Route path={"/positions"}>{() => { window.location.href = '/'; return null; }}</Route>

@@ -1,7 +1,10 @@
 export type StrategySnapshotConfig = Record<string, unknown>;
 
+import type { StrategyArtifactEnvelope } from "./strategyArtifacts";
+
 export const SNAPSHOT_CONFIG_STATE_KEY = "__snapshotConfig";
 export const SNAPSHOT_META_STATE_KEY = "__snapshotMeta";
+export const SNAPSHOT_ARTIFACT_STATE_KEY = "__strategyArtifact";
 
 /**
  * 既有引擎仍會從版本化欄位讀取配置；新引擎一律可直接讀取
@@ -23,6 +26,10 @@ export type SnapshotSourceMetadata = {
   snapshotId?: number;
   snapshotName?: string | null;
   importedAt?: number;
+};
+
+export type SnapshotAttachMetadata = Omit<SnapshotSourceMetadata, "strategyKey"> & {
+  artifact?: StrategyArtifactEnvelope;
 };
 
 export type SnapshotPositionMode = "quantity" | "usdt";
@@ -76,7 +83,7 @@ export function attachSnapshotConfig(
   currentState: Record<string, unknown> | null | undefined,
   strategyKey: string,
   config: StrategySnapshotConfig,
-  metadata: Omit<SnapshotSourceMetadata, "strategyKey"> = {},
+  metadata: SnapshotAttachMetadata = {},
 ): Record<string, unknown> {
   const nextState: Record<string, unknown> = {
     ...(currentState ?? {}),
@@ -87,6 +94,7 @@ export function attachSnapshotConfig(
       snapshotName: metadata.snapshotName ?? null,
       importedAt: metadata.importedAt ?? Date.now(),
     },
+    ...(metadata.artifact ? { [SNAPSHOT_ARTIFACT_STATE_KEY]: metadata.artifact } : {}),
   };
 
   const legacyConfigKey = getLegacyConfigKey(strategyKey);
@@ -120,6 +128,22 @@ export function getBoundStrategyConfig(
   const legacyConfigKey = getLegacyConfigKey(strategyKey);
   const legacyConfig = legacyConfigKey ? state[legacyConfigKey] : undefined;
   return isRecord(legacyConfig) ? legacyConfig : undefined;
+}
+
+/**
+ * 僅回傳與目前引擎 identity 一致且具 canonical contract 的 artifact。
+ * 舊快照沒有 artifact 時回傳 undefined，由呼叫端執行明確 legacy S1 migration。
+ */
+export function getBoundStrategyArtifact(
+  state: unknown,
+  strategyKey: string,
+): StrategyArtifactEnvelope | undefined {
+  if (!isRecord(state)) return undefined;
+  const artifact = state[SNAPSHOT_ARTIFACT_STATE_KEY];
+  if (!isRecord(artifact)) return undefined;
+  if (artifact.contractVersion !== "strategy-artifact-v1") return undefined;
+  if (artifact.strategyKey !== strategyKey) return undefined;
+  return artifact as unknown as StrategyArtifactEnvelope;
 }
 
 /** 保留所有雙底線開頭的配置／中繼資料，避免未來策略在狀態更新時丟失。 */

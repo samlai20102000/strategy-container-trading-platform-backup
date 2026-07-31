@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import type {
   Balance,
+  ExchangeCapabilitySnapshot,
   ExchangeAdapter,
+  ExchangeInstrumentSnapshot,
   OrderParams,
   OrderResult,
   Position,
@@ -134,6 +136,18 @@ async function getOKXContractSpecs(testnet: boolean = false): Promise<Map<string
     if (cached) return cached.specs;
   }
   return specs;
+}
+
+async function getOKXContractSpecEvidence(testnet = false): Promise<{
+  specs: Map<string, OKXContractSpec>;
+  observedAt: number;
+}> {
+  const specs = await getOKXContractSpecs(testnet);
+  const cacheKey = testnet ? "demo" : "live";
+  return {
+    specs,
+    observedAt: contractSpecCaches.get(cacheKey)?.fetchedAt ?? Date.now(),
+  };
 }
 
 /**
@@ -1165,6 +1179,44 @@ export class OKXAdapter implements ExchangeAdapter {
       acctLv: cfg.acctLv || "unknown",
       posMode: cfg.posMode || "unknown",
       uid: cfg.uid || "",
+    };
+  }
+
+  async probeCapabilities(symbol: string): Promise<ExchangeCapabilitySnapshot> {
+    const config = await this.getAccountConfig();
+    const positionMode = config.posMode === "long_short_mode"
+      ? "HEDGE"
+      : config.posMode === "net_mode"
+        ? "ONE_WAY"
+        : "UNKNOWN";
+    return {
+      exchange: this.exchange,
+      symbol: this.normalizeSymbol(symbol),
+      positionMode,
+      preciseLegClose: positionMode !== "UNKNOWN",
+      observedAt: Date.now(),
+      source: "okx:/api/v5/account/config.posMode",
+      details: { accountLevel: config.acctLv, positionMode: config.posMode },
+    };
+  }
+
+  async probeInstrument(symbol: string): Promise<ExchangeInstrumentSnapshot> {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+    const { specs, observedAt } = await getOKXContractSpecEvidence(this.isTestnet);
+    const spec = specs.get(normalizedSymbol);
+    return {
+      exchange: this.exchange,
+      symbol: normalizedSymbol,
+      exists: Boolean(spec),
+      active: Boolean(spec),
+      minOrderSize: spec ? spec.minSz * spec.ctVal : 0,
+      quantityStep: spec ? spec.lotSz * spec.ctVal : 0,
+      ...(spec ? { contractValue: spec.ctVal } : {}),
+      observedAt,
+      source: "okx:/api/v5/public/instruments?instType=SWAP",
+      details: spec
+        ? { minContracts: spec.minSz, contractStep: spec.lotSz, testnet: this.isTestnet }
+        : { testnet: this.isTestnet, status: "missing_or_inactive" },
     };
   }
 

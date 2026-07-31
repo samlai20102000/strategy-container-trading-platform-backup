@@ -20,6 +20,7 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import { loadStrategyState, saveStrategyState } from "./strategyStateManager";
 import { notifyOwner } from "./notifier";
@@ -108,6 +109,12 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
   } catch {
     return false;
   }
+  adapter = createRuntimeGuardedAdapter(adapter, {
+    strategy,
+    source: "AUTO",
+    eventKey: `v61-monitor:${strategy.id}:${Math.floor(Date.now() / CHECK_INTERVAL_MS)}`,
+    reason: "V61 monitor maintenance",
+  });
 
   // 取得當前標記價（匹配策略方向，避免跨策略污染）
   let currentPrice = 0;

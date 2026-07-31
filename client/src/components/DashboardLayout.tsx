@@ -22,6 +22,7 @@ import {
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import {
+  Boxes,
   Database,
   FlaskConical,
   History,
@@ -42,6 +43,7 @@ import { trpc } from "@/lib/trpc";
 const menuItems = [
   { icon: LayoutDashboard, label: "實時控制中心", path: "/" },
   { icon: Settings2, label: "策略交易", path: "/strategies" },
+  { icon: Boxes, label: "三模式部署", path: "/deployments" },
   { icon: FlaskConical, label: "策略工作室", path: "/studio" },
   { icon: History, label: "回測中心", path: "/backtest", hasBadge: true },
   { icon: Database, label: "參數快照庫", path: "/snapshots" },

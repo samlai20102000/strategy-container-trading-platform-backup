@@ -21,6 +21,7 @@ import {
 } from "../db";
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createAdapter } from "../exchanges/factory";
+import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import {
   getRegimeMartinParams,
@@ -79,7 +80,7 @@ export async function runV50Check(): Promise<void> {
   }
 }
 
-async function checkV50Strategy(strategy: any): Promise<void> {
+export async function checkV50Strategy(strategy: any): Promise<void> {
   const state = loadStrategyState(strategy);
   if (state.totalSize <= 0 || state.avgPrice <= 0) return; // 無持倉
 
@@ -92,6 +93,12 @@ async function checkV50Strategy(strategy: any): Promise<void> {
   } catch {
     return;
   }
+  adapter = createRuntimeGuardedAdapter(adapter, {
+    strategy,
+    source: "AUTO",
+    eventKey: `v50-monitor:${strategy.id}:${Math.floor(Date.now() / CHECK_INTERVAL_MS)}`,
+    reason: "V50 monitor maintenance",
+  });
 
   // 取得當前標記價和交易所真實持倉
   // 🔒 關鍵修復：必須匹配策略方向（isLong），避免同一帳戶同一 symbol 下多個策略互相污染

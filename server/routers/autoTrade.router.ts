@@ -163,7 +163,10 @@ export const autoTradeRouter = router({
 
         // Execute the signal
         const parsedSignal = { action, symbol, price, reason: `ManualExec ${strategy.strategyKey || ''}` };
-        const result = await executeSignal(strategy, parsedSignal, signalRecord);
+        const result = await executeSignal(strategy, parsedSignal, signalRecord, {
+          source: "MANUAL",
+          eventKey: `signal:${signalRecord}`,
+        });
 
         // 更新信號狀態（與自動交易路徑一致）
         const signalStatus = result.status === "executed" ? "executed" : result.status === "failed" ? "failed" : "skipped";
@@ -413,7 +416,10 @@ export const autoTradeRouter = router({
           barTimestamp: signal.barTimestamp,
           reason: (signal as any).reason || `ManualTrigger ${strategy.strategyKey || ''}`,
         };
-        const result = await executeSignal(strategy, parsedSignal, signalId);
+        const result = await executeSignal(strategy, parsedSignal, signalId, {
+          source: "MANUAL",
+          eventKey: `signal:${signalId}`,
+        });
 
         // 更新信號狀態（與自動交易路徑一致）
         const signalStatus = result.status === "executed" ? "executed" : result.status === "failed" ? "failed" : "skipped";
@@ -545,6 +551,10 @@ export const autoTradeRouter = router({
           rainbowTrendLadderKill: true,
         },
         signalId,
+        {
+          source: "MANUAL",
+          eventKey: `kill:${signalId}`,
+        },
       );
       const signalStatus = result.status === "executed" ? "executed" : result.status === "failed" ? "failed" : "skipped";
       await db.updateSignal(signalId, {

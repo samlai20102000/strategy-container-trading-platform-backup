@@ -146,12 +146,101 @@ export const strategies = mysqlTable("strategies", {
   heartbeatTaskUid: varchar("heartbeatTaskUid", { length: 100 }),
   /** K 線週期（分鐘），用於 Heartbeat 定時觸發 */
   kLinePeriod: int("kLinePeriod").default(15).notNull(),
+  /** 三模式部署識別；舊資料回填後不可變，新建部署由伺服器生成。 */
+  deploymentKey: varchar("deploymentKey", { length: 128 }).unique(),
+  /** 每個策略部署獨立選擇運行模式。 */
+  executionMode: mysqlEnum("executionMode", [
+    "SINGLE_EXCLUSIVE",
+    "MULTI_POSITION",
+    "HEDGE_GUARDED",
+  ])
+    .default("SINGLE_EXCLUSIVE")
+    .notNull(),
+  /** 完整 discriminated mode policy；模式切換只能在 flat/drained Gate 完成。 */
+  executionPolicy: json("executionPolicy"),
+  executionPolicyVersion: varchar("executionPolicyVersion", { length: 40 })
+    .default("execution-policy-v1")
+    .notNull(),
+  /** 版本化策略能力快照，部署後不因 definition 熱更新而靜默改義。 */
+  capabilitySnapshot: json("capabilitySnapshot"),
+  strategyVersion: int("strategyVersion").default(1).notNull(),
+  /** LEGACY 兼容既有 enabled；所有新部署必須明確寫入 DISABLED。 */
+  activationState: mysqlEnum("activationState", [
+    "LEGACY",
+    "DRAFT",
+    "DISABLED",
+    "PREFLIGHT_FAILED",
+    "READY_DISABLED",
+    "ARMED",
+    "ACTIVE",
+    "PAUSED",
+    "DRAINING",
+    "BLOCKED",
+    "ARCHIVED",
+  ])
+    .default("LEGACY")
+    .notNull(),
+  /** 每次配置、policy 或 lifecycle mutation 都必須以 optimistic lock 遞增。 */
+  deploymentRevision: int("deploymentRevision").default(1).notNull(),
+  /** 最近一次 deterministic deployment preflight 狀態。 */
+  preflightStatus: mysqlEnum("preflightStatus", ["NOT_RUN", "PASSED", "FAILED", "STALE"])
+    .default("NOT_RUN")
+    .notNull(),
+  /** 完整 preflight Gate、blocker 與 capability evidence。 */
+  preflightReport: json("preflightReport"),
+  /** 綁定 deployment revision、policy、artifact、account 與 capability evidence 的 hash。 */
+  preflightHash: varchar("preflightHash", { length: 64 }),
+  preflightCheckedAt: timestamp("preflightCheckedAt"),
+  lifecycleReasonCode: varchar("lifecycleReasonCode", { length: 80 }),
+  lifecycleReason: text("lifecycleReason"),
+  modeActivatedAt: timestamp("modeActivatedAt"),
+  archivedAt: timestamp("archivedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type Strategy = typeof strategies.$inferSelect;
 export type InsertStrategy = typeof strategies.$inferInsert;
+
+/**
+ * Deployment lifecycle 與模式切換的持久化 journal。
+ * transitionKey 提供 mutation retry 冪等性；revision 欄位提供 optimistic lock 稽核。
+ */
+export const modeTransitions = mysqlTable(
+  "mode_transitions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    transitionKey: varchar("transitionKey", { length: 128 }).notNull().unique(),
+    deploymentId: int("deploymentId").notNull(),
+    userId: int("userId").notNull(),
+    fromState: varchar("fromState", { length: 32 }).notNull(),
+    toState: varchar("toState", { length: 32 }).notNull(),
+    fromMode: varchar("fromMode", { length: 32 }).notNull(),
+    toMode: varchar("toMode", { length: 32 }).notNull(),
+    fromPolicyHash: varchar("fromPolicyHash", { length: 64 }),
+    toPolicyHash: varchar("toPolicyHash", { length: 64 }),
+    expectedRevision: int("expectedRevision").notNull(),
+    resultingRevision: int("resultingRevision"),
+    status: mysqlEnum("status", ["PENDING", "APPLIED", "BLOCKED", "FAILED", "CANCELLED"])
+      .default("PENDING")
+      .notNull(),
+    reasonCode: varchar("reasonCode", { length: 80 }).notNull(),
+    reason: text("reason").notNull(),
+    blockerCodes: json("blockerCodes"),
+    preflightReport: json("preflightReport"),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("mode_transitions_deployment_created_idx").on(table.deploymentId, table.createdAt),
+    index("mode_transitions_user_status_idx").on(table.userId, table.status),
+  ],
+);
+
+export type ModeTransition = typeof modeTransitions.$inferSelect;
+export type InsertModeTransition = typeof modeTransitions.$inferInsert;
 
 /**
  * Webhook 訊號日誌：記錄每筆 TradingView 訊號的原始內容、解析結果、下單狀態與交易所回應
@@ -166,6 +255,16 @@ export const signals = mysqlTable(
     executionId: varchar("executionId", { length: 128 }).unique(),
     /** 同一開倉至全部退出的交易循環；部分平倉共用同一 cycleId */
     cycleId: varchar("cycleId", { length: 128 }),
+    deploymentKey: varchar("deploymentKey", { length: 128 }),
+    decisionId: varchar("decisionId", { length: 128 }),
+    intentId: varchar("intentId", { length: 128 }),
+    legId: varchar("legId", { length: 128 }),
+    executionMode: mysqlEnum("executionMode", [
+      "SINGLE_EXCLUSIVE",
+      "MULTI_POSITION",
+      "HEDGE_GUARDED",
+    ]),
+    reasonCode: varchar("reasonCode", { length: 80 }),
     /** 原始 payload（JSON 字串） */
     rawPayload: text("rawPayload").notNull(),
     /** 解析後的動作：buy / sell / close */
@@ -218,6 +317,17 @@ export const trades = mysqlTable(
     executionId: varchar("executionId", { length: 128 }).unique(),
     /** 部分平倉與最終平倉共用同一交易循環 */
     cycleId: varchar("cycleId", { length: 128 }),
+    deploymentKey: varchar("deploymentKey", { length: 128 }),
+    decisionId: varchar("decisionId", { length: 128 }),
+    intentId: varchar("intentId", { length: 128 }),
+    legId: varchar("legId", { length: 128 }),
+    legRole: mysqlEnum("legRole", ["PRIMARY", "INDEPENDENT", "HEDGE"]),
+    positionSide: mysqlEnum("positionSide", ["LONG", "SHORT"]),
+    executionMode: mysqlEnum("executionMode", [
+      "SINGLE_EXCLUSIVE",
+      "MULTI_POSITION",
+      "HEDGE_GUARDED",
+    ]),
     exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
     symbol: varchar("symbol", { length: 32 }).notNull(),
     side: mysqlEnum("side", ["buy", "sell"]).notNull(),
@@ -317,6 +427,18 @@ export const positionCycles = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     cycleId: varchar("cycleId", { length: 128 }).notNull().unique(),
+    deploymentKey: varchar("deploymentKey", { length: 128 }),
+    executionMode: mysqlEnum("executionMode", [
+      "SINGLE_EXCLUSIVE",
+      "MULTI_POSITION",
+      "HEDGE_GUARDED",
+    ])
+      .default("SINGLE_EXCLUSIVE")
+      .notNull(),
+    executionPolicyVersion: varchar("executionPolicyVersion", { length: 40 })
+      .default("execution-policy-v1")
+      .notNull(),
+    executionPolicySnapshot: json("executionPolicySnapshot"),
     contractVersion: varchar("contractVersion", { length: 32 })
       .default("martin-layers-v1")
       .notNull(),
@@ -370,6 +492,7 @@ export const positionLayerEvents = mysqlTable(
     strategyId: int("strategyId").notNull(),
     apiKeyId: int("apiKeyId").notNull(),
     cycleId: varchar("cycleId", { length: 128 }).notNull(),
+    legId: varchar("legId", { length: 128 }),
     layerIndex: int("layerIndex").notNull(),
     executionId: varchar("executionId", { length: 128 }).notNull().unique(),
     layerIntentId: varchar("layerIntentId", { length: 128 }).notNull(),
@@ -418,6 +541,7 @@ export const positionLayerCloseAllocations = mysqlTable(
     userId: int("userId").notNull(),
     strategyId: int("strategyId").notNull(),
     cycleId: varchar("cycleId", { length: 128 }).notNull(),
+    legId: varchar("legId", { length: 128 }),
     layerEventId: int("layerEventId").notNull(),
     layerIndex: int("layerIndex").notNull(),
     closeExecutionId: varchar("closeExecutionId", { length: 128 }).notNull(),
@@ -447,6 +571,265 @@ export const positionLayerCloseAllocations = mysqlTable(
 export type PositionLayerCloseAllocation = typeof positionLayerCloseAllocations.$inferSelect;
 export type InsertPositionLayerCloseAllocation = typeof positionLayerCloseAllocations.$inferInsert;
 
+/** 三模式 position leg 真相；同一 cycle 可有 LONG／SHORT 兩腿。 */
+export const positionLegs = mysqlTable(
+  "position_legs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    legId: varchar("legId", { length: 128 }).notNull().unique(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    deploymentKey: varchar("deploymentKey", { length: 128 }),
+    apiKeyId: int("apiKeyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }).notNull(),
+    exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
+    symbol: varchar("symbol", { length: 40 }).notNull(),
+    executionMode: mysqlEnum("executionMode", [
+      "SINGLE_EXCLUSIVE",
+      "MULTI_POSITION",
+      "HEDGE_GUARDED",
+    ]).notNull(),
+    side: mysqlEnum("side", ["LONG", "SHORT"]).notNull(),
+    role: mysqlEnum("role", ["PRIMARY", "INDEPENDENT", "HEDGE"]).notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "OPEN",
+      "REDUCING",
+      "CLOSED",
+      "RECONCILIATION_REQUIRED",
+      "BLOCKED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    quantity: decimal("quantity", { precision: 20, scale: 8 }).default("0").notNull(),
+    avgEntryPrice: decimal("avgEntryPrice", { precision: 20, scale: 8 }),
+    realizedPnl: decimal("realizedPnl", { precision: 20, scale: 8 }).default("0").notNull(),
+    unrealizedPnl: decimal("unrealizedPnl", { precision: 20, scale: 8 }),
+    martinState: json("martinState"),
+    riskState: json("riskState"),
+    openedAt: timestamp("openedAt"),
+    closedAt: timestamp("closedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("position_legs_strategy_status_idx").on(table.strategyId, table.status),
+    index("position_legs_cycle_idx").on(table.cycleId),
+    index("position_legs_account_symbol_side_idx").on(
+      table.apiKeyId,
+      table.symbol,
+      table.side,
+      table.status,
+    ),
+  ],
+);
+export type PositionLeg = typeof positionLegs.$inferSelect;
+export type InsertPositionLeg = typeof positionLegs.$inferInsert;
+
+/** H3 PRIMARY／HEDGE 關係狀態機。 */
+export const hedgeRelationships = mysqlTable(
+  "hedge_relationships",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    relationshipId: varchar("relationshipId", { length: 128 }).notNull().unique(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }).notNull(),
+    primaryLegId: varchar("primaryLegId", { length: 128 }).notNull(),
+    hedgeLegId: varchar("hedgeLegId", { length: 128 }).notNull(),
+    status: mysqlEnum("status", ["ARMING", "ACTIVE", "UNWINDING", "CLOSED", "BLOCKED"])
+      .default("ARMING")
+      .notNull(),
+    targetRatio: decimal("targetRatio", { precision: 10, scale: 6 }).notNull(),
+    triggerSnapshot: json("triggerSnapshot").notNull(),
+    unwindSnapshot: json("unwindSnapshot"),
+    openedAt: timestamp("openedAt"),
+    closedAt: timestamp("closedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("hedge_relationship_strategy_status_idx").on(table.strategyId, table.status),
+    index("hedge_relationship_cycle_idx").on(table.cycleId),
+  ],
+);
+export type HedgeRelationship = typeof hedgeRelationships.$inferSelect;
+export type InsertHedgeRelationship = typeof hedgeRelationships.$inferInsert;
+
+/** 每次候選信號經模式與風控判定後的不可變決策事件。 */
+export const executionDecisions = mysqlTable(
+  "execution_decisions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    decisionId: varchar("decisionId", { length: 128 }).notNull().unique(),
+    candidateId: varchar("candidateId", { length: 128 }).notNull(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    deploymentKey: varchar("deploymentKey", { length: 128 }),
+    cycleId: varchar("cycleId", { length: 128 }),
+    legId: varchar("legId", { length: 128 }),
+    executionMode: mysqlEnum("executionMode", [
+      "SINGLE_EXCLUSIVE",
+      "MULTI_POSITION",
+      "HEDGE_GUARDED",
+    ]).notNull(),
+    source: mysqlEnum("source", ["WEBHOOK", "AUTO", "MANUAL", "RISK", "RECONCILIATION"])
+      .notNull(),
+    outcome: mysqlEnum("outcome", [
+      "APPROVED",
+      "HOLD",
+      "REJECTED",
+      "CLOSE_ONLY",
+      "RECONCILIATION_REQUIRED",
+    ]).notNull(),
+    reasonCode: varchar("reasonCode", { length: 80 }).notNull(),
+    candidateIntent: json("candidateIntent").notNull(),
+    contextSnapshot: json("contextSnapshot").notNull(),
+    decision: json("decision").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("execution_decision_strategy_created_idx").on(table.strategyId, table.createdAt),
+    index("execution_decision_cycle_idx").on(table.cycleId),
+  ],
+);
+export type ExecutionDecisionRow = typeof executionDecisions.$inferSelect;
+export type InsertExecutionDecisionRow = typeof executionDecisions.$inferInsert;
+
+/** 經核准後的 leg-scoped order intent；idempotencyKey 禁止重複送單。 */
+export const executionOrderIntents = mysqlTable(
+  "execution_order_intents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    intentId: varchar("intentId", { length: 128 }).notNull().unique(),
+    idempotencyKey: varchar("idempotencyKey", { length: 180 }).notNull().unique(),
+    decisionId: varchar("decisionId", { length: 128 }).notNull(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }),
+    legId: varchar("legId", { length: 128 }),
+    action: mysqlEnum("action", ["OPEN", "ADD", "REDUCE", "CLOSE"]).notNull(),
+    side: mysqlEnum("side", ["BUY", "SELL"]).notNull(),
+    positionSide: mysqlEnum("positionSide", ["LONG", "SHORT"]).notNull(),
+    reduceOnly: boolean("reduceOnly").default(false).notNull(),
+    requestedQuantity: decimal("requestedQuantity", { precision: 20, scale: 8 }).notNull(),
+    requestedPrice: decimal("requestedPrice", { precision: 20, scale: 8 }),
+    status: mysqlEnum("status", [
+      "CREATED",
+      "SUBMITTING",
+      "SUBMITTED",
+      "PARTIALLY_FILLED",
+      "FILLED",
+      "FAILED",
+      "CANCELLED",
+      "RECONCILIATION_REQUIRED",
+    ])
+      .default("CREATED")
+      .notNull(),
+    exchangeOrderId: varchar("exchangeOrderId", { length: 128 }),
+    reasonCode: varchar("reasonCode", { length: 80 }).notNull(),
+    error: text("error"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("execution_intent_strategy_created_idx").on(table.strategyId, table.createdAt),
+    index("execution_intent_leg_idx").on(table.legId),
+    index("execution_intent_exchange_order_idx").on(table.exchangeOrderId),
+  ],
+);
+export type ExecutionOrderIntent = typeof executionOrderIntents.$inferSelect;
+export type InsertExecutionOrderIntent = typeof executionOrderIntents.$inferInsert;
+
+/** 交易所成交 append-only 真相，一單可有多筆 fills。 */
+export const executionFills = mysqlTable(
+  "execution_fills",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    fillKey: varchar("fillKey", { length: 180 }).notNull().unique(),
+    intentId: varchar("intentId", { length: 128 }).notNull(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }),
+    legId: varchar("legId", { length: 128 }),
+    exchangeOrderId: varchar("exchangeOrderId", { length: 128 }),
+    exchangeTradeId: varchar("exchangeTradeId", { length: 128 }),
+    quantity: decimal("quantity", { precision: 20, scale: 8 }).notNull(),
+    price: decimal("price", { precision: 20, scale: 8 }).notNull(),
+    fee: decimal("fee", { precision: 20, scale: 8 }),
+    feeCurrency: varchar("feeCurrency", { length: 16 }),
+    filledAt: timestamp("filledAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("execution_fill_intent_idx").on(table.intentId),
+    index("execution_fill_leg_idx").on(table.legId),
+    index("execution_fill_order_idx").on(table.exchangeOrderId),
+  ],
+);
+export type ExecutionFill = typeof executionFills.$inferSelect;
+export type InsertExecutionFill = typeof executionFills.$inferInsert;
+
+/** 決策到送單前的帳戶級 gross／margin 預留，支援跨 instance 原子風控。 */
+export const executionRiskReservations = mysqlTable(
+  "execution_risk_reservations",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    reservationId: varchar("reservationId", { length: 128 }).notNull().unique(),
+    decisionId: varchar("decisionId", { length: 128 }).notNull(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    apiKeyId: int("apiKeyId").notNull(),
+    symbol: varchar("symbol", { length: 40 }).notNull(),
+    grossNotional: decimal("grossNotional", { precision: 20, scale: 8 }).notNull(),
+    estimatedMargin: decimal("estimatedMargin", { precision: 20, scale: 8 }).notNull(),
+    status: mysqlEnum("status", ["RESERVED", "COMMITTED", "RELEASED", "EXPIRED"])
+      .default("RESERVED")
+      .notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("execution_reservation_account_status_idx").on(table.apiKeyId, table.status),
+    index("execution_reservation_expiry_idx").on(table.expiresAt),
+  ],
+);
+export type ExecutionRiskReservation = typeof executionRiskReservations.$inferSelect;
+export type InsertExecutionRiskReservation = typeof executionRiskReservations.$inferInsert;
+
+/** 本地 ledger 與交易所真相不一致時的 fail-closed case。 */
+export const executionReconciliationCases = mysqlTable(
+  "execution_reconciliation_cases",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    caseId: varchar("caseId", { length: 128 }).notNull().unique(),
+    userId: int("userId").notNull(),
+    strategyId: int("strategyId").notNull(),
+    apiKeyId: int("apiKeyId").notNull(),
+    cycleId: varchar("cycleId", { length: 128 }),
+    legId: varchar("legId", { length: 128 }),
+    caseType: varchar("caseType", { length: 80 }).notNull(),
+    severity: mysqlEnum("severity", ["INFO", "WARNING", "CRITICAL"]).notNull(),
+    status: mysqlEnum("status", ["OPEN", "ACKNOWLEDGED", "RESOLVED", "IGNORED"])
+      .default("OPEN")
+      .notNull(),
+    localSnapshot: json("localSnapshot").notNull(),
+    exchangeSnapshot: json("exchangeSnapshot").notNull(),
+    resolution: json("resolution"),
+    detectedAt: timestamp("detectedAt").notNull(),
+    resolvedAt: timestamp("resolvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("execution_reconciliation_account_status_idx").on(table.apiKeyId, table.status),
+    index("execution_reconciliation_strategy_status_idx").on(table.strategyId, table.status),
+  ],
+);
+export type ExecutionReconciliationCase = typeof executionReconciliationCases.$inferSelect;
+export type InsertExecutionReconciliationCase = typeof executionReconciliationCases.$inferInsert;
+
 /**
  * 帳戶級持倉共享快照。
  *
@@ -466,6 +849,8 @@ export const accountPositionSnapshots = mysqlTable(
     exchange: mysqlEnum("exchange", ["bybit", "okx"]).notNull(),
     status: mysqlEnum("status", ["available", "error"]).notNull(),
     positions: json("positions").notNull(),
+    executionCapabilities: json("executionCapabilities"),
+    accountPositionMode: varchar("accountPositionMode", { length: 24 }),
     sanitizedError: text("sanitizedError"),
     capturedAt: timestamp("capturedAt").notNull(),
     expiresAt: timestamp("expiresAt").notNull(),
@@ -488,6 +873,14 @@ export const riskEvents = mysqlTable("risk_events", {
   id: int("id").autoincrement().primaryKey(),
   strategyId: int("strategyId").notNull(),
   userId: int("userId").notNull(),
+  cycleId: varchar("cycleId", { length: 128 }),
+  legId: varchar("legId", { length: 128 }),
+  executionMode: mysqlEnum("executionMode", [
+    "SINGLE_EXCLUSIVE",
+    "MULTI_POSITION",
+    "HEDGE_GUARDED",
+  ]),
+  reasonCode: varchar("reasonCode", { length: 80 }),
   eventType: mysqlEnum("eventType", [
     "stop_loss",
     "take_profit",
@@ -531,6 +924,11 @@ export const strategyDefinitions = mysqlTable("strategy_definitions", {
   /** 檔案儲存路徑（自訂策略） */
   filePath: varchar("filePath", { length: 300 }),
   version: int("version").default(1).notNull(),
+  /** 策略版本支援的模式、獨立腿狀態、精確關腿及馬丁能力。 */
+  capabilityManifest: json("capabilityManifest"),
+  modeContractVersion: varchar("modeContractVersion", { length: 40 })
+    .default("strategy-mode-capabilities-v1")
+    .notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -582,6 +980,27 @@ export const parameterSnapshots = mysqlTable("parameter_snapshots", {
   snapshotName: varchar("snapshotName", { length: 200 }),
   /** 完整參數配置 JSON */
   config: json("config").notNull(),
+  executionMode: mysqlEnum("executionMode", [
+    "SINGLE_EXCLUSIVE",
+    "MULTI_POSITION",
+    "HEDGE_GUARDED",
+  ])
+    .default("SINGLE_EXCLUSIVE")
+    .notNull(),
+  executionPolicy: json("executionPolicy"),
+  executionPolicyVersion: varchar("executionPolicyVersion", { length: 40 })
+    .default("execution-policy-v1")
+    .notNull(),
+  artifactScope: mysqlEnum("artifactScope", ["PARAMETERS_ONLY", "EXECUTION_PROFILE"])
+    .default("PARAMETERS_ONLY")
+    .notNull(),
+  strategyVersion: int("strategyVersion").default(1).notNull(),
+  artifactContractVersion: varchar("artifactContractVersion", { length: 64 }),
+  artifactHash: varchar("artifactHash", { length: 64 }),
+  strategyLogicHash: varchar("strategyLogicHash", { length: 64 }),
+  executionPolicyHash: varchar("executionPolicyHash", { length: 64 }),
+  capabilityManifest: json("capabilityManifest").$type<Record<string, unknown>>(),
+  artifactSource: json("artifactSource").$type<Record<string, unknown>>(),
   /** 績效指標 JSON：{ totalReturn, winRate, sharpeRatio, profitFactor, maxDrawdown } */
   metrics: json("metrics").notNull(),
   /** 冗餘欄位，方便排序查詢 */
@@ -600,7 +1019,9 @@ export const parameterSnapshots = mysqlTable("parameter_snapshots", {
   commission: decimal("commission", { precision: 8, scale: 6 }),
   slippage: decimal("slippage", { precision: 8, scale: 6 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, table => [
+  index("idx_ps_artifact_hash").on(table.artifactHash),
+]);
 export type ParameterSnapshot = typeof parameterSnapshots.$inferSelect;
 export type InsertParameterSnapshot = typeof parameterSnapshots.$inferInsert;
 
@@ -623,6 +1044,9 @@ export const scanJobs = mysqlTable("scan_jobs", {
   initialCapital: decimal("initialCapital", { precision: 20, scale: 8 }).notNull(),
   /** 基礎參數配置 JSON */
   baseConfig: json("baseConfig").notNull(),
+  /** 一次掃描可比較一至三種模式；各模式使用自己的 policy。 */
+  executionModes: json("executionModes"),
+  executionPolicies: json("executionPolicies"),
   /** 掃描參數定義 JSON：{ paramName: { values: [...] } } */
   scanParams: json("scanParams").notNull(),
   totalCombinations: int("totalCombinations").default(0).notNull(),
@@ -645,6 +1069,14 @@ export const heartbeatLogs = mysqlTable("heartbeat_logs", {
   id: int("id").autoincrement().primaryKey(),
   strategyId: int("strategyId").notNull(),
   userId: int("userId").notNull(),
+  cycleId: varchar("cycleId", { length: 128 }),
+  legId: varchar("legId", { length: 128 }),
+  executionMode: mysqlEnum("executionMode", [
+    "SINGLE_EXCLUSIVE",
+    "MULTI_POSITION",
+    "HEDGE_GUARDED",
+  ]),
+  reasonCode: varchar("reasonCode", { length: 80 }),
   /** 輪詢結果：hold（無信號）/ signal（生成信號）/ executed（已下單）/ failed（下單失敗）/ error（系統錯誤） */
   result: mysqlEnum("result", ["hold", "signal", "executed", "failed", "error"]).notNull(),
   /** 策略引擎分析結果摘要 */
@@ -691,6 +1123,22 @@ export const backtestJobs = mysqlTable("backtest_jobs", {
   tradeAmount: decimal("tradeAmount", { precision: 20, scale: 2 }),
   /** 完整策略參數 JSON */
   config: json("config").notNull(),
+  executionMode: mysqlEnum("executionMode", [
+    "SINGLE_EXCLUSIVE",
+    "MULTI_POSITION",
+    "HEDGE_GUARDED",
+  ])
+    .default("SINGLE_EXCLUSIVE")
+    .notNull(),
+  executionPolicy: json("executionPolicy"),
+  executionPolicyVersion: varchar("executionPolicyVersion", { length: 40 })
+    .default("execution-policy-v1")
+    .notNull(),
+  /** Finalize Gate 產生的完整版本化回測執行身份與公平比較 hash。 */
+  executionContext: json("executionContext"),
+  /** 三模式公平比較時保存各 mode 的績效、腿與曝險歸因。 */
+  modeResults: json("modeResults"),
+  legAccounting: json("legAccounting"),
   /** V2.5 全域終點持倉政策 */
   endPositionPolicy: varchar("endPositionPolicy", { length: 20 })
     .default("mark_to_market")

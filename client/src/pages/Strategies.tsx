@@ -326,6 +326,13 @@ function StrategiesContent() {
     () => filteredStrategies.slice((strategyPage - 1) * strategyPageSize, strategyPage * strategyPageSize),
     [filteredStrategies, strategyPage],
   );
+  const canonicalActionRequired = useMemo(
+    () => (strategies ?? []).filter(strategy =>
+      (strategy as any).executionMode !== "LEGACY"
+      && ["DRAINING", "BLOCKED", "PREFLIGHT_FAILED"].includes(String((strategy as any).activationState ?? "")),
+    ),
+    [strategies],
+  );
   const visibleMartingaleStrategyIds = useMemo(
     () => visibleStrategies
       .filter(strategy => strategy.martingaleLayerCapability?.isMartingale === true)
@@ -1147,6 +1154,28 @@ function StrategiesContent() {
         </div>
       </div>
 
+      {canonicalActionRequired.length > 0 && (
+        <div className="flex flex-col gap-4 rounded-xl border border-amber-500/35 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
+            <div className="min-w-0">
+              <p className="font-semibold text-amber-100">{canonicalActionRequired.length} 個 canonical deployment 需要處理</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {canonicalActionRequired.slice(0, 5).map(deployment => (
+                  <Badge key={deployment.id} variant="outline" className="border-amber-500/30 bg-background/30 text-amber-200">
+                    #{deployment.id} {(deployment as any).executionMode} · {(deployment as any).activationState}
+                  </Badge>
+                ))}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-amber-100/75">請在工作台檢查 preflight blocker、ledger 與最後 mode decision；此頁不提供 canonical enabled 布林繞過。</p>
+            </div>
+          </div>
+          <Button asChild variant="outline" className="shrink-0 border-amber-400/40 text-amber-100 hover:bg-amber-500/15">
+            <Link href={`/deployments?deploymentId=${canonicalActionRequired[0]?.id}`}>前往部署工作台</Link>
+          </Button>
+        </div>
+      )}
+
       <Tabs defaultValue="list">
         <TabsList>
           <TabsTrigger value="list">策略列表</TabsTrigger>
@@ -1235,7 +1264,11 @@ function StrategiesContent() {
                         </Badge>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        {s.enabled ? (
+                        {(s as any).executionMode !== "LEGACY" ? (
+                          <Badge className="border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-[10px]" variant="outline">
+                            {(s as any).executionMode} · {(s as any).activationState ?? "DRAFT"}
+                          </Badge>
+                        ) : s.enabled ? (
                           <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[10px]" variant="outline">
                             運行中
                           </Badge>
@@ -1248,13 +1281,19 @@ function StrategiesContent() {
                             已停止
                           </Badge>
                         )}
-                        <Switch
-                          checked={s.enabled}
-                          title={s.enabled ? "關閉即暫停接收訊號" : "開啟即恢復接收訊號"}
-                          onCheckedChange={(v) =>
-                            toggleMutation.mutate({ id: s.id, enabled: v })
-                          }
-                        />
+                        {(s as any).executionMode !== "LEGACY" ? (
+                          <Button asChild size="sm" variant="outline" className="h-7 border-cyan-500/30 text-cyan-300">
+                            <Link href={`/deployments?deploymentId=${s.id}`}>部署工作台</Link>
+                          </Button>
+                        ) : (
+                          <Switch
+                            checked={s.enabled}
+                            title={s.enabled ? "關閉即暫停接收訊號" : "開啟即恢復接收訊號"}
+                            onCheckedChange={(v) =>
+                              toggleMutation.mutate({ id: s.id, enabled: v })
+                            }
+                          />
+                        )}
                       </div>
 	                    </div>
 
@@ -1685,7 +1724,14 @@ function StrategiesContent() {
 
                     <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:items-center">
                       {/* T2：暫停 / 恢復 / 停止 控制按鈕 */}
-                      {s.enabled ? (
+                      {(s as any).executionMode !== "LEGACY" ? (
+                        <Button asChild variant="outline" size="sm" className="col-span-2 min-w-0 w-full border-cyan-500/40 text-cyan-300 sm:flex-1">
+                          <Link href={`/deployments?deploymentId=${s.id}`}>
+                            <Radio className="h-3.5 w-3.5 mr-1" />
+                            Preflight 與生命週期
+                          </Link>
+                        </Button>
+                      ) : s.enabled ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -1714,21 +1760,23 @@ function StrategiesContent() {
                           恢復
                         </Button>
                       )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="min-w-0 w-full sm:flex-1"
-                        disabled={setStatusMutation.isPending || (!s.enabled && s.disabledReason !== "手動暫停")}
-                        title="停止：不再接收訊號並重置馬丁狀態"
-                        onClick={() => {
-                          if (confirm(`停止策略「${s.name}」？\n停止後將重置馬丁加倉狀態，下次啟動從初始倉位開始。`)) {
-                            setStatusMutation.mutate({ id: s.id, status: "stopped" });
-                          }
-                        }}
-                      >
-                        <Square className="h-3.5 w-3.5 mr-1" />
-                        停止
-                      </Button>
+                      {(s as any).executionMode === "LEGACY" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="min-w-0 w-full sm:flex-1"
+                          disabled={setStatusMutation.isPending || (!s.enabled && s.disabledReason !== "手動暫停")}
+                          title="停止：不再接收訊號並重置馬丁狀態"
+                          onClick={() => {
+                            if (confirm(`停止策略「${s.name}」？\n停止後將重置馬丁加倉狀態，下次啟動從初始倉位開始。`)) {
+                              setStatusMutation.mutate({ id: s.id, status: "stopped" });
+                            }
+                          }}
+                        >
+                          <Square className="h-3.5 w-3.5 mr-1" />
+                          停止
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"

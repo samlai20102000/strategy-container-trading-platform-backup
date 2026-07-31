@@ -200,7 +200,11 @@ describe("V4.1 fail-closed 零下單證據", () => {
     expect(result).toMatchObject({ status: "skipped" });
     expect(result.message).toContain("無已收盤 K 線");
     expect(mocks.fetchKLineData).toHaveBeenCalledWith(
-      adapter,
+      expect.objectContaining({
+        getPositions: expect.any(Function),
+        placeOrder: expect.any(Function),
+        closePosition: expect.any(Function),
+      }),
       "BTC-USDT-SWAP",
       config.K_Line_Period,
       100,

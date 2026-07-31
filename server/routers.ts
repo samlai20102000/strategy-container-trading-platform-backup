@@ -7,6 +7,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import * as db from "./db";
 import { createAdapter } from "./exchanges/factory";
+import { createRuntimeGuardedAdapter } from "./exchanges/runtimeGuardedAdapter";
 import { decrypt, encrypt, generateWebhookSecret, maskKey } from "./lib/crypto";
 import {
   compileAndLoadStrategy,
@@ -21,6 +22,7 @@ import { backtestRouter } from "./routers/backtest.router";
 import { autoTradeRouter } from "./routers/autoTrade.router";
 import { rainbowTrendLadderAiRouter } from "./routers/rainbowTrendLadderAi.router";
 import { tradeJournalRouter } from "./routers/tradeJournal.router";
+import { deploymentsRouter } from "./routers/deployments.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
 import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
@@ -47,6 +49,7 @@ import {
 } from "./services/deploymentPosition";
 import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
 import { recordExistingTradeExecution } from "./services/tradeExecutionLedger";
+import { applyLifecycleTransition } from "./services/deploymentLifecycleRepository";
 import { evaluateMartingaleStrategyInstance } from "./services/martingaleCapability";
 import { getMartingaleLayerSnapshotsForUser } from "./services/martingaleLayerSnapshot";
 import {
@@ -63,6 +66,11 @@ import {
   deriveV41StrategyColumns,
   resolveV41ConfigForStrategy,
 } from "./services/v41StrategyConfig";
+import { requireStrategyCapabilityManifest } from "./services/strategyCapabilityRegistry";
+import {
+  createDefaultExecutionPolicy,
+  EXECUTION_POLICY_VERSION,
+} from "../shared/executionModes";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -673,6 +681,10 @@ const strategiesRouter = router({
       });
       const resolvedPositionSize = deploymentPosition.value;
       const webhookSecret = generateWebhookSecret();
+      const capabilityManifest = input.strategyKey
+        ? await requireStrategyCapabilityManifest(input.strategyKey)
+        : null;
+      const initialExecutionPolicy = createDefaultExecutionPolicy("SINGLE_EXCLUSIVE");
       const initialMartinState: Record<string, unknown> = {
         lossCount: 0,
         currentLot: resolvedPositionSize,
@@ -700,12 +712,14 @@ const strategiesRouter = router({
         leverage: input.leverage,
         direction: input.direction,
         orderType: input.orderType,
-        enabled: input.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY || input.strategyKey === V41_STRATEGY_KEY
-          ? false
-          : true,
-        ...(input.strategyKey === V41_STRATEGY_KEY ? {
-          disabledReason: "V4.1 新策略預設停用，請人工覆核後啟用",
-        } : {}),
+        enabled: false,
+        activationState: "DISABLED",
+        disabledReason: "新部署預設停用；必須通過版本、能力、交易所與持倉 preflight 後才可啟用",
+        executionMode: "SINGLE_EXCLUSIVE",
+        executionPolicy: initialExecutionPolicy,
+        executionPolicyVersion: EXECUTION_POLICY_VERSION,
+        capabilitySnapshot: capabilityManifest as unknown as Record<string, unknown> | null,
+        strategyVersion: capabilityManifest?.strategyVersion ?? 1,
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
         stopLossPct: v41Columns?.stopLossPct ?? String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
@@ -751,6 +765,8 @@ const strategiesRouter = router({
         name: input.name,
         exchange: keyRecord.exchange,
         symbol: input.symbol.toUpperCase(),
+        enabled: false,
+        activationState: "DISABLED" as const,
         webhookUrl: newId ? buildWebhookUrl(ctx.req, newId, webhookSecret) : null,
       };
     }),
@@ -974,6 +990,33 @@ const strategiesRouter = router({
       if (!existing) {
         throw new TRPCError({ code: "NOT_FOUND", message: "策略不存在" });
       }
+      if (existing.activationState !== "LEGACY") {
+        if (input.enabled) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Canonical deployment 不可由 legacy toggle 啟用；請先執行 deployments.runPreflight，再使用 deployments.activate。",
+          });
+        }
+        if (!existing.enabled) return { success: true };
+        try {
+          await applyLifecycleTransition({
+            deploymentId: existing.id,
+            userId: ctx.user.id,
+            expectedRevision: existing.deploymentRevision,
+            transitionKey: `legacy-toggle:${existing.id}:${existing.deploymentRevision}:disable`,
+            action: "DISABLE",
+            reasonCode: "LEGACY_TOGGLE_DISABLE",
+            reason: "Legacy toggle requested canonical deployment disable.",
+          });
+        } catch (error) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "部署狀態已變更，請重新載入後再停用。",
+            cause: error,
+          });
+        }
+        return { success: true };
+      }
       await db.updateStrategy(input.id, ctx.user.id, {
         enabled: input.enabled,
         disabledReason: input.enabled ? null : "手動停用",
@@ -1003,6 +1046,64 @@ const strategiesRouter = router({
           : "stopped";
       if (currentStatus === input.status) {
         return { success: true, message: `策略已是${statusLabel(input.status)}狀態`, newStatus: input.status };
+      }
+      if (existing.activationState !== "LEGACY") {
+        if (input.status === "running") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Canonical deployment 不可由 legacy setStatus 啟用；請先執行 deployments.runPreflight，再使用 deployments.activate／resume。",
+          });
+        }
+        const action = input.status === "paused" ? "PAUSE" : "DISABLE";
+        const validSource = action === "PAUSE"
+          ? existing.activationState === "ACTIVE"
+          : ["READY_DISABLED", "ARMED", "ACTIVE", "PAUSED", "DRAINING", "BLOCKED"].includes(
+            existing.activationState,
+          );
+        if (validSource) {
+          try {
+            await applyLifecycleTransition({
+              deploymentId: existing.id,
+              userId: ctx.user.id,
+              expectedRevision: existing.deploymentRevision,
+              transitionKey: `legacy-set-status:${existing.id}:${existing.deploymentRevision}:${input.status}`,
+              action,
+              reasonCode: input.status === "paused"
+                ? "LEGACY_SET_STATUS_PAUSE"
+                : "LEGACY_SET_STATUS_DISABLE",
+              reason: input.status === "paused"
+                ? "Legacy status control requested canonical deployment pause."
+                : "Legacy status control requested canonical deployment disable.",
+            });
+          } catch (error) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "部署狀態或 revision 已變更，請重新載入後再操作。",
+              cause: error,
+            });
+          }
+        }
+        if (input.status === "stopped") {
+          const existingState = (existing.martinState && typeof existing.martinState === "object")
+            ? existing.martinState as Record<string, unknown>
+            : {};
+          const preserved = pickStrategyConfigState(existingState);
+          await db.updateStrategy(input.id, ctx.user.id, {
+            martinState: {
+              ...preserved,
+              avgPrice: 0, capital: 0, cooldownUntil: 0, currentLayer: 0,
+              currentLot: 0, entryTrendBull: false, hasTriggeredKamaReversal: false,
+              highestPrice: 0, isCooldown: false, isLong: false, isTrailingActivated: false,
+              lastEntryPrice: 0, lastLayerPrice: 0, lockedBarTimestamp: 0,
+              lossCount: 0, lowestPrice: 0, totalCost: 0, totalSize: 0,
+            },
+          });
+        }
+        return {
+          success: true,
+          message: `部署已${statusLabel(input.status)}`,
+          newStatus: input.status,
+        };
       }
       const data: Record<string, unknown> = {};
       if (input.status === "running") {
@@ -1063,7 +1164,12 @@ const strategiesRouter = router({
           try {
             const keyRecord = await db.getApiKeyById(existing.apiKeyId);
             if (keyRecord) {
-              const adapter = createAdapter(keyRecord);
+              const adapter = createRuntimeGuardedAdapter(createAdapter(keyRecord), {
+                strategy: existing,
+                source: "MANUAL",
+                eventKey: `reset-martin-state:${existing.id}:${Date.now()}`,
+                reason: "manual strategy state reset close",
+              });
               const closeSide = strategyIsLong ? "sell" : "buy";
               const posSide: "long" | "short" = strategyIsLong ? "long" : "short";
               console.log(`[resetMartinState][SoftIsolation] 策略 ${existing.id} 精確平倉: ${existing.symbol} ${posSide} size=${strategyTotalSize}`);
@@ -1153,7 +1259,12 @@ const strategiesRouter = router({
       if (!keyRecord) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "API 金鑰不存在" });
       }
-      const adapter = createAdapter(keyRecord);
+      const adapter = createRuntimeGuardedAdapter(createAdapter(keyRecord), {
+        strategy,
+        source: "MANUAL",
+        eventKey: `manual-close:${strategy.id}:${Date.now()}`,
+        reason: "manual exact strategy close",
+      });
 
       // === 軟隔離核心：從策略 martinState 讀取精確持倉數量，下反向單平倉 ===
       const martinState = (strategy.martinState ?? {}) as any;
@@ -1331,7 +1442,12 @@ const strategiesRouter = router({
         continue;
       }
       try {
-        const adapter = createAdapter(keyRecord);
+        const adapter = createRuntimeGuardedAdapter(createAdapter(keyRecord), {
+          strategy,
+          source: "RISK",
+          eventKey: `emergency-close-all:${ctx.user.id}:${strategy.id}:${Date.now()}`,
+          reason: "owner emergency close all",
+        });
         const positions = await adapter.getPositions(strategy.symbol);
         const activePositions = positions.filter((p) => p.size > 0);
         if (activePositions.length === 0) {
@@ -2366,6 +2482,7 @@ export const appRouter = router({
   }),
   apiKeys: apiKeysRouter,
   strategies: strategiesRouter,
+  deployments: deploymentsRouter,
   signals: signalsRouter,
   tradeJournal: tradeJournalRouter,
   dashboard: dashboardRouter,

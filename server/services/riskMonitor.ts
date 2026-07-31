@@ -10,6 +10,7 @@ import {
 import { recordExistingTradeExecution as createTrade } from "./tradeExecutionLedger";
 import { createInitialStrategyState } from "../strategies/base";
 import { createAdapter } from "../exchanges/factory";
+import { createRuntimeGuardedAdapter } from "../exchanges/runtimeGuardedAdapter";
 import type { ExchangeAdapter, Position } from "../exchanges/types";
 import { isV35StrategyKey } from "./v35Monitor";
 import { tradeFillRecordFields } from "./tradeFillTruth";
@@ -97,6 +98,12 @@ async function checkStrategyRisk(strategy: any): Promise<void> {
   } catch {
     return;
   }
+  adapter = createRuntimeGuardedAdapter(adapter, {
+    strategy,
+    source: "RISK",
+    eventKey: `risk-monitor:${strategy.id}:${Math.floor(Date.now() / CHECK_INTERVAL_MS)}`,
+    reason: "platform risk monitor",
+  });
 
   // 每日虧損上限檢查
   if (maxDailyLoss > 0) {

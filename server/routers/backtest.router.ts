@@ -24,6 +24,19 @@ import { parameterSnapshots, strategies } from "../../drizzle/schema";
 import { eq, desc, and } from "drizzle-orm";
 import { attachSnapshotConfig } from "../services/strategySnapshotConfig";
 import {
+  assessStrategyArtifactCompatibility,
+  assertStrategyArtifactCompatible,
+  buildDisabledSnapshotDeploymentFields,
+  buildStrategyArtifactEnvelope,
+  hydrateStrategyArtifactFromSnapshotRow,
+  STRATEGY_ARTIFACT_CONTRACT_VERSION,
+  type StrategyArtifactEnvelope,
+} from "../services/strategyArtifacts";
+import {
+  getStrategyCapabilityManifest,
+  requireStrategyCapabilityManifest,
+} from "../services/strategyCapabilityRegistry";
+import {
   deploymentPositionColumns,
   finalizeDeploymentPosition,
 } from "../services/deploymentPosition";
@@ -48,6 +61,22 @@ import {
 } from "../../shared/strategies/kama3kMartinV41";
 import { deriveV41StrategyColumns } from "../services/v41StrategyConfig";
 
+const executionModeSchema = z.enum([
+  "SINGLE_EXCLUSIVE",
+  "MULTI_POSITION",
+  "HEDGE_GUARDED",
+]);
+
+const strategyModeCapabilitiesSchema = z.object({
+  contractVersion: z.literal("strategy-mode-capabilities-v1"),
+  supportedModes: z.array(executionModeSchema).min(1),
+  martingaleLayers: z.boolean(),
+  independentLegState: z.boolean(),
+  hedgeGuard: z.boolean(),
+  preciseLegClose: z.boolean(),
+  reason: z.string().optional(),
+});
+
 function assertRegisteredStrategy(strategyKey: string): void {
   const isRegistered = listRegisteredStrategies().some((strategy) => strategy.key === strategyKey);
   if (!isRegistered) {
@@ -55,6 +84,67 @@ function assertRegisteredStrategy(strategyKey: string): void {
       `快照綁定的策略引擎「${strategyKey}」目前未註冊，為避免使用錯誤引擎，已停止建立。請先在策略工作室註冊此引擎。`,
     );
   }
+}
+
+function artifactPersistenceColumns(artifact: StrategyArtifactEnvelope) {
+  return {
+    artifactContractVersion: artifact.contractVersion,
+    artifactScope: artifact.artifactScope,
+    artifactHash: artifact.artifactHash,
+    strategyVersion: artifact.strategyVersion,
+    strategyLogicHash: artifact.strategyLogicHash,
+    executionMode: artifact.executionMode,
+    executionPolicy: artifact.executionPolicy,
+    executionPolicyVersion: artifact.executionPolicyVersion,
+    executionPolicyHash: artifact.executionPolicyHash,
+    capabilityManifest: artifact.capabilityManifest as unknown as Record<string, unknown>,
+    artifactSource: artifact.source as unknown as Record<string, unknown>,
+  } as const;
+}
+
+async function resolveSnapshotArtifactView(snapshot: Record<string, unknown>) {
+  const strategyKey = typeof snapshot.strategyKey === "string" ? snapshot.strategyKey : "";
+  const manifest = strategyKey ? await getStrategyCapabilityManifest(strategyKey) : null;
+  if (!manifest) {
+    const artifactHash = typeof snapshot.artifactHash === "string" ? snapshot.artifactHash : "";
+    return {
+      artifact: null,
+      migratedLegacy: snapshot.artifactContractVersion !== STRATEGY_ARTIFACT_CONTRACT_VERSION,
+      integrityValid: false,
+      compatibility: {
+        compatible: false,
+        blockers: ["TARGET_STRATEGY_UNREGISTERED"],
+        warnings: [],
+        diffs: [],
+        artifactHash,
+        targetManifestHash: "UNREGISTERED",
+      },
+    };
+  }
+
+  const hydrated = hydrateStrategyArtifactFromSnapshotRow(snapshot, manifest);
+  return {
+    ...hydrated,
+    compatibility: assessStrategyArtifactCompatibility({
+      artifact: hydrated.artifact,
+      targetManifest: manifest,
+      integrityValid: hydrated.integrityValid,
+    }),
+  };
+}
+
+async function requireCompatibleSnapshotArtifact(snapshot: Record<string, unknown>) {
+  const strategyKey = typeof snapshot.strategyKey === "string" ? snapshot.strategyKey : "";
+  if (!strategyKey) throw new Error("快照缺少策略引擎身份");
+  const targetManifest = await requireStrategyCapabilityManifest(strategyKey);
+  const hydrated = hydrateStrategyArtifactFromSnapshotRow(snapshot, targetManifest);
+  const compatibility = assessStrategyArtifactCompatibility({
+    artifact: hydrated.artifact,
+    targetManifest,
+    integrityValid: hydrated.integrityValid,
+  });
+  assertStrategyArtifactCompatible(compatibility);
+  return { ...hydrated, compatibility, targetManifest };
 }
 
 export function normalizeSnapshotConfigForStrategy(
@@ -121,6 +211,13 @@ export const backtestRequestSchema = z.object({
   exchange: z.enum(["okx", "bybit"]).default("okx"),
   endPositionPolicy: z.enum(["mark_to_market", "force_close"])
     .default("mark_to_market"),
+  executionMode: executionModeSchema.optional(),
+  executionPolicy: z.record(z.string(), z.unknown()).optional(),
+  strategyVersion: z.string().min(1).max(128).optional(),
+  strategyLogicHash: z.string().min(1).max(256).optional(),
+  strategyModeCapabilities: strategyModeCapabilitiesSchema.optional(),
+  fundingModel: z.string().max(128).optional(),
+  contractSpecification: z.unknown().optional(),
 });
 
 export const backtestSettingsSchema = z.object({
@@ -294,6 +391,13 @@ export const backtestRouter = router({
         dataQuality: dbJob.dataQuality ?? undefined,
         engineSemantics: dbJob.engineSemantics ?? undefined,
         environment: dbJob.environment ?? undefined,
+        execution: dbJob.executionContext ?? {
+          executionMode: dbJob.executionMode,
+          executionPolicy: dbJob.executionPolicy,
+          executionPolicyVersion: dbJob.executionPolicyVersion,
+        },
+        modeResults: dbJob.modeResults ?? undefined,
+        legAccounting: dbJob.legAccounting ?? undefined,
       };
     }),
 
@@ -340,6 +444,10 @@ export const backtestRouter = router({
           initialCapital: parseFloat(dbJob.initialCapital),
           config: dbJob.config as Record<string, unknown>,
           endPositionPolicy: dbJob.endPositionPolicy,
+          executionMode: dbJob.executionMode,
+          executionPolicy: dbJob.executionPolicy,
+          executionPolicyVersion: dbJob.executionPolicyVersion,
+          executionContext: dbJob.executionContext,
           candleCount: dbJob.candleCount,
           createdAt: new Date(dbJob.createdAt).getTime(),
         },
@@ -351,6 +459,8 @@ export const backtestRouter = router({
         dataQuality: dbJob.dataQuality ?? null,
         engineSemantics: dbJob.engineSemantics ?? null,
         environment: dbJob.environment ?? null,
+        modeResults: dbJob.modeResults ?? null,
+        legAccounting: dbJob.legAccounting ?? null,
       };
     }),
 
@@ -396,6 +506,12 @@ export const backtestRouter = router({
       }),
       /** 回測設定（交易所、交易對、時間框架、日期、資金等） */
       backtestSettings: backtestSettingsSchema.optional(),
+      /** PARAMETERS_ONLY 僅保存策略參數；EXECUTION_PROFILE 同時保存認證過的三模式政策。 */
+      artifactScope: z.enum(["PARAMETERS_ONLY", "EXECUTION_PROFILE"]).optional(),
+      executionMode: executionModeSchema.optional(),
+      executionPolicy: z.record(z.string(), z.unknown()).optional(),
+      sourceRunId: z.string().min(1).max(128).optional(),
+      comparisonGroupId: z.string().min(1).max(128).optional(),
       /** V5.7 環境元數據（可選，回測引擎自動填入） */
       environment: z.object({
         dataHash: z.string(),
@@ -418,6 +534,25 @@ export const backtestRouter = router({
         input.strategyKey,
         input.config,
       );
+      assertRegisteredStrategy(input.strategyKey);
+      const capabilityManifest = await requireStrategyCapabilityManifest(input.strategyKey);
+      const artifactScope = input.artifactScope
+        ?? (input.executionMode || input.executionPolicy ? "EXECUTION_PROFILE" : "PARAMETERS_ONLY");
+      const artifact = buildStrategyArtifactEnvelope({
+        artifactScope,
+        strategyKey: input.strategyKey,
+        strategyVersion: capabilityManifest.strategyVersion,
+        strategyLogicHash: capabilityManifest.strategyLogicHash,
+        config: storedConfig,
+        executionMode: input.executionMode,
+        executionPolicy: input.executionPolicy,
+        capabilityManifest,
+        source: {
+          origin: "BACKTEST_RUN",
+          ...(input.sourceRunId ? { sourceRunId: input.sourceRunId } : {}),
+          ...(input.comparisonGroupId ? { comparisonGroupId: input.comparisonGroupId } : {}),
+        },
+      });
       const storedBacktestSettings = input.backtestSettings
         ? {
             ...input.backtestSettings,
@@ -459,6 +594,7 @@ export const backtestRouter = router({
         strategyName: input.strategyName || input.strategyKey,
         snapshotName,
         config: storedConfig,
+        ...artifactPersistenceColumns(artifact),
         metrics: input.metrics,
         totalReturn: String(input.metrics.totalReturn),
         winRate: String(input.metrics.winRate),
@@ -475,7 +611,7 @@ export const backtestRouter = router({
         slippage: input.environment?.slippage !== undefined ? String(input.environment.slippage) : null,
       });
 
-      return { success: true, snapshotName };
+      return { success: true, snapshotName, artifact };
     }),
 
   /** 獲取參數快照列表（可按策略過濾） */
@@ -509,21 +645,25 @@ export const backtestRouter = router({
         .orderBy(desc(sortField))
         .limit(input?.limit ?? 50);
 
-      return rows.map(r => ({
-        id: r.id,
-        strategyKey: r.strategyKey,
-        strategyName: r.strategyName,
-        snapshotName: r.snapshotName,
-        config: r.config as Record<string, unknown>,
-        metrics: r.metrics as Record<string, number>,
-        backtestSettings: r.backtestSettings as { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string } | null,
-        totalReturn: r.totalReturn ? parseFloat(r.totalReturn) : 0,
-        winRate: r.winRate ? parseFloat(r.winRate) : 0,
-        sharpeRatio: r.sharpeRatio ? parseFloat(r.sharpeRatio) : null,
-        profitFactor: r.profitFactor ? parseFloat(r.profitFactor) : null,
-        maxDrawdown: r.maxDrawdown ? parseFloat(r.maxDrawdown) : null,
-        isFavorite: r.isFavorite,
-        createdAt: r.createdAt,
+      return Promise.all(rows.map(async r => {
+        const artifactView = await resolveSnapshotArtifactView(r as unknown as Record<string, unknown>);
+        return {
+          id: r.id,
+          strategyKey: r.strategyKey,
+          strategyName: r.strategyName,
+          snapshotName: r.snapshotName,
+          config: r.config as Record<string, unknown>,
+          metrics: r.metrics as Record<string, number>,
+          backtestSettings: r.backtestSettings as { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string } | null,
+          totalReturn: r.totalReturn ? parseFloat(r.totalReturn) : 0,
+          winRate: r.winRate ? parseFloat(r.winRate) : 0,
+          sharpeRatio: r.sharpeRatio ? parseFloat(r.sharpeRatio) : null,
+          profitFactor: r.profitFactor ? parseFloat(r.profitFactor) : null,
+          maxDrawdown: r.maxDrawdown ? parseFloat(r.maxDrawdown) : null,
+          isFavorite: r.isFavorite,
+          createdAt: r.createdAt,
+          ...artifactView,
+        };
       }));
     }),
 
@@ -575,6 +715,9 @@ export const backtestRouter = router({
       const snapshotKey = snapshot.strategyKey;
       if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法安全套用");
       assertRegisteredStrategy(snapshotKey);
+      const artifactBundle = await requireCompatibleSnapshotArtifact(
+        snapshot as unknown as Record<string, unknown>,
+      );
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
         (snapshot.config as Record<string, unknown>) || {},
@@ -593,6 +736,7 @@ export const backtestRouter = router({
       const updatedState = attachSnapshotConfig(currentState, snapshotKey, config, {
         snapshotId: snapshot.id,
         snapshotName: snapshot.snapshotName,
+        artifact: artifactBundle.artifact,
       });
       const v41Config = snapshotKey === V41_STRATEGY_KEY
         ? assertValidV41Config(config)
@@ -619,6 +763,16 @@ export const backtestRouter = router({
       await db.update(strategies)
         .set({
           martinState: updatedState,
+          enabled: false,
+          activationState: "DISABLED",
+          disabledReason: "快照配置已更新；必須重新通過部署 preflight 後才可啟用",
+          capabilitySnapshot: artifactBundle.artifact.capabilityManifest as unknown as Record<string, unknown>,
+          strategyVersion: artifactBundle.artifact.strategyVersion,
+          ...(artifactBundle.artifact.artifactScope === "EXECUTION_PROFILE" ? {
+            executionMode: artifactBundle.artifact.executionMode,
+            executionPolicy: artifactBundle.artifact.executionPolicy,
+            executionPolicyVersion: artifactBundle.artifact.executionPolicyVersion,
+          } : {}),
           martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
           maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
@@ -658,7 +812,14 @@ export const backtestRouter = router({
         })
         .where(eq(strategies.id, input.targetStrategyId));
 
-      return { success: true, message: "✅ 參數已套用到策略實例（含馬丁分層設定）" };
+      return {
+        success: true,
+        enabled: false,
+        activationState: "DISABLED" as const,
+        artifact: artifactBundle.artifact,
+        compatibility: artifactBundle.compatibility,
+        message: "參數已套用並將策略安全設為停用；請重新通過部署 preflight 後再啟用",
+      };
     }),
 
   /** V4.3: 將快照導入為新策略實例 */
@@ -697,6 +858,9 @@ export const backtestRouter = router({
       const snapshotKey = snapshot.strategyKey;
       if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法建立自動交易策略");
       assertRegisteredStrategy(snapshotKey);
+      const artifactBundle = await requireCompatibleSnapshotArtifact(
+        snapshot as unknown as Record<string, unknown>,
+      );
 
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
@@ -750,10 +914,7 @@ export const backtestRouter = router({
         direction: input.direction,
         orderType: input.orderType,
         // 快照導入只建立配置，不得在尚未人工覆核實盤倉位前自動啟用或觸發交易。
-        enabled: false,
-        disabledReason: snapshotKey === V41_STRATEGY_KEY
-          ? "V4.1 快照導入後預設停用，請人工覆核後啟用"
-          : "快照導入後預設停用，請人工覆核後啟用",
+        ...buildDisabledSnapshotDeploymentFields(artifactBundle.artifact),
         webhookSecret,
         maxPositionPct: String(finiteNumber(config.max_single_position_pct, 0)),
         stopLossPct: v41Columns?.stopLossPct ?? String(rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0))),
@@ -784,6 +945,7 @@ export const backtestRouter = router({
           {
             snapshotId: snapshot.id,
             snapshotName: snapshot.snapshotName,
+            artifact: artifactBundle.artifact,
           },
         ),
         strategyKey: snapshotKey,
@@ -799,7 +961,10 @@ export const backtestRouter = router({
         strategyKey: snapshotKey,
         positionMode: deploymentPosition.mode,
         enabled: false,
-        message: `已從快照建立停用策略「${input.name}」；原引擎鎖定為 ${snapshotKey}，請確認實盤倉位後再手動啟用`,
+        activationState: "DISABLED" as const,
+        artifact: artifactBundle.artifact,
+        compatibility: artifactBundle.compatibility,
+        message: `已從快照建立停用策略「${input.name}」；原引擎鎖定為 ${snapshotKey}，必須通過部署 preflight 後才可啟用`,
       };
     }),
 
@@ -847,8 +1012,19 @@ export const backtestRouter = router({
         snapshotKey,
         input.snapshotConfig as Record<string, unknown>,
       );
+      const capabilityManifest = await requireStrategyCapabilityManifest(snapshotKey);
+      const directArtifact = buildStrategyArtifactEnvelope({
+        artifactScope: "PARAMETERS_ONLY",
+        strategyKey: snapshotKey,
+        strategyVersion: capabilityManifest.strategyVersion,
+        strategyLogicHash: capabilityManifest.strategyLogicHash,
+        config,
+        capabilityManifest,
+        source: { origin: "MANUAL" },
+      });
       const updatedState = attachSnapshotConfig(prevState, snapshotKey, config, {
         snapshotName: "直接套用配置",
+        artifact: directArtifact,
       });
       const v41Config = snapshotKey === V41_STRATEGY_KEY
         ? assertValidV41Config(config)
@@ -875,6 +1051,11 @@ export const backtestRouter = router({
       await db.update(strategies)
         .set({
           martinState: updatedState,
+          enabled: false,
+          activationState: "DISABLED",
+          disabledReason: "策略配置已更新；必須重新通過部署 preflight 後才可啟用",
+          capabilitySnapshot: capabilityManifest as unknown as Record<string, unknown>,
+          strategyVersion: capabilityManifest.strategyVersion,
           martinMultiplier: v41Columns?.martinMultiplier ?? String(firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
           maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
@@ -916,7 +1097,10 @@ export const backtestRouter = router({
 
       return {
         success: true,
-        message: "✅ 參數已成功套用到策略實例（含馬丁分層設定）",
+        enabled: false,
+        activationState: "DISABLED" as const,
+        artifact: directArtifact,
+        message: "參數已套用並將策略安全設為停用；請重新通過部署 preflight 後再啟用",
         instanceId: input.targetInstanceId,
       };
     }),
@@ -938,6 +1122,9 @@ export const backtestRouter = router({
         .limit(1);
 
       if (!snapshot) throw new Error("快照不存在");
+      const artifactView = await resolveSnapshotArtifactView(
+        snapshot as unknown as Record<string, unknown>,
+      );
 
       return {
         id: snapshot.id,
@@ -952,6 +1139,7 @@ export const backtestRouter = router({
         sharpeRatio: snapshot.sharpeRatio ? parseFloat(snapshot.sharpeRatio) : null,
         maxDrawdown: snapshot.maxDrawdown ? parseFloat(snapshot.maxDrawdown) : null,
         createdAt: snapshot.createdAt,
+        ...artifactView,
       };
     }),
 
@@ -1085,6 +1273,14 @@ export const backtestRouter = router({
       commission: z.number().optional(),
       slippage: z.number().optional(),
       exchange: z.enum(["okx", "bybit"]).default("okx"),
+      endPositionPolicy: z.enum(["mark_to_market", "force_close"]).default("mark_to_market"),
+      executionMode: executionModeSchema.optional(),
+      executionPolicy: z.record(z.string(), z.unknown()).optional(),
+      strategyVersion: z.string().min(1).max(128).optional(),
+      strategyLogicHash: z.string().min(1).max(256).optional(),
+      strategyModeCapabilities: strategyModeCapabilitiesSchema.optional(),
+      fundingModel: z.string().max(128).optional(),
+      contractSpecification: z.unknown().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const userId = ctx.user?.id;
@@ -1107,6 +1303,14 @@ export const backtestRouter = router({
         commission: input.commission,
         slippage: input.slippage,
         exchange: input.exchange,
+        endPositionPolicy: input.endPositionPolicy,
+        executionMode: input.executionMode,
+        executionPolicy: input.executionPolicy,
+        strategyVersion: input.strategyVersion,
+        strategyLogicHash: input.strategyLogicHash,
+        strategyModeCapabilities: input.strategyModeCapabilities,
+        fundingModel: input.fundingModel,
+        contractSpecification: input.contractSpecification,
         objectiveWeights: input.objectiveWeights,
       }, userId, input.objective);
 

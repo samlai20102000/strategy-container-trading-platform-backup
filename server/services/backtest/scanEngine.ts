@@ -81,8 +81,29 @@ export interface ScanConfig {
   commission?: number;
   slippage?: number;
   exchange?: "okx" | "bybit";
+  endPositionPolicy?: BacktestRequest["endPositionPolicy"];
+  executionMode?: BacktestRequest["executionMode"];
+  executionPolicy?: BacktestRequest["executionPolicy"];
+  strategyVersion?: BacktestRequest["strategyVersion"];
+  strategyLogicHash?: BacktestRequest["strategyLogicHash"];
+  strategyModeCapabilities?: BacktestRequest["strategyModeCapabilities"];
+  fundingModel?: BacktestRequest["fundingModel"];
+  contractSpecification?: BacktestRequest["contractSpecification"];
   /** 多目標優化權重 */
   objectiveWeights?: ObjectiveWeights;
+}
+
+export function buildScanBacktestExecutionContext(config: ScanConfig): Partial<BacktestRequest> {
+  return {
+    endPositionPolicy: config.endPositionPolicy,
+    executionMode: config.executionMode,
+    executionPolicy: config.executionPolicy,
+    strategyVersion: config.strategyVersion,
+    strategyLogicHash: config.strategyLogicHash,
+    strategyModeCapabilities: config.strategyModeCapabilities,
+    fundingModel: config.fundingModel,
+    contractSpecification: config.contractSpecification,
+  };
 }
 
 export interface ObjectiveWeights {
@@ -105,9 +126,19 @@ export interface ScanResultItem {
   combination: Record<string, number>;
   symbol: string;
   metrics: PerformanceMetrics;
+  execution?: BacktestResult["execution"];
+  modeResults?: BacktestResult["modeResults"];
+  legAccounting?: BacktestResult["legAccounting"];
   objectiveValue: number;
   compositeScore: number;
   isParetoOptimal?: boolean;
+}
+
+function buildScanArtifactKey(symbol: string, genes: Record<string, number>): string {
+  return JSON.stringify([
+    symbol,
+    Object.entries(genes).sort(([left], [right]) => left.localeCompare(right)),
+  ]);
 }
 
 export interface ScanJobStatus {
@@ -737,6 +768,12 @@ class ScanJobManager {
       job.preloadMessage = "數據預載完成，開始優化...";
       broadcastScanProgress();
 
+      // finalized artifact 不附著在會被交叉／變異的 Individual 上，避免父代結果被誤配給子代。
+      const finalizedArtifacts = new Map<
+        string,
+        Pick<ScanResultItem, "execution" | "modeResults" | "legAccounting">
+      >();
+
       // 評估函數：執行回測並返回目標值
       const evaluate = async (individual: Individual, symbol: string): Promise<Individual> => {
         if (aborted) return individual;
@@ -752,6 +789,7 @@ class ScanJobManager {
             commission: config.commission,
             slippage: config.slippage,
             exchange: dataExchange,
+            ...buildScanBacktestExecutionContext(config),
           };
           const result = await backtestEngine.runBacktest(req);
           individual.objectives = {
@@ -763,6 +801,11 @@ class ScanJobManager {
           };
           individual.metrics = result.metrics;
           individual.symbol = symbol;
+          finalizedArtifacts.set(buildScanArtifactKey(symbol, individual.genes), {
+            execution: result.execution,
+            modeResults: result.modeResults,
+            legAccounting: result.legAccounting,
+          });
           evaluationCount++;
         } catch (e) {
           console.warn(`[ScanEngine] 評估失敗: ${(e as Error).message}`);
@@ -968,6 +1011,7 @@ class ScanJobManager {
               commission: config.commission,
               slippage: config.slippage,
               exchange: dataExchange,
+              ...buildScanBacktestExecutionContext(config),
             };
             const trainResult = await backtestEngine.runBacktest(trainReq);
 
@@ -1005,6 +1049,7 @@ class ScanJobManager {
         combination: ind.genes,
         symbol: ind.symbol ?? config.symbols[0],
         metrics: ind.metrics!,
+        ...finalizedArtifacts.get(buildScanArtifactKey(ind.symbol ?? config.symbols[0], ind.genes)),
         objectiveValue: ind.objectives.totalReturn,
         compositeScore: nsgaEngine.compositeScore(ind.objectives),
       }));
@@ -1194,9 +1239,16 @@ class ScanJobManager {
                 commission: config.commission,
                 slippage: config.slippage,
                 exchange: config.exchange ?? "okx" as const,
+                ...buildScanBacktestExecutionContext(config),
               };
               const result = await backtestEngine.runBacktest(req);
-              return { params, metrics: result.metrics };
+              return {
+                params,
+                metrics: result.metrics,
+                execution: result.execution,
+                modeResults: result.modeResults,
+                legAccounting: result.legAccounting,
+              };
             }),
           );
 
@@ -1210,6 +1262,9 @@ class ScanJobManager {
                 combination: br.value.params,
                 symbol,
                 metrics: br.value.metrics,
+                execution: br.value.execution,
+                modeResults: br.value.modeResults,
+                legAccounting: br.value.legAccounting,
                 objectiveValue: Number.isFinite(objectiveValue) ? objectiveValue : -Infinity,
                 compositeScore,
               });

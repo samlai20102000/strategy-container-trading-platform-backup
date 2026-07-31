@@ -3,7 +3,7 @@
  * 笛卡爾積組合掃描 + 批次併發控制 + 目標函數排序 + 2 參數熱力圖
  */
 
-import { backtestEngine, type BacktestRequest } from "./backtestEngine";
+import { backtestEngine, type BacktestRequest, type BacktestResult } from "./backtestEngine";
 import type { PerformanceMetrics } from "./performanceCalculator";
 
 export interface ParameterRange {
@@ -31,6 +31,9 @@ export interface OptimizationResultItem {
   rank: number;
   params: Record<string, number>;
   metrics: PerformanceMetrics;
+  execution?: BacktestResult["execution"];
+  modeResults?: BacktestResult["modeResults"];
+  legAccounting?: BacktestResult["legAccounting"];
   objectiveValue: number;
 }
 
@@ -106,7 +109,13 @@ export async function runOptimization(
           config: { ...request.baseRequest.config, ...params },
         };
         const result = await backtestEngine.runBacktest(req);
-        return { params, metrics: result.metrics };
+        return {
+          params,
+          metrics: result.metrics,
+          execution: result.execution,
+          modeResults: result.modeResults,
+          legAccounting: result.legAccounting,
+        };
       }),
     );
 
@@ -118,6 +127,9 @@ export async function runOptimization(
           rank: 0,
           params: br.value.params,
           metrics: br.value.metrics,
+          execution: br.value.execution,
+          modeResults: br.value.modeResults,
+          legAccounting: br.value.legAccounting,
           objectiveValue: Number.isFinite(objectiveValue) ? objectiveValue : -Infinity,
         });
       }

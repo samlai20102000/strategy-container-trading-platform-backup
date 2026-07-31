@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import type {
   Balance,
+  ExchangeCapabilitySnapshot,
   ExchangeAdapter,
+  ExchangeInstrumentSnapshot,
   OrderParams,
   OrderResult,
   Position,
@@ -196,6 +198,13 @@ export class BybitAdapter implements ExchangeAdapter {
       }
       if (params.reduceOnly) {
         body.reduceOnly = true;
+      }
+      if (params.posSide === "long") {
+        body.positionIdx = 1;
+      } else if (params.posSide === "short") {
+        body.positionIdx = 2;
+      } else if (params.posSide === "net") {
+        body.positionIdx = 0;
       }
 
       // ★ 加入指數退避重試，對暫時性錯誤自動重試
@@ -398,6 +407,67 @@ export class BybitAdapter implements ExchangeAdapter {
       }));
   }
 
+  async probeCapabilities(symbol: string): Promise<ExchangeCapabilitySnapshot> {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+    const data = await this.request("GET", "/v5/position/list", {
+      category: "linear",
+      symbol: normalizedSymbol,
+    });
+    if (data.retCode !== 0) {
+      throw new Error(`Bybit ${data.retCode}: ${data.retMsg}`);
+    }
+    const rows = Array.isArray(data.result?.list) ? data.result.list : [];
+    const indexes = rows
+      .map((row: any) => Number(row.positionIdx))
+      .filter((value: number) => Number.isInteger(value));
+    const positionMode = indexes.some((value: number) => value === 1 || value === 2)
+      ? "HEDGE"
+      : indexes.some((value: number) => value === 0)
+        ? "ONE_WAY"
+        : "UNKNOWN";
+    return {
+      exchange: this.exchange,
+      symbol: normalizedSymbol,
+      positionMode,
+      preciseLegClose: positionMode !== "UNKNOWN",
+      observedAt: Date.now(),
+      source: "bybit:/v5/position/list.positionIdx",
+      details: { observedPositionIndexes: indexes },
+    };
+  }
+
+  async probeInstrument(symbol: string): Promise<ExchangeInstrumentSnapshot> {
+    const normalizedSymbol = this.normalizeSymbol(symbol);
+    const data = await this.request("GET", "/v5/market/instruments-info", {
+      category: "linear",
+      symbol: normalizedSymbol,
+    });
+    if (data.retCode !== 0) {
+      throw new Error(`Bybit ${data.retCode}: ${data.retMsg}`);
+    }
+    const row = Array.isArray(data.result?.list) ? data.result.list[0] : undefined;
+    const minOrderSize = Number(row?.lotSizeFilter?.minOrderQty ?? 0);
+    const quantityStep = Number(row?.lotSizeFilter?.qtyStep ?? 0);
+    const priceStep = Number(row?.priceFilter?.tickSize ?? 0);
+    return {
+      exchange: this.exchange,
+      symbol: normalizedSymbol,
+      exists: Boolean(row),
+      active: row?.status === "Trading",
+      minOrderSize: Number.isFinite(minOrderSize) && minOrderSize > 0 ? minOrderSize : 0,
+      quantityStep: Number.isFinite(quantityStep) && quantityStep > 0 ? quantityStep : 0,
+      contractValue: 1,
+      ...(Number.isFinite(priceStep) && priceStep > 0 ? { priceStep } : {}),
+      observedAt: Date.now(),
+      source: "bybit:/v5/market/instruments-info",
+      details: {
+        status: row?.status ?? "missing",
+        baseCoin: row?.baseCoin,
+        quoteCoin: row?.quoteCoin,
+      },
+    };
+  }
+
   async cancelOrder(symbol: string, orderId: string): Promise<OrderResult> {
     try {
       const data = await this.request("POST", "/v5/order/cancel", {
@@ -416,9 +486,11 @@ export class BybitAdapter implements ExchangeAdapter {
     }
   }
 
-  async closePosition(symbol: string, _posSide?: "long" | "short" | "net"): Promise<OrderResult> {
+  async closePosition(symbol: string, posSide?: "long" | "short" | "net"): Promise<OrderResult> {
     try {
-      const positions = await this.getPositions(symbol);
+      const positions = (await this.getPositions(symbol)).filter(position =>
+        !posSide || posSide === "net" || position.side === posSide
+      );
       if (positions.length === 0) {
         return {
           success: true,
@@ -434,6 +506,7 @@ export class BybitAdapter implements ExchangeAdapter {
           orderType: "market",
           size: pos.size,
           reduceOnly: true,
+          posSide: pos.side,
         });
         childResults.push(lastResult);
       }

@@ -3,7 +3,7 @@
  * 串行逐個回測多個交易對，按總回報排序，生成 Markdown 摘要
  */
 
-import { backtestEngine, type BacktestRequest } from "./backtestEngine";
+import { backtestEngine, type BacktestRequest, type BacktestResult } from "./backtestEngine";
 import type { PerformanceMetrics } from "./performanceCalculator";
 
 export interface MultiSymbolResultItem {
@@ -11,6 +11,9 @@ export interface MultiSymbolResultItem {
   success: boolean;
   metrics?: PerformanceMetrics;
   runId?: string;
+  execution?: BacktestResult["execution"];
+  modeResults?: BacktestResult["modeResults"];
+  legAccounting?: BacktestResult["legAccounting"];
   error?: string;
 }
 
@@ -44,7 +47,15 @@ export async function runMultiSymbolBacktest(
     );
     try {
       const result = await backtestEngine.runBacktest({ ...baseRequest, symbol });
-      results.push({ symbol, success: true, metrics: result.metrics, runId: result.runId });
+      results.push({
+        symbol,
+        success: true,
+        metrics: result.metrics,
+        runId: result.runId,
+        execution: result.execution,
+        modeResults: result.modeResults,
+        legAccounting: result.legAccounting,
+      });
     } catch (e) {
       results.push({
         symbol,

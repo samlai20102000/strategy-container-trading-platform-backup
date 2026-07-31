@@ -32,7 +32,40 @@ describe("V4.2 RegistryManager", () => {
         expect(d.key).toBeTruthy();
         expect(d.name).toBeTruthy();
         expect(d.defaultConfig).toBeDefined();
+        expect(d.capabilityManifest.strategyKey).toBe(d.key);
+        expect(d.capabilityManifest.strategyVersion).toBe(d.version);
+        expect(d.modeCapabilities).toEqual(d.capabilityManifest.capabilities);
       }
+    });
+
+    it("已認證 advanced KAMA 明確公開 S1／M2／H3 與逐腿能力", async () => {
+      const defs = await registryManager.getStrategyDefinitions();
+      const kama = defs.find((d) => d.key === "20415_KAMA_MARTIN_V35");
+
+      expect(kama?.capabilityManifest.certification).toBe("CERTIFIED");
+      expect(kama?.modeCapabilities.supportedModes).toEqual([
+        "SINGLE_EXCLUSIVE",
+        "MULTI_POSITION",
+        "HEDGE_GUARDED",
+      ]);
+      expect(kama?.modeCapabilities).toMatchObject({
+        independentLegState: true,
+        preciseLegClose: true,
+        hedgeGuard: true,
+      });
+    });
+
+    it("未完成 advanced 認證的策略 fail closed 為 S1-only", async () => {
+      const defs = await registryManager.getStrategyDefinitions();
+      const legacy = defs.find((d) => d.key === "strategy_20415");
+
+      expect(legacy?.capabilityManifest.certification).toBe("S1_ONLY");
+      expect(legacy?.modeCapabilities.supportedModes).toEqual(["SINGLE_EXCLUSIVE"]);
+      expect(legacy?.modeCapabilities).toMatchObject({
+        independentLegState: false,
+        preciseLegClose: false,
+        hedgeGuard: false,
+      });
     });
 
     it("內建策略的 defaultConfig 應包含 V4.0 固定金本位參數", async () => {

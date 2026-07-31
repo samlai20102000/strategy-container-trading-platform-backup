@@ -594,6 +594,8 @@ export async function upsertStrategyDefinition(def: InsertStrategyDefinition) {
         ...(def.schemaConfig ? { schemaConfig: def.schemaConfig } : {}),
         sourceType: def.sourceType,
         filePath: def.filePath ?? row.filePath,
+        capabilityManifest: def.capabilityManifest ?? null,
+        modeContractVersion: def.modeContractVersion ?? "strategy-mode-capabilities-v1",
         isActive: true,
         version: row.version + 1,
       })
