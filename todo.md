@@ -2340,12 +2340,12 @@
 - [x] 實作 H3 PRIMARY／HEDGE 關係、雙條件啟動、固定對沖比例、gross／margin Gate、解除、再平衡、晉升及 fail-closed 狀態機；保護腿馬丁預設關閉
 - [x] 升級回測核心支援 S1／M2／H3、確定性事件排序、多腿會計、三模式公平比較、模式歸因及參數掃描
 - [x] 升級參數快照庫、策略工作室、策略建立／複製／快照導入：保存 mode policy、artifact scope、版本、能力與相容 diff；建立後保持停用
-- [ ] 建立三模式 deployment API、模式 preflight、帳戶／商品能力、風險彙總、對帳 case、Heartbeat lease 與監控 reason code
-- [ ] 改造策略交易卡片：每條策略可有多個獨立部署，每個部署單獨選用 S1／M2／H3；模式工作台嵌入卡片 Drawer／Dialog，不新增左側主導航
-- [ ] 改造回測、快照庫、策略工作室、控制中心、持倉、訊號與稽核 UI，所有模式／腿／gross／net／blocker／交易所真相可追溯
-- [ ] 新增及更新 Vitest，涵蓋 S1 parity、M2 跨腿隔離、H3 關係與解除、部分成交、重播去重、重啟、能力過期、快照相容及零誤關倉
-- [ ] 執行 TypeScript、全套 Vitest、production build、資料庫驗證、桌面與手機視覺驗收及 production 零自動交易副作用檢查
-- [ ] 所有 Gate 通過後建立穩定 checkpoint；因 auto-publish 會立即上線，發布後再次確認沒有自動啟用策略、沒有新 signals／trades／orders
+- [x] 建立三模式 deployment API、deterministic preflight、帳戶／商品能力、gross／margin 風險彙總、對帳 case、Heartbeat lease 與監控 reason code
+- [x] 依後續核准的安全架構讓每條策略可有多個獨立 deployment 並各自使用 S1／M2／H3；以 owner-scoped `/deployments` 專用工作台與策略卡 deep link 取代早期 Drawer／Dialog 草案，集中生命週期權限與 blocker
+- [x] 改造回測、快照庫、策略工作室與營運介面：mode policy、腿部、gross／net、blocker、runtime decision 與交易所真相可由原功能頁及部署工作台交叉追溯
+- [x] 新增及更新 Vitest，涵蓋 S1 parity、M2 跨腿隔離、H3 關係與解除、部分成交、重播去重、重啟、能力過期、快照相容、owner isolation、revision/idempotency 與零誤關倉；最終 34 檔 814 項全數通過
+- [x] 執行 TypeScript、全套 Vitest、production build、production-like DB 契約驗證、靜態安全掃描、桌面與 390×844 手機視覺驗收及 canonical 零自動交易副作用檢查
+- [x] 所有 Gate 通過後建立並自動發布穩定 checkpoint `cec97c44`；發布後唯讀核對為 4 筆 LEGACY、0 筆 canonical、0 筆 canonical ACTIVE，且 canonical decision／intent／fill／signal／trade 皆為 0，沒有自動啟用或新增 canonical 交易副作用
 
 ### Phase 6：三模式回測核心
 - [x] 擴充 BacktestRequest／BacktestResult 契約：executionMode、canonical policy／version、strategy／config／policy hash、intrabar event policy、simulation model version、comparisonGroupId 與公平比較資格

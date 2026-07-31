@@ -79,6 +79,8 @@ Runtime event 使用穩定 identity。若 decision persistence 失敗、owner/de
 
 合併後唯讀資料庫核對顯示目前共有四筆既有策略／部署，均為 LEGACY 相容資料；canonical activation state 的筆數仍為零。因此本次交付**不會改變既有實盤策略狀態，也不會自動把任何策略轉成 M2/H3 或 ACTIVE**。
 
+自動發布 checkpoint `cec97c44` 後再次執行唯讀核對：`canonicalCount=0`、`canonicalActive=0`，且 canonical execution decision、order intent、fill、signal 與 trade 計數均為 **0**。既有 LEGACY 策略仍依原設定運行；本次三模式更新沒有替它們改 mode、改 activation state 或自動建立 canonical 訂單。
+
 後續如要啟用 canonical deployment，應由操作員依序：
 
 1. 在部署工作台建立或複製 deployment，選擇 S1、M2 或 H3 與對應 policy。
