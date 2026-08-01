@@ -2469,12 +2469,12 @@
 - [x] 測試網送單驗收報告與證據版本列為需另行授權的新任務；本輪僅交付勝率根因、修正、唯讀重算及零交易副作用證據
 
 ## 當前任務
-- [ ] 修正 `server/services/tradeReportGenerator.ts` 中的 TypeScript 錯誤
-  - [ ] 移除重複的 `Buffer` 導入
-  - [ ] 修正 `styleTableSheet` 和 `addMetadata` 函數中的隱式 `any` 類型錯誤
-- [ ] 修正 `scripts/phase14_readonly_orphan_smoke.ts` 中的 TypeScript 錯誤
-  - [ ] 移除重複的 `Buffer` 導入
-  - [ ] 確保 `xlsx` 正確載入 `ExcelJS` 而沒有類型錯誤
+- [x] 修正 `server/services/tradeReportGenerator.ts` 中的 TypeScript 錯誤
+  - [x] 移除重複的 `Buffer` 導入
+  - [x] 修正 `styleTableSheet` 和 `addMetadata` 函數中的隱式 `any` 類型錯誤
+- [x] 修正 `scripts/phase14_readonly_orphan_smoke.ts` 中的 TypeScript 錯誤
+  - [x] 移除重複的 `Buffer` 導入
+  - [x] 確保 `xlsx` 正確載入 `ExcelJS` 而沒有類型錯誤
 
 ## KAMA 3K V6.1 馬丁層數與長掛限價委託唯讀排查（2026-08-01）
 
