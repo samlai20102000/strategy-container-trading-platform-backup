@@ -316,6 +316,18 @@ export class OKXAdapter implements ExchangeAdapter {
     return `${base}-${quote}-SWAP`;
   }
 
+  async getServerTime(): Promise<number> {
+    try {
+      const data = await this.request("GET", "/api/v5/public/time");
+      if (data.code === "0" && data.data && data.data.length > 0) {
+        return parseInt(data.data[0].ts, 10);
+      }
+      throw new Error(`獲取伺服器時間失敗: ${data.msg}`);
+    } catch (e: any) {
+      throw new Error(`獲取伺服器時間失敗: ${e.message}`);
+    }
+  }
+
   async testConnection(serverIp?: string): Promise<{ success: boolean; message: string; balance?: number }> {
     try {
       const data = await this.request("GET", "/api/v5/account/balance", {
@@ -364,190 +376,53 @@ export class OKXAdapter implements ExchangeAdapter {
     return config.posMode;
   }
 
-  async placeOrder(params: OrderParams): Promise<OrderResult> {
-    const TAG = `[OKX][placeOrder]`;
-    try {
-      const instId = this.normalizeSymbol(params.symbol);
-      if (params.postOnly && (params.orderType !== "limit" || !params.price || params.price <= 0)) {
-        return {
-          success: false,
-          rawResponse: JSON.stringify({ policy: "GLOBAL_MAKER_FIRST_B_V1", rejected: "POST_ONLY_REQUIRES_LIMIT_PRICE" }),
-          errorMessage: "post-only 訂單必須提供有效限價，已 fail-closed 拒絕",
-        };
-      }
-      // 以這組 API Key 的真實帳戶設定為準；模擬子帳號與實盤可能使用不同 posMode。
-      // 查詢失敗時採 fail-closed，絕不猜測模式後送出可能不相容的訂單。
-      const posMode = await this.getPositionMode();
-      const inferredPosSide: "long" | "short" = params.reduceOnly
-        ? (params.side === "buy" ? "short" : "long")
-        : (params.side === "buy" ? "long" : "short");
-      const dualModePosSide: "long" | "short" =
-        params.posSide === "long" || params.posSide === "short"
-          ? params.posSide
-          : inferredPosSide;
+  async getOrderDetail(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult> {
+    const instId = this.normalizeSymbol(symbol);
+    const req: Record<string, string> = { instId };
+    if (orderId) req.ordId = orderId;
+    if (clientOrderId) req.clOrdId = clientOrderId;
 
-      if (params.leverage && !params.reduceOnly) {
-        // 雙向持倉分方向設定槓桿；單向模式不得傳 long／short posSide。
-        await this.setLeverage(
-          instId,
-          params.leverage,
-          posMode === "long_short_mode" ? dualModePosSide : undefined,
-        );
-      }
+    const data = await this.request("GET", "/api/v5/trade/order", req);
 
-      // ★ 核心修復：將 base 幣數量轉換為 OKX 合約張數，並按 lotSz 步長取整
-      // ★ 傳入 testnet 參數，確保使用對應環境的合約規格
-      const conversion = await convertToContracts(instId, params.size, this.isTestnet);
-      if (conversion.rejected) {
-        return {
-          success: false,
-          rawResponse: JSON.stringify({ info: "pre-flight rejected" }),
-          errorMessage: `訂單數量不足：${conversion.reason}`,
-        };
-      }
-      if (conversion.reason) {
-        console.log(`${TAG} 數量轉換：${conversion.reason}`);
-      }
-
-      const body: Record<string, unknown> = {
-        instId,
-        tdMode: "cross",
-        side: params.side,
-        ordType: params.postOnly ? "post_only" : params.orderType,
-        sz: String(conversion.contracts),
-      };
-      // 雙向持倉模式必須送 long／short；單向持倉模式省略 posSide。
-      if (posMode === "long_short_mode") {
-        body.posSide = dualModePosSide;
-      }
-      console.log(
-        `${TAG} 帳戶模式=${posMode}，訂單 posSide=${String(body.posSide ?? "(omitted/net)")}，` +
-        `環境=${this.isTestnet ? "demo" : "live"}`,
-      );
-      if (params.orderType === "limit" && params.price) {
-        body.px = String(params.price);
-      }
-      if (params.reduceOnly) {
-        body.reduceOnly = true;
-      }
-      if (params.clientOrderId) {
-        body.clOrdId = params.clientOrderId.slice(0, 32);
-      }
-
-      // ★ 核心修復：對 50001 等暫時性錯誤加入指數退避重試 + 端點自動切換
-      let lastErrCode = "";
-      let lastErrMsg = "";
-      let lastRawResponse = "{}";
-      let endpointsTried = 0;
-      const maxEndpoints = OKX_ENDPOINTS.length;
-
-      // 外層迴圈：嘗試每個端點
-      while (endpointsTried < maxEndpoints) {
-        // 內層迴圈：在當前端點上重試
-        for (let attempt = 0; attempt <= PLACE_ORDER_MAX_RETRIES; attempt++) {
-          if (attempt > 0) {
-            const backoffMs = computeBackoff(attempt - 1);
-            console.log(`${TAG} 重試 #${attempt}/${PLACE_ORDER_MAX_RETRIES}（端點: ${this.baseUrl}），等待 ${Math.round(backoffMs)}ms...`);
-            await new Promise(r => setTimeout(r, backoffMs));
-          }
-
-          let data: any;
-          try {
-            data = await this.request("POST", "/api/v5/trade/order", body);
-          } catch (e: any) {
-            // 網路錯誤（逾時、斷線）也可重試
-            console.warn(`${TAG} 網路異常 (attempt ${attempt}, endpoint ${this.baseUrl}): ${e.message}`);
-            lastErrCode = "NETWORK";
-            lastErrMsg = e.message;
-            lastRawResponse = "{}";
-            if (attempt < PLACE_ORDER_MAX_RETRIES) continue;
-            // 當前端點網路全掉，嘗試下一個端點
-            break;
-          }
-
-          const detail = data.data?.[0];
-          if (data.code === "0" && detail?.sCode === "0") {
-            // 下單成功！重置熔斷器，記住成功端點
-            resetCircuit(instId);
-            this.markEndpointSuccess();
-            if (attempt > 0 || endpointsTried > 0) {
-              console.log(`${TAG} ✅ 成功！（端點=${this.baseUrl}, attempt=${attempt}, endpointsTried=${endpointsTried}）orderId=${detail.ordId}`);
-            }
-
-            // 市價單查詢實際成交數據
-            let fillTruth: Partial<OrderResult> = {};
-            if (params.orderType === "market" && !params.postOnly) {
-              try {
-                await new Promise((r) => setTimeout(r, 300));
-                const orderInfo = await this.request("GET", "/api/v5/trade/order", {
-                  instId,
-                  ordId: detail.ordId,
-                });
-                const orderDetail = orderInfo.data?.[0];
-                if (orderDetail) {
-                  fillTruth = await this.normalizeOrderFill(instId, orderDetail, Boolean(params.reduceOnly));
-                }
-              } catch (e) {
-                console.log(`${TAG} 查詢訂單詳情失敗，使用理論值: ${(e as Error).message}`);
-              }
-            }
-            return {
-              success: true,
-              orderId: detail.ordId,
-              rawResponse: JSON.stringify(data),
-              ...fillTruth,
-            };
-          }
-
-          // 下單失敗，檢查是否可重試
-          const errCode = detail?.sCode || data.code;
-          const errMsg = detail?.sMsg || data.msg;
-          lastErrCode = errCode;
-          lastErrMsg = errMsg;
-          lastRawResponse = JSON.stringify(data);
-
-          console.warn(`${TAG} 下單失敗 (endpoint=${this.baseUrl}, attempt=${attempt}): code=${errCode} msg=${errMsg}`);
-
-          // 僅對暫時性錯誤重試（如 50001 服務不可用）
-          if (RETRYABLE_ERROR_CODES.has(errCode) && attempt < PLACE_ORDER_MAX_RETRIES) {
-            recordCircuitFail(instId);
-            // 如果熔斷器已觸發，嘗試切換端點而不是直接放棄
-            if (isCircuitOpen(instId)) {
-              console.warn(`${TAG} 熔斷器觸發 ${instId}，嘗試切換端點...`);
-              break; // 跳出內層迴圈，嘗試下一個端點
-            }
-            continue; // 同端點重試
-          }
-
-          // 不可重試的錯誤（如資金不足、權限不足等），立即返回
-          return {
-            success: false,
-            rawResponse: lastRawResponse,
-            errorMessage: OKXAdapter.parseErrorCode(errCode, errMsg),
-          };
-        }
-
-        // 當前端點全部重試失敗，切換到下一個端點
-        endpointsTried++;
-        if (endpointsTried < maxEndpoints) {
-          // 重置熔斷器（新端點不應繼承舊端點的熔斷狀態）
-          resetCircuit(instId);
-          this.switchEndpoint();
-          console.log(`${TAG} 端點 ${endpointsTried}/${maxEndpoints} 失敗，切換到 ${this.baseUrl} 繼續嘗試...`);
-        }
-      }
-
-      // 所有端點、所有重試用完仍失敗
-      const totalAttempts = maxEndpoints * (PLACE_ORDER_MAX_RETRIES + 1);
+    if (data.code === "0" && data.data && data.data.length > 0) {
+      const order = data.data[0];
       return {
-        success: false,
-        rawResponse: lastRawResponse,
-        errorMessage: `OKX 下單失敗（已嘗試 ${maxEndpoints} 個端點、共 ${totalAttempts} 次）：${lastErrCode === "50001" ? "OKX 模擬盤/實盤 matching engine 維護中，請稍後再試" : OKXAdapter.parseErrorCode(lastErrCode, lastErrMsg)}`,
+        success: true,
+        orderId: order.ordId,
+        clientOrderId: order.clOrdId,
+        rawResponse: JSON.stringify(order),
+        state: order.state === "live" ? "live" : order.state === "filled" ? "filled" : order.state === "canceled" ? "canceled" : "unknown",
+        postOnly: order.posOnly === "true",
       };
-    } catch (e: any) {
-      return { success: false, rawResponse: "{}", errorMessage: e.message };
     }
+    return { success: false, errorMessage: data.msg || "未找到訂單", rawResponse: JSON.stringify(data) };
   }
+
+  async cancelOrder(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult> {
+    const instId = this.normalizeSymbol(symbol);
+    const req: Record<string, string> = { instId };
+    if (orderId) req.ordId = orderId;
+    if (clientOrderId) req.clOrdId = clientOrderId;
+
+    const data = await this.request("POST", "/api/v5/trade/cancel-order", req);
+
+    if (data.code === "0" && data.data && data.data.length > 0) {
+      const order = data.data[0];
+      return {
+        success: true,
+        orderId: order.ordId,
+        clientOrderId: order.clOrdId,
+        rawResponse: JSON.stringify(order),
+        state: order.state === "live" ? "live" : order.state === "filled" ? "filled" : order.state === "canceled" ? "canceled" : "unknown",
+      };
+    }
+    return { success: false, errorMessage: data.msg || "撤單失敗", rawResponse: JSON.stringify(data) };
+  }
+
+
+
+
+        
 
   async getBalance(): Promise<Balance> {
     const data = await this.request("GET", "/api/v5/account/balance", {
@@ -583,6 +458,126 @@ export class OKXAdapter implements ExchangeAdapter {
       observedAt: Number(row?.ts) || Date.now(),
       source: "okx:/api/v5/market/ticker.bidPx/askPx",
     };
+  }
+
+  async placeOrder(params: OrderParams): Promise<OrderResult> {
+    const instId = this.normalizeSymbol(params.symbol);
+    const clientOrderId = params.clientOrderId || `clOrdId_${Date.now()}`;
+
+    // 熔斷器檢查
+    if (isCircuitOpen(instId)) {
+      const state = circuitBreakers.get(instId)!;
+      const remainSec = Math.ceil((state.cooldownUntil - Date.now()) / 1000);
+      console.warn(`[OKX placeOrder] 熔斷器開啟中，${instId} 剩餘冷卻 ${remainSec} 秒`);
+      return { success: false, errorMessage: `熔斷器開啟：${instId} 冷卻中`, rawResponse: "{}" };
+    }
+
+    // 確保數量有效
+    if (params.size <= 0) {
+      return { success: false, errorMessage: "下單數量必須大於 0", rawResponse: "{}" };
+    }
+
+    // 轉換為合約張數
+    const { contracts, rejected, reason } = await convertToContracts(instId, params.size, this.isTestnet);
+    if (rejected) {
+      return { success: false, errorMessage: `下單數量無效: ${reason}`, rawResponse: "{}" };
+    }
+
+    // 檢查帳戶模式
+    let posMode: OKXPositionMode;
+    try {
+      posMode = await this.getPositionMode();
+    } catch (e: any) {
+      return { success: false, errorMessage: e.message, rawResponse: "{}" };
+    }
+
+    // 設置槓桿
+    if (params.leverage && params.leverage > 0) {
+      await this.setLeverage(instId, params.leverage, params.posSide);
+    }
+
+    // 構建訂單請求
+    const body: Record<string, unknown> = {
+      instId,
+      tdMode: params.marginMode || "cross",
+      side: params.side,
+      posSide: posMode === "net_mode" ? "net" : params.posSide,
+      ordType: params.orderType,
+      sz: String(contracts),
+      clOrdId: clientOrderId,
+      // 價格僅限限價單
+      ...(params.orderType === "limit" && { px: String(params.price) }),
+      // postOnly 僅限限價單
+      ...(params.postOnly && params.orderType === "limit" && { posOnly: true }),
+      // reduceOnly
+      ...(params.reduceOnly && { reduceOnly: true }),
+      // timeInForce
+      ...(params.timeInForce && { TIF: params.timeInForce }),
+    };
+
+    // 嘗試下單（含重試機制）
+    let lastError: any = null;
+    for (let attempt = 0; attempt < PLACE_ORDER_MAX_RETRIES; attempt++) {
+      try {
+        const data = await this.request("POST", "/api/v5/trade/order", body);
+        const detail = data.data?.[0];
+
+        if (data.code === "0" && detail?.sCode === "0") {
+          resetCircuit(instId);
+          this.markEndpointSuccess();
+          return {
+            success: true,
+            orderId: detail.ordId,
+            clientOrderId: detail.clOrdId,
+            rawResponse: JSON.stringify(data),
+            state: detail.state === "live" ? "live" : detail.state === "filled" ? "filled" : detail.state === "canceled" ? "canceled" : "unknown",
+            postOnly: detail.posOnly === "true",
+          };
+        } else {
+          const errCode = detail?.sCode || data.code;
+          const errMsg = detail?.sMsg || data.msg;
+          lastError = new Error(`OKX 下單失敗 (${errCode}): ${errMsg}`);
+
+          // 50001 錯誤，記錄熔斷器並切換端點重試
+          if (RETRYABLE_ERROR_CODES.has(errCode)) {
+            recordCircuitFail(instId);
+            this.switchEndpoint();
+            console.warn(`[OKX placeOrder] 50001 錯誤，切換端點並重試 (${attempt + 1}/${PLACE_ORDER_MAX_RETRIES})`);
+            await new Promise(resolve => setTimeout(resolve, computeBackoff(attempt)));
+            continue; // 重試
+          } else {
+            // 其他錯誤，直接返回
+            return { success: false, errorMessage: lastError.message, rawResponse: JSON.stringify(data) };
+          }
+        }
+      } catch (e: any) {
+        lastError = e;
+        console.warn(`[OKX placeOrder] 下單請求失敗: ${e.message}，重試 (${attempt + 1}/${PLACE_ORDER_MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, computeBackoff(attempt)));
+      }
+    }
+
+    // 重試耗盡，返回最後一個錯誤
+    return { success: false, errorMessage: lastError?.message || "未知下單錯誤", rawResponse: "{}" };
+  }
+
+  async getOpenOrders(symbol?: string): Promise<OrderResult[]> {
+    const req: Record<string, string> = { instType: "SWAP" };
+    if (symbol) req.instId = this.normalizeSymbol(symbol);
+
+    const data = await this.request("GET", "/api/v5/trade/orders-pending", req);
+
+    if (data.code === "0" && data.data) {
+      return data.data.map((order: any) => ({
+        success: true,
+        orderId: order.ordId,
+        clientOrderId: order.clOrdId,
+        rawResponse: JSON.stringify(order),
+        state: order.state === "live" ? "live" : order.state === "filled" ? "filled" : order.state === "canceled" ? "canceled" : "unknown",
+        postOnly: order.posOnly === "true",
+      }));
+    }
+    return [];
   }
 
   async getPositions(symbol?: string): Promise<Position[]> {
@@ -634,24 +629,7 @@ export class OKXAdapter implements ExchangeAdapter {
       });
   }
 
-  async cancelOrder(symbol: string, orderId: string): Promise<OrderResult> {
-    try {
-      const data = await this.request("POST", "/api/v5/trade/cancel-order", {
-        instId: this.normalizeSymbol(symbol),
-        ordId: orderId,
-      });
-      const detail = data.data?.[0];
-      return {
-        success: data.code === "0" && detail?.sCode === "0",
-        orderId,
-        rawResponse: JSON.stringify(data),
-        errorMessage:
-          data.code !== "0" ? detail?.sMsg || data.msg : undefined,
-      };
-    } catch (e: any) {
-      return { success: false, rawResponse: "{}", errorMessage: e.message };
-    }
-  }
+
 
   /**
    * 平倉方法（平台級別通用，適用於所有策略）

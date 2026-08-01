@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { Buffer } from "node:buffer";
 import { desc, eq, isNull, sql } from "drizzle-orm";
 import { trades } from "../drizzle/schema";
 import { getDb } from "../server/db";
@@ -84,9 +85,9 @@ async function main() {
 
   const xlsx = await buildTradeXlsx(orphanReport);
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(xlsx);
+  await workbook.xlsx.load(xlsx as any);
   invariant(
-    workbook.worksheets.map(sheet => sheet.name).join("|") === "交易明細|交易循環|策略摘要|資料品質",
+    workbook.worksheets.map((sheet: ExcelJS.Worksheet) => sheet.name).join("|") === "交易明細|交易循環|策略摘要|資料品質",
     "XLSX 四工作表結構不符",
   );
 
@@ -104,7 +105,7 @@ async function main() {
     targetDataQuality: target.dataQuality,
     csvBytes: orphanCsv.length,
     xlsxBytes: xlsx.length,
-    sheets: workbook.worksheets.map(sheet => sheet.name),
+    sheets: workbook.worksheets.map((sheet: ExcelJS.Worksheet) => sheet.name),
   }, null, 2));
   process.exit(0);
 }

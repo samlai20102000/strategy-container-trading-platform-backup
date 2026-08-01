@@ -96,7 +96,7 @@ function parseSnapshot(events: OrderPolicyEventRow[]): {
     || raw.emergencyReason === "KILL_SWITCH"
     ? raw.emergencyReason
     : undefined;
-  const posSide = raw.posSide === "long" || raw.posSide === "short" || raw.posSide === "net"
+  const posSide = raw.posSide === "long" || raw.posSide === "short"
     ? raw.posSide
     : undefined;
   const policyContext = object(raw.policyContext) as MakerFirstOrderIntent["policyContext"];

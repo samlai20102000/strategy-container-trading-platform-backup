@@ -29,7 +29,7 @@ export interface MakerFirstOrderIntent {
   targetPrice?: number;
   reduceOnly?: boolean;
   leverage?: number;
-  posSide?: "long" | "short" | "net";
+  posSide?: "long" | "short";
   executionClass?: ExecutionClass;
   emergencyReason?: EmergencyReason;
   policyContext?: OrderParams["policyContext"];
@@ -763,14 +763,14 @@ async function executeClosePositions(
   adapter: ExchangeAdapter,
   identity: MakerFirstAuditIdentity,
   symbol: string,
-  posSide: "long" | "short" | "net" | undefined,
+  posSide: "long" | "short" | undefined,
   options: CloseExecutionOptions | undefined,
   config: Readonly<MakerFirstPolicyConfig>,
   dependencies: MakerFirstDependencies,
 ): Promise<OrderResult> {
   const positions = (await adapter.getPositions(symbol)).filter(position => {
     if (position.symbol.replace(/[-_/]/g, "").toUpperCase() !== symbol.replace(/[-_/]/g, "").toUpperCase()) return false;
-    return !posSide || posSide === "net" || position.side === posSide;
+    return !posSide || position.side === posSide;
   });
   const results: OrderResult[] = [];
   for (const position of positions) {
@@ -829,7 +829,7 @@ export function createMakerFirstAdapter(
       if (property === "closePosition") {
         return async (
           symbol: string,
-          posSide?: "long" | "short" | "net",
+          posSide?: "long" | "short",
           options?: CloseExecutionOptions,
         ): Promise<OrderResult> => executeClosePositions(
           target,
@@ -844,7 +844,7 @@ export function createMakerFirstAdapter(
       if (property === "closePositionSmart") {
         return async (
           symbol: string,
-          posSide?: "long" | "short" | "net",
+          posSide?: "long" | "short",
           _timeoutMs?: number,
           _priceOffsetPct?: number,
           options?: CloseExecutionOptions,

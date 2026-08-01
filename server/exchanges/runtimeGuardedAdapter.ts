@@ -62,7 +62,7 @@ function rejectedResult(message: string, decision?: ModeDecision): OrderResult {
   };
 }
 
-function approvedPositionSide(decision: ModeDecision, fallback?: "long" | "short" | "net") {
+function approvedPositionSide(decision: ModeDecision, fallback?: "long" | "short") {
   if (decision.targetSide === "LONG") return "long" as const;
   if (decision.targetSide === "SHORT") return "short" as const;
   return fallback;
@@ -94,7 +94,7 @@ async function authorize(
     action: "buy" | "sell" | "close";
     details: unknown;
     requestedQuantity?: number;
-    positionSide?: "long" | "short" | "net";
+    positionSide?: "long" | "short";
     price?: number;
   },
 ): Promise<RuntimeModeAuthorization> {
@@ -155,7 +155,7 @@ export function createRuntimeGuardedAdapter(
             action: isClose ? "close" : params.side,
             details: params,
             requestedQuantity: params.size,
-            positionSide: params.posSide,
+            positionSide: params.posSide as "long" | "short" | undefined,
             price: params.price,
           });
           if (!gate.allowed) {
@@ -173,9 +173,6 @@ export function createRuntimeGuardedAdapter(
             return rejectedResult("三模式執行 Gate 拒絕：ADVANCED_POSITION_SIDE_REQUIRED", decision);
           }
           if (advanced && isClose) {
-            if (posSide === "net") {
-              return rejectedResult("三模式執行 Gate 拒絕：ADVANCED_NET_CLOSE_FORBIDDEN", decision);
-            }
             const approvedLeg = approvedLegs.find(leg => leg.side === posSide);
             if (!approvedLeg || !Number.isFinite(size) || size <= 0 || size > approvedLeg.quantity) {
               return rejectedResult("三模式執行 Gate 拒絕：LEG_SCOPED_CLOSE_MISMATCH", decision);
@@ -204,7 +201,7 @@ export function createRuntimeGuardedAdapter(
       if (property === "closePosition" || property === "closePositionSmart") {
         return async (
           symbol: string,
-          posSide?: "long" | "short" | "net",
+          posSide?: "long" | "short",
           timeoutMsOrOptions?: number | CloseExecutionOptions,
           priceOffsetPct?: number,
           smartOptions?: CloseExecutionOptions,
@@ -244,7 +241,7 @@ export function createRuntimeGuardedAdapter(
           if (legs.length === 0) {
             return rejectedResult("三模式執行 Gate 拒絕：LEG_SCOPED_CLOSE_REQUIRED", gate.envelope.decision);
           }
-          if (posSide === "net" || (posSide && !legs.some(leg => leg.side === posSide))) {
+          if (posSide && !legs.some(leg => leg.side === posSide)) {
             return rejectedResult("三模式執行 Gate 拒絕：LEG_SCOPED_CLOSE_MISMATCH", gate.envelope.decision);
           }
           const results: OrderResult[] = [];

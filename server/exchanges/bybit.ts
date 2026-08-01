@@ -137,6 +137,14 @@ export class BybitAdapter implements ExchangeAdapter {
   }
 
   /** Bybit 使用線性合約符號，如 BTCUSDT */
+  async getServerTime(): Promise<number> {
+    const data = await this.request("GET", "/v5/market/time");
+    if (data.retCode === 0) {
+      return parseInt(String(data.result.timeNano / 1000000), 10); // 轉換為毫秒
+    }
+    throw new Error(`Bybit 獲取伺服器時間失敗: ${data.retMsg}`);
+  }
+
   normalizeSymbol(symbol: string): string {
     return symbol.replace(/[-/]/g, "").toUpperCase().replace(".P", "");
   }
@@ -375,6 +383,61 @@ export class BybitAdapter implements ExchangeAdapter {
         feeSource: "unavailable",
         fillQuality: "unknown",
       };
+    }
+  }
+
+  async getOrderDetail(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult> {
+    try {
+      if (!orderId && !clientOrderId) {
+        return { success: false, errorMessage: "必須提供 orderId 或 clientOrderId", rawResponse: "{}" };
+      }
+      const data = await this.request("GET", "/v5/order/realtime", {
+        category: "linear",
+        symbol: this.normalizeSymbol(symbol),
+        ...(orderId ? { orderId } : { orderLinkId: clientOrderId }),
+      });
+      const detail = data.result?.list?.[0];
+      if (!detail) {
+        return { success: false, errorMessage: "訂單未找到", rawResponse: JSON.stringify(data) };
+      }
+      const fillTruth = await this.queryOrderFillDetails(symbol, detail.orderId, true, detail.orderLinkId);
+      return {
+        success: true,
+        orderId: detail.orderId,
+        clientOrderId: detail.orderLinkId,
+        rawResponse: JSON.stringify(data),
+        state: detail.orderStatus === "Filled" ? "filled" : detail.orderStatus === "New" ? "live" : detail.orderStatus === "PartiallyFilled" ? "partial_filled" : detail.orderStatus === "Canceled" ? "canceled" : "unknown",
+        postOnly: detail.timeInForce === "PostOnly",
+        ...fillTruth,
+      };
+    } catch (e: any) {
+      return { success: false, errorMessage: e.message, rawResponse: "{}" };
+    }
+  }
+
+  async getOpenOrders(symbol?: string): Promise<OrderResult[]> {
+    try {
+      const data = await this.request("GET", "/v5/order/realtime", {
+        category: "linear",
+        symbol: symbol ? this.normalizeSymbol(symbol) : undefined,
+        openOnly: 0, // 0: all, 1: open
+      });
+      if (data.retCode === 0 && data.result?.list) {
+        return data.result.list
+          .filter((order: any) => order.orderStatus === "New" || order.orderStatus === "PartiallyFilled")
+          .map((order: any) => ({
+            success: true,
+            orderId: order.orderId,
+            clientOrderId: order.orderLinkId,
+            rawResponse: JSON.stringify(order),
+            state: order.orderStatus === "New" ? "live" : order.orderStatus === "PartiallyFilled" ? "partial_filled" : "unknown",
+            postOnly: order.timeInForce === "PostOnly",
+          }));
+      }
+      return [];
+    } catch (e: any) {
+      console.error(`[Bybit] 獲取掛單失敗: ${e.message}`);
+      return [];
     }
   }
 

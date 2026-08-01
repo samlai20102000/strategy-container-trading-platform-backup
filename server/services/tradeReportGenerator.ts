@@ -1,5 +1,7 @@
 import ExcelJS from "exceljs";
-import { storagePut } from "../storage";
+import { Buffer } from "node:buffer";
+
+import { storagePut } from "../storage.ts";
 import {
   fetchAllTradeJournalRows,
   normalizeTradeJournalFilters,
@@ -344,7 +346,7 @@ export function buildTradeCsv(data: TradeReportData): Buffer {
     DETAIL_HEADERS.map(csvEscape).join(","),
     ...data.rows.map(row => detailValues(row).map(csvEscape).join(",")),
   ];
-  return Buffer.from(`\uFEFF${lines.join("\r\n")}\r\n`, "utf8");
+  return Buffer.from("\uFEFF" + lines.join("\r\n") + "\r\n", "utf8");
 }
 
 const HEADER_FILL = "FF17324D";
@@ -365,7 +367,7 @@ function styleTableSheet(sheet: ExcelJS.Worksheet, headerRowNumber = 1) {
     from: { row: headerRowNumber, column: 1 },
     to: { row: headerRowNumber, column: sheet.columnCount },
   };
-  sheet.eachRow((row, rowNumber) => {
+  sheet.eachRow((row: ExcelJS.Row, rowNumber: number) => {
     if (rowNumber <= headerRowNumber) return;
     row.alignment = { vertical: "top", wrapText: false };
     if (rowNumber % 2 === 0) {
@@ -376,7 +378,7 @@ function styleTableSheet(sheet: ExcelJS.Worksheet, headerRowNumber = 1) {
 
 function addMetadata(sheet: ExcelJS.Worksheet, data: TradeReportData) {
   const filters = data.filters;
-  const metadata: Array<[string, string | number]> = [
+  const metadata: Array<[string, string | number | undefined]> = [
     ["報告生成時間（UTC）", data.generatedAt.toISOString()],
     ["資料筆數", data.rows.length],
     ["策略範圍", filters.strategyIds?.length ? filters.strategyIds.join("、") : "全部策略"],
@@ -388,7 +390,7 @@ function addMetadata(sheet: ExcelJS.Worksheet, data: TradeReportData) {
     ["交易對", filters.symbol ?? "全部"],
     ["盈虧狀態", filters.pnlState ?? "全部"],
   ];
-  for (const values of metadata) sheet.addRow(values);
+  for (const values of metadata) sheet.addRow(values as ExcelJS.CellValue[]);
   sheet.getColumn(1).width = 24;
   sheet.getColumn(2).width = 56;
   for (let rowNumber = 1; rowNumber <= metadata.length; rowNumber += 1) {
@@ -409,9 +411,11 @@ export async function buildTradeXlsx(data: TradeReportData): Promise<Buffer> {
   const detailSheet = workbook.addWorksheet("交易明細", { properties: { defaultRowHeight: 20 } });
   detailSheet.addRow([...DETAIL_HEADERS]);
   for (const row of data.rows) detailSheet.addRow(detailExcelValues(row));
-  detailSheet.columns.forEach((column, index) => {
-    column.width = index >= 40 ? 38 : index >= 27 && index <= 32 ? 16 : 20;
-  });
+  detailSheet.columns = DETAIL_HEADERS.map((header, index) => ({
+    header,
+    key: header,
+    width: index >= 40 ? 38 : index >= 27 && index <= 32 ? 16 : 20,
+  }));
   for (const index of [28, 29, 30, 31, 32]) detailSheet.getColumn(index).numFmt = "0.00000000";
   styleTableSheet(detailSheet);
 
@@ -432,7 +436,11 @@ export async function buildTradeXlsx(data: TradeReportData): Promise<Buffer> {
       cycle.pnlCurrency, cycle.pnlState, cycle.status, cycle.dataQuality, cycle.pnlSources,
     ].map(safeExcelCell));
   }
-  cycleSheet.columns.forEach((column, index) => { column.width = index >= 22 ? 25 : 18; });
+  cycleSheet.columns = cycleHeaders.map((header, index) => ({
+    header,
+    key: header,
+    width: index >= 22 ? 25 : 18,
+  })) as Partial<ExcelJS.Column>[];
   for (let index = 12; index <= 20; index += 1) cycleSheet.getColumn(index).numFmt = "0.00000000";
   styleTableSheet(cycleSheet);
 
@@ -466,7 +474,15 @@ export async function buildTradeXlsx(data: TradeReportData): Promise<Buffer> {
       quality.rowCount, quality.percentage,
     ]);
   }
-  qualitySheet.columns = [28, 28, 24, 22, 20, 14, 14].map(width => ({ width }));
+qualitySheet.columns = [
+      { header: "資料品質", key: "dataQuality", width: 28 },
+      { header: "盈虧來源", key: "pnlSource", width: 28 },
+      { header: "對帳狀態", key: "reconciliationStatus", width: 24 },
+      { header: "盈虧狀態", key: "pnlState", width: 22 },
+      { header: "關聯方式", key: "linkage", width: 20 },
+      { header: "筆數", key: "rowCount", width: 14 },
+      { header: "占比(%)", key: "percentage", width: 14 },
+    ];
   qualitySheet.getColumn(7).numFmt = "0.00";
   styleTableSheet(qualitySheet);
 

@@ -13,10 +13,12 @@ export interface OrderParams {
   price?: number;
   /** 是否僅平倉 */
   reduceOnly?: boolean;
+  marginMode?: "cross" | "isolated";
+  timeInForce?: "GTC" | "IOC" | "FOK" | "PostOnly";
   /** 槓桿倍數（開倉前設定） */
   leverage?: number;
   /** 持倉方向（OKX 雙向持倉模式必填） */
-  posSide?: "long" | "short" | "net";
+  posSide?: "long" | "short";
   /** 僅允許 maker 成交；交易所若判定會立即成交，必須拒單而非轉 taker。 */
   postOnly?: boolean;
   /** 由中央執行層建立的冪等客戶端訂單識別碼。 */
@@ -62,6 +64,10 @@ export interface OrderResult {
   orderId?: string;
   /** 交易所原始回應（JSON 字串），用於日誌 */
   rawResponse: string;
+  state?: "live" | "filled" | "canceled" | "partial_filled" | "pending" | "unknown";
+  postOnly?: boolean;
+  clientOrderId?: string;
+
   errorMessage?: string;
   /** 實際成交均價（市價單成交後查詢獲得） */
   filledPrice?: number;
@@ -200,11 +206,20 @@ export interface ExchangeAdapter {
   /** 只讀取得最佳買／賣價，供中央 post-only 價格決策。 */
   getBestBidAsk(symbol: string): Promise<BestBidAsk>;
 
+  /** 獲取交易所伺服器時間 */
+  getServerTime(): Promise<number>;
+
+  /** 查詢訂單詳情 */
+  getOrderDetail(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult>;
+
+  /** 查詢所有活動訂單 */
+  getOpenOrders(symbol?: string): Promise<OrderResult[]>;
+
   /** 撤單 */
-  cancelOrder(symbol: string, orderId: string): Promise<OrderResult>;
+  cancelOrder(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult>;
 
   /** 市價平倉指定交易對的所有持倉 */
-  closePosition(symbol: string, posSide?: "long" | "short" | "net", options?: CloseExecutionOptions): Promise<OrderResult>;
+  closePosition(symbol: string, posSide?: "long" | "short", options?: CloseExecutionOptions): Promise<OrderResult>;
 
   /**
    * 智能平倉：先限價掛單（享受 maker 費率），超時未成交則取消改市價兜底
@@ -213,7 +228,7 @@ export interface ExchangeAdapter {
    * @param timeoutMs 限價單等待超時（毫秒），預設 3000ms
    * @param priceOffsetPct 限價偏移百分比（相對 markPrice），預設 0.02%（確保快速成交）
    */
-  closePositionSmart(symbol: string, posSide?: "long" | "short" | "net", timeoutMs?: number, priceOffsetPct?: number, options?: CloseExecutionOptions): Promise<OrderResult>;
+  closePositionSmart(symbol: string, posSide?: "long" | "short", timeoutMs?: number, priceOffsetPct?: number, options?: CloseExecutionOptions): Promise<OrderResult>;
 
   /** 查詢已實現盈虧記錄（用於統計） */
   getClosedPnl(symbol?: string, startTime?: number): Promise<{ symbol: string; pnl: number; time: number }[]>;

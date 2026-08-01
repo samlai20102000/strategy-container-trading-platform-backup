@@ -3,7 +3,7 @@ import { strategies, trades } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { summarizeStrategyPerformance } from "../server/services/performanceSummary";
 import { buildStrategySummaries } from "../server/services/tradeReportGenerator";
-import { fetchAllTradeJournalRows } from "../server/services/tradeJournalQuery";
+import { fetchAllTradeJournalRows, type TradeJournalRow } from "../server/services/tradeJournalQuery";
 
 function finiteNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -95,7 +95,7 @@ const reportPages = await Promise.all(
     }),
   ),
 );
-const reportRows = reportPages.flatMap(page => page.rows);
+const reportRows = reportPages.flatMap(page => page.rows).filter((row): row is TradeJournalRow => row !== undefined);
 const reportSummaries = buildStrategySummaries(reportRows);
 const reportByStrategy = new Map<number, typeof reportTotals>();
 for (const report of reportSummaries) {

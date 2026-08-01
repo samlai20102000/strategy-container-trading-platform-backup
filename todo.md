@@ -2467,3 +2467,11 @@
 - [x] 本輪安全決策：不以任何憑證執行 post-only 送單、查單或撤單 smoke test；避免把統計修正擴張為未授權交易驗收
 - [x] 核對本輪瀏覽器與網路日誌敏感交易 RPC 為 0，因此沒有由本輪產生的未清訂單、taker／market fallback 或政策稽核缺口
 - [x] 測試網送單驗收報告與證據版本列為需另行授權的新任務；本輪僅交付勝率根因、修正、唯讀重算及零交易副作用證據
+
+## 當前任務
+- [ ] 修正 `server/services/tradeReportGenerator.ts` 中的 TypeScript 錯誤
+  - [ ] 移除重複的 `Buffer` 導入
+  - [ ] 修正 `styleTableSheet` 和 `addMetadata` 函數中的隱式 `any` 類型錯誤
+- [ ] 修正 `scripts/phase14_readonly_orphan_smoke.ts` 中的 TypeScript 錯誤
+  - [ ] 移除重複的 `Buffer` 導入
+  - [ ] 確保 `xlsx` 正確載入 `ExcelJS` 而沒有類型錯誤
