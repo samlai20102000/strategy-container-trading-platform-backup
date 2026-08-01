@@ -2508,4 +2508,4 @@
 - [x] 補齊 Vitest：預設層級、自訂新增層級、無效分層、時間框架映射、回測／實盤／快照／三模式契約一致性（相關 20 檔、140 項全數通過）
 - [x] 執行 TypeScript、完整 Vitest、production build 與回測唯讀驗證；全套結果為 924 通過、4 跳過、6 個未觸碰 OKX adapter 契約失敗，KRM 相關測試全數通過；本輪未送單、撤單或平倉
 - [x] 以桌面及行動版截圖驗證回測、快照庫、策略交易與三模式部署 UI，完成待辦核對並發布版本
-- [ ] 後續模組：修正 OKX `placeOrder` 的 posMode、post-only fail-closed、`post_only` payload、client ID 長度及測試間熔斷器隔離（本輪依用戶同意暫不擴大範圍）
+- [x] 後續待辦已登錄：OKX `placeOrder` 的 posMode、post-only fail-closed、`post_only` payload、client ID 長度及測試間熔斷器隔離；依用戶同意不納入本輪 KRM 四階段實作
