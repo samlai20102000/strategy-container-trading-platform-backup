@@ -25,6 +25,7 @@ import {
   type TradeRecord,
 } from "./performanceCalculator";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
+import { parseTimeframe } from "./timeframeParser";
 import {
   V25_END_OF_DATA_EXIT_REASON,
   assertSingleEquityLedger,
@@ -170,6 +171,12 @@ export function runKamaRainbowMartinBacktest(
   const config: KamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(rawConfig);
   const expectedMinutes = getKamaRainbowMartinTimeframeMinutes(config.timeframe);
   const expectedTimeframe = `${expectedMinutes}m`;
+  const requestTimeframe = parseTimeframe(request.timeframe);
+  if (requestTimeframe.totalSeconds !== expectedMinutes * 60) {
+    throw new Error(
+      `Kama 彩虹馬丁週期不一致：配置為 ${config.timeframe}（${expectedMinutes} 分鐘），但回測資料請求為 ${request.timeframe}`,
+    );
+  }
   const isFinalSegment = options.finalize ?? true;
   const priorSession = options.session;
   const trades = priorSession?.trades ?? [];

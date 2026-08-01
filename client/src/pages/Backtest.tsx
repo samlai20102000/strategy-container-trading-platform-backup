@@ -88,9 +88,24 @@ import {
   getKamaRainbowMartinTimeframeMinutes,
   normalizeKamaRainbowMartinConfig,
   validateKamaRainbowMartinConfig,
+  type KamaRainbowMartinTimeframe,
 } from "@shared/strategies/kamaRainbowMartin";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
+
+const KRM_BACKTEST_TIMEFRAME_OPTIONS: ReadonlyArray<{
+  value: string;
+  configValue: KamaRainbowMartinTimeframe;
+  label: string;
+}> = [
+  { value: "5m", configValue: "M5", label: "5 分鐘" },
+  { value: "15m", configValue: "M15", label: "15 分鐘" },
+  { value: "30m", configValue: "M30", label: "30 分鐘" },
+  { value: "1h", configValue: "H1", label: "1 小時" },
+  { value: "4h", configValue: "H4", label: "4 小時" },
+  { value: "1d", configValue: "D1", label: "1 天" },
+  { value: "7d", configValue: "W1", label: "1 週" },
+] as const;
 
 export default function Backtest() {
   // ===== 表單狀態 =====
@@ -918,27 +933,47 @@ export default function Backtest() {
               </div>
               <div className="space-y-2">
                 <Label className="text-xs">時間框架</Label>
-                <Select disabled={strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY} value={`${tfValue}${tfUnit}`} onValueChange={(v) => {
+                <Select value={`${tfValue}${tfUnit}`} onValueChange={(v) => {
                   const m = v.match(/^(\d+)(m|h|d)$/);
-                  if (m) { setTfValue(m[1]); setTfUnit(m[2] as "m" | "h" | "d"); }
+                  if (m) {
+                    setTfValue(m[1]);
+                    setTfUnit(m[2] as "m" | "h" | "d");
+                  }
+                  if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+                    const selected = KRM_BACKTEST_TIMEFRAME_OPTIONS.find(option => option.value === v);
+                    if (selected) {
+                      setConfigJson(previous => ({
+                        ...normalizeKamaRainbowMartinConfig(previous),
+                        timeframe: selected.configValue,
+                      }));
+                    }
+                  }
                 }}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="1m">1 分鐘</SelectItem>
-                    <SelectItem value="3m">3 分鐘</SelectItem>
-                    <SelectItem value="5m">5 分鐘</SelectItem>
-                    <SelectItem value="15m">15 分鐘</SelectItem>
-                    <SelectItem value="30m">30 分鐘</SelectItem>
-                    <SelectItem value="1h">1 小時</SelectItem>
-                    <SelectItem value="2h">2 小時</SelectItem>
-                    <SelectItem value="4h">4 小時</SelectItem>
-                    <SelectItem value="6h">6 小時</SelectItem>
-                    <SelectItem value="12h">12 小時</SelectItem>
-                    <SelectItem value="1d">1 天</SelectItem>
-                    <SelectItem value="2d">2 天</SelectItem>
-                    <SelectItem value="3d">3 天</SelectItem>
+                    {strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY ? (
+                      KRM_BACKTEST_TIMEFRAME_OPTIONS.map(option => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))
+                    ) : (
+                      <>
+                        <SelectItem value="1m">1 分鐘</SelectItem>
+                        <SelectItem value="3m">3 分鐘</SelectItem>
+                        <SelectItem value="5m">5 分鐘</SelectItem>
+                        <SelectItem value="15m">15 分鐘</SelectItem>
+                        <SelectItem value="30m">30 分鐘</SelectItem>
+                        <SelectItem value="1h">1 小時</SelectItem>
+                        <SelectItem value="2h">2 小時</SelectItem>
+                        <SelectItem value="4h">4 小時</SelectItem>
+                        <SelectItem value="6h">6 小時</SelectItem>
+                        <SelectItem value="12h">12 小時</SelectItem>
+                        <SelectItem value="1d">1 天</SelectItem>
+                        <SelectItem value="2d">2 天</SelectItem>
+                        <SelectItem value="3d">3 天</SelectItem>
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -997,7 +1032,7 @@ export default function Backtest() {
                     : strategyKey === RAINBOW_20415_STRATEGY_KEY
                       ? `由下方七彩虹 Base_Lot_Size 控制；數據鎖定 ${normalizeRainbow20415Config(configJson).Management_Interval_Minutes}m 管理週期`
                       : strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
-                        ? `頂層 Position_Size；策略 timeframe 鎖定 ${getKamaRainbowMartinTimeframeMinutes(normalizeKamaRainbowMartinConfig(configJson).timeframe)}m，馬丁層量由下方面板預覽`
+                        ? `頂層 Position_Size；策略週期目前為 ${getKamaRainbowMartinTimeframeMinutes(normalizeKamaRainbowMartinConfig(configJson).timeframe)} 分鐘，可於此處或下方面板修改；馬丁層量由分層表預覽`
                     : "首單固定金額，加倉按馬丁倍率遞增"}
                 </p>
               </div>

@@ -29,11 +29,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import {
-  createDefaultExecutionPolicy,
   type DeploymentActivationState,
   type ExecutionMode,
   type ExecutionPolicy,
 } from "@shared/executionModes";
+import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "@shared/strategies/kamaRainbowMartin";
+import {
+  KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT,
+  createDefaultStrategyExecutionPolicy,
+  normalizeStrategyExecutionPolicy,
+} from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -301,11 +306,14 @@ function stateBadge(stateValue: unknown) {
 
 function PolicyEditor({
   policy,
+  strategyKey,
   onChange,
 }: {
   policy: ExecutionPolicy;
+  strategyKey?: string | null;
   onChange: (policy: ExecutionPolicy) => void;
 }) {
+  const isKamaRainbowMartin = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
   const updateRisk = (field: keyof ExecutionPolicy["riskBudget"], value: number) => {
     onChange({
       ...policy,
@@ -389,11 +397,17 @@ function PolicyEditor({
                 max={100}
                 step={0.1}
                 value={policy.primaryLossTriggerPct}
+                disabled={isKamaRainbowMartin}
                 onChange={event => onChange({
                   ...policy,
                   primaryLossTriggerPct: Number(event.target.value),
                 })}
               />
+              {isKamaRainbowMartin && (
+                <p className="text-xs leading-5 text-amber-200/80">
+                  KRM canonical 契約固定為 {KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT}%：先於預設 5% 硬止損啟動保護腿。
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>對沖比例</Label>
@@ -676,8 +690,10 @@ export default function DeploymentWorkbench() {
   const storedReport = parsePreflightReport(activeDeployment?.preflightReport);
   const preflightReport = latestReport?.deploymentId === selectedId ? latestReport : storedReport;
   const availableActions = getWorkbenchLifecycleActions(activeState);
-  const activePolicy = (activeDeployment?.executionPolicy as ExecutionPolicy | null)
-    ?? createDefaultExecutionPolicy(activeMode);
+  const activePolicy = normalizeStrategyExecutionPolicy(
+    activeDeployment?.strategyKey,
+    activeDeployment?.executionPolicy ?? { mode: activeMode },
+  );
 
   const stats = useMemo(() => ({
     total: deployments.length,
@@ -782,11 +798,13 @@ export default function DeploymentWorkbench() {
   });
 
   const [targetMode, setTargetMode] = useState<ExecutionMode>(activeMode);
-  const [targetPolicy, setTargetPolicy] = useState<ExecutionPolicy>(() => createDefaultExecutionPolicy(activeMode));
+  const [targetPolicy, setTargetPolicy] = useState<ExecutionPolicy>(() => (
+    createDefaultStrategyExecutionPolicy(undefined, activeMode)
+  ));
   const openModeDialog = () => {
     const nextMode = activeMode === "SINGLE_EXCLUSIVE" ? "MULTI_POSITION" : "SINGLE_EXCLUSIVE";
     setTargetMode(nextMode);
-    setTargetPolicy(createDefaultExecutionPolicy(nextMode));
+    setTargetPolicy(createDefaultStrategyExecutionPolicy(activeDeployment?.strategyKey, nextMode));
     setModeOpen(true);
   };
   const switchModeMutation = trpc.deployments.switchMode.useMutation({
@@ -1132,7 +1150,7 @@ export default function DeploymentWorkbench() {
       <Dialog open={policyOpen} onOpenChange={setPolicyOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[760px]">
           <DialogHeader><DialogTitle>更新 {DEPLOYMENT_MODE_META[activeMode].code} execution policy</DialogTitle><DialogDescription>只有停用且通過 ledger state Gate 的部署可更新；更新後 revision 增加並需重新 preflight。</DialogDescription></DialogHeader>
-          <PolicyEditor policy={policyDraft} onChange={setPolicyDraft} />
+          <PolicyEditor policy={policyDraft} strategyKey={activeDeployment?.strategyKey} onChange={setPolicyDraft} />
           <DialogFooter><Button variant="outline" onClick={() => setPolicyOpen(false)}>取消</Button><Button disabled={!activeDeployment || updatePolicyMutation.isPending} onClick={() => activeDeployment && updatePolicyMutation.mutate({ deploymentId: activeDeployment.id, expectedRevision: activeRevision, transitionKey: buildDeploymentTransitionKey("policy", activeDeployment.id), executionPolicy: policyDraft as unknown as Record<string, unknown> })}>{updatePolicyMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}儲存並使預檢失效</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1144,10 +1162,10 @@ export default function DeploymentWorkbench() {
             <div className="grid gap-3 sm:grid-cols-3">
               {EXECUTION_MODES.map(mode => {
                 const meta = DEPLOYMENT_MODE_META[mode];
-                return <button key={mode} type="button" onClick={() => { setTargetMode(mode); setTargetPolicy(createDefaultExecutionPolicy(mode)); }} className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] active:scale-[0.98] ${targetMode === mode ? meta.accent : "border-border bg-background/30"}`}><span className="font-mono text-lg font-bold">{meta.code}</span><p className="mt-1 font-semibold">{meta.label}</p><p className="mt-1 text-xs leading-5 opacity-80">{meta.shortDescription}</p></button>;
+                return <button key={mode} type="button" onClick={() => { setTargetMode(mode); setTargetPolicy(createDefaultStrategyExecutionPolicy(activeDeployment?.strategyKey, mode)); }} className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] active:scale-[0.98] ${targetMode === mode ? meta.accent : "border-border bg-background/30"}`}><span className="font-mono text-lg font-bold">{meta.code}</span><p className="mt-1 font-semibold">{meta.label}</p><p className="mt-1 text-xs leading-5 opacity-80">{meta.shortDescription}</p></button>;
               })}
             </div>
-            <PolicyEditor policy={targetPolicy} onChange={setTargetPolicy} />
+            <PolicyEditor policy={targetPolicy} strategyKey={activeDeployment?.strategyKey} onChange={setTargetPolicy} />
             <Alert className="border-amber-500/25 bg-amber-500/8"><TimerReset className="h-4 w-4 text-amber-300" /><AlertTitle>原子模式切換</AlertTitle><AlertDescription>目標 policy 預檢、revision 更新與 READY_DISABLED 會在同一 optimistic-lock transaction 提交；不會直接進入 ACTIVE。</AlertDescription></Alert>
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setModeOpen(false)}>取消</Button><Button disabled={!activeDeployment || targetMode === activeMode || switchModeMutation.isPending} onClick={() => activeDeployment && switchModeMutation.mutate({ deploymentId: activeDeployment.id, expectedRevision: activeRevision, transitionKey: buildDeploymentTransitionKey("switch-mode", activeDeployment.id), executionMode: targetMode, executionPolicy: targetPolicy as unknown as Record<string, unknown> })}>{switchModeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}執行 flat Gate 與模式切換</Button></DialogFooter>

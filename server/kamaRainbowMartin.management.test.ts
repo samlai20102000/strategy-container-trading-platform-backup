@@ -11,13 +11,14 @@ import {
   requestKamaRainbowMartinKill,
 } from "./strategies/kamaRainbowMartin/management";
 
-function openLong(price = 100, quantity = 1) {
+function openLong(price = 100, quantity = 1, rawConfig?: unknown) {
   return applyKamaRainbowMartinFillToState(createKamaRainbowMartinRuntimeState(), {
     action: "OPEN_LONG",
     fillId: "fill-l1-a",
     fillPrice: price,
     fillQuantity: quantity,
     timestamp: 1,
+    rawConfig,
     configRevision: "revision-a",
     positionSizeAtOpen: { mode: "usdt", value: 100 },
   });
@@ -68,18 +69,42 @@ describe("Kama 彩虹馬丁腿級 management", () => {
     expect(duplicate.kamaRainbowMartinRuntime?.fills).toHaveLength(3);
   });
 
-  it("固定間距由上一層實際 fill 錨定，單一 event 只批准一次", () => {
+  it("分層間距由上一層實際 fill 錨定，L1 採 1.5 倍且單一 event 只批准一次", () => {
     const state = openLong();
     const add = evaluateKamaRainbowMartinManagement({ currentPrice: 98, now: 2, riskEventKey: "quote-1" }, state);
     expect(add.action).toBe("add_long");
     expect(add.layerNum).toBe(2);
-    expect(add.orderSize).toEqual({ mode: "usdt", value: 200 });
+    expect(add.orderSize).toEqual({ mode: "usdt", value: 150 });
     expect(add.nextState.currentLayer).toBe(1);
     const duplicate = evaluateKamaRainbowMartinManagement(
       { currentPrice: 97, now: 3, riskEventKey: "quote-1" },
       add.nextState,
     );
     expect(duplicate.reasonCode).toBe("KRM_RISK_EVENT_DUPLICATE");
+  });
+
+  it("自訂分層間距與乘數依目標加倉層套用，內部層號保留底倉偏移", () => {
+    const config = createKamaRainbowMartinDefaultConfig();
+    config.layerConfigs = [
+      { layerStart: 1, layerEnd: 1, multiplier: 1.25, gapPct: 3 },
+      { layerStart: 2, layerEnd: 3, multiplier: 1.1, gapPct: 4 },
+    ];
+    const state = openLong(100, 1, config);
+    const wait = evaluateKamaRainbowMartinManagement(
+      { currentPrice: 98, now: 2, riskEventKey: "tier-wait" },
+      state,
+    );
+    expect(wait.reasonCode).toBe("KRM_MARTIN_WAIT");
+    expect(wait.metrics.nextAddLayer).toBe(1);
+    expect(wait.metrics.nextLayer).toBe(2);
+    expect(wait.metrics.nextGapPct).toBe(3);
+    const add = evaluateKamaRainbowMartinManagement(
+      { currentPrice: 97, now: 3, riskEventKey: "tier-add" },
+      state,
+    );
+    expect(add.reasonCode).toBe("KRM_MARTIN_ADD");
+    expect(add.layerNum).toBe(2);
+    expect(add.orderSize).toEqual({ mode: "usdt", value: 125 });
   });
 
   it("hard stop 優先於同價位馬丁加倉且多空鏡像", () => {
@@ -153,13 +178,13 @@ describe("Kama 彩虹馬丁腿級 management", () => {
     expect(released.kamaRainbowMartinRuntime?.killed).toBe(false);
   });
 
-  it("maxLayers 含底倉，L5 後不再加倉", () => {
+  it("maxLayers 僅計加倉層，完成 L11 後持倉內部 L12 不再加倉", () => {
     let state = openLong();
-    for (let layer = 2; layer <= 5; layer += 1) {
+    for (let layer = 2; layer <= 12; layer += 1) {
       state = applyKamaRainbowMartinFillToState(state, {
         action: "ADD_LONG",
         fillId: `fill-l${layer}`,
-        fillPrice: 100 - (layer - 1) * 2,
+        fillPrice: 100,
         fillQuantity: 1,
         timestamp: layer,
         targetLayer: layer,

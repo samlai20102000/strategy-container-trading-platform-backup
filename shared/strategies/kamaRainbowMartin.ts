@@ -1,9 +1,11 @@
 export const KAMA_RAINBOW_MARTIN_STRATEGY_KEY = "KAMA_RAINBOW_MARTIN_V1" as const;
 export const KAMA_RAINBOW_MARTIN_STRATEGY_NAME = "Kama彩虹馬丁策略" as const;
-export const KAMA_RAINBOW_MARTIN_CONFIG_VERSION = "kamaRainbowMartin.v1" as const;
-export const KAMA_RAINBOW_MARTIN_LOGIC_REVISION = "kama-rainbow-martin-v1" as const;
+export const KAMA_RAINBOW_MARTIN_CONFIG_VERSION = "kamaRainbowMartin.v2" as const;
+export const KAMA_RAINBOW_MARTIN_LEGACY_CONFIG_VERSION = "kamaRainbowMartin.v1" as const;
+export const KAMA_RAINBOW_MARTIN_LOGIC_REVISION = "kama-rainbow-martin-v2-tiered" as const;
 export const KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY = "__kamaRainbowMartinConfig" as const;
 export const KAMA_RAINBOW_MARTIN_RUNTIME_NAMESPACE = "kamaRainbowMartin" as const;
+export const KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS = 50 as const;
 
 export const KAMA_RAINBOW_MARTIN_TIMEFRAMES = ["M5", "M15", "M30", "H1", "H4", "D1", "W1"] as const;
 export type KamaRainbowMartinTimeframe = (typeof KAMA_RAINBOW_MARTIN_TIMEFRAMES)[number];
@@ -37,15 +39,29 @@ export interface KamaRainbowMartinTrailingConfig {
   stepPct: number;
 }
 
+export interface KamaRainbowMartinLayerConfig {
+  /** Add-layer range start (inclusive). L1 is the first add after the base fill. */
+  layerStart: number;
+  /** Add-layer range end (inclusive). */
+  layerEnd: number;
+  /** Per-layer multiplier; add-layer size compounds from the base size. */
+  multiplier: number;
+  /** Optional gap from the previous actual fill; blank uses the global gapPct. */
+  gapPct?: number;
+}
+
 export interface KamaRainbowMartinConfig {
   version: typeof KAMA_RAINBOW_MARTIN_CONFIG_VERSION;
   timeframe: KamaRainbowMartinTimeframe;
   kamaLines: KamaRainbowMartinLineConfig[];
-  /** Includes the initial position as L1. */
+  /** Number of add layers, excluding the base fill; derived from layerConfigs in layered mode. */
   maxLayers: number;
+  /** Fixed-mode fallback multiplier. */
   multiplier: number;
   /** Percentage points relative to the previous layer's actual fill. */
   gapPct: number;
+  /** Tiered add-layer configuration; overrides multiplier and optionally gapPct when non-empty. */
+  layerConfigs: KamaRainbowMartinLayerConfig[];
   /** Percentage points relative to the leg's weighted average cost. */
   hardStopLossPct: number;
   trailing: KamaRainbowMartinTrailingConfig;
@@ -90,9 +106,14 @@ export const KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG: Readonly<KamaRainbowMartinConfi
   version: KAMA_RAINBOW_MARTIN_CONFIG_VERSION,
   timeframe: "M30",
   kamaLines: DEFAULT_LINES.map(line => ({ ...line })),
-  maxLayers: 5,
-  multiplier: 2,
+  maxLayers: 11,
+  multiplier: 1.5,
   gapPct: 2,
+  layerConfigs: [
+    { layerStart: 1, layerEnd: 4, multiplier: 1.5 },
+    { layerStart: 5, layerEnd: 9, multiplier: 1.1 },
+    { layerStart: 10, layerEnd: 11, multiplier: 1 },
+  ],
   hardStopLossPct: 5,
   trailing: {
     enabled: true,
@@ -152,6 +173,7 @@ export function createKamaRainbowMartinDefaultConfig(): KamaRainbowMartinConfig 
   return {
     ...KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
     kamaLines: cloneLines(KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.kamaLines),
+    layerConfigs: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.layerConfigs.map(layer => ({ ...layer })),
     trailing: { ...KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.trailing },
   };
 }
@@ -190,18 +212,72 @@ function parseLines(value: unknown, defaults: readonly KamaRainbowMartinLineConf
   });
 }
 
+interface ParsedKamaRainbowMartinLayers {
+  layers: KamaRainbowMartinLayerConfig[];
+  error?: string;
+}
+
+function parseLayerConfigs(value: unknown): ParsedKamaRainbowMartinLayers {
+  let source = value;
+  if (source === undefined || source === null || source === "") return { layers: [] };
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      return { layers: [], error: "分層表不是合法 JSON" };
+    }
+  }
+  if (!Array.isArray(source)) return { layers: [], error: "分層表必須是陣列" };
+
+  return {
+    layers: source.map(item => {
+      const raw = isRecord(item) ? item : {};
+      const rawGap = firstDefined(raw.gapPct, raw.stepPct, raw.gap, raw.spacingPct);
+      return {
+        layerStart: toNumber(firstDefined(raw.layerStart, raw.start), Number.NaN),
+        layerEnd: toNumber(firstDefined(raw.layerEnd, raw.end), Number.NaN),
+        multiplier: toNumber(firstDefined(raw.multiplier, raw.martinMultiplier), Number.NaN),
+        ...(rawGap === undefined || rawGap === null || rawGap === ""
+          ? {}
+          : { gapPct: toNumber(rawGap, Number.NaN) }),
+      };
+    }),
+  };
+}
+
 export function normalizeKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartinConfig {
   const input = isRecord(raw) ? raw : {};
   const defaults = createKamaRainbowMartinDefaultConfig();
   const trailingInput = isRecord(input.trailing) ? input.trailing : {};
+  const suppliedVersion = String(firstDefined(input.version, input.Config_Version, "")).trim();
+  const rawLayerConfigs = firstDefined(input.layerConfigs, input.Martin_Layers);
+  const legacyFixedShape = suppliedVersion === KAMA_RAINBOW_MARTIN_LEGACY_CONFIG_VERSION || (
+    !suppliedVersion
+    && ["maxLayers", "Max_Layers", "multiplier", "martinMultiplier", "gapPct", "martinGapPct"]
+      .some(key => Object.prototype.hasOwnProperty.call(input, key))
+  );
+  const layerConfigs = rawLayerConfigs === undefined
+    ? legacyFixedShape
+      ? []
+      : defaults.layerConfigs.map(layer => ({ ...layer }))
+    : parseLayerConfigs(rawLayerConfigs).layers;
+  const rawMaxLayers = firstDefined(input.maxLayers, input.Max_Layers);
+  const suppliedMaxLayers = toNumber(rawMaxLayers, defaults.maxLayers);
+  const shouldMigrateLegacyInclusiveCount = legacyFixedShape && layerConfigs.length === 0;
+  const maxLayers = layerConfigs.length > 0
+    ? Math.max(...layerConfigs.map(layer => layer.layerEnd).filter(Number.isFinite), 0)
+    : shouldMigrateLegacyInclusiveCount
+      ? Math.max(0, suppliedMaxLayers - 1)
+      : suppliedMaxLayers;
 
   return {
     version: KAMA_RAINBOW_MARTIN_CONFIG_VERSION,
     timeframe: toTimeframe(firstDefined(input.timeframe, input.entryTimeframe), defaults.timeframe),
     kamaLines: parseLines(firstDefined(input.kamaLines, input.lines), defaults.kamaLines),
-    maxLayers: toNumber(firstDefined(input.maxLayers, input.Max_Layers), defaults.maxLayers),
+    maxLayers,
     multiplier: toNumber(firstDefined(input.multiplier, input.martinMultiplier), defaults.multiplier),
     gapPct: toNumber(firstDefined(input.gapPct, input.martinGapPct), defaults.gapPct),
+    layerConfigs,
     hardStopLossPct: toNumber(firstDefined(input.hardStopLossPct, input.hardStopPct), defaults.hardStopLossPct),
     trailing: {
       enabled: toBoolean(firstDefined(trailingInput.enabled, input.trailingEnabled), defaults.trailing.enabled),
@@ -242,8 +318,14 @@ export function validateKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartin
   const warnings: KamaRainbowMartinValidationIssue[] = [];
 
   const suppliedVersion = firstDefined(input.version, input.Config_Version);
-  if (suppliedVersion !== undefined && suppliedVersion !== KAMA_RAINBOW_MARTIN_CONFIG_VERSION) {
-    addIssue(issues, "version", "KRM_UNSUPPORTED_CONFIG_VERSION", `只接受 ${KAMA_RAINBOW_MARTIN_CONFIG_VERSION}`);
+  if (
+    suppliedVersion !== undefined
+    && suppliedVersion !== KAMA_RAINBOW_MARTIN_CONFIG_VERSION
+    && suppliedVersion !== KAMA_RAINBOW_MARTIN_LEGACY_CONFIG_VERSION
+  ) {
+    addIssue(issues, "version", "KRM_UNSUPPORTED_CONFIG_VERSION", `只接受 ${KAMA_RAINBOW_MARTIN_CONFIG_VERSION} 或可遷移的 ${KAMA_RAINBOW_MARTIN_LEGACY_CONFIG_VERSION}`);
+  } else if (suppliedVersion === KAMA_RAINBOW_MARTIN_LEGACY_CONFIG_VERSION) {
+    addIssue(warnings, "version", "KRM_LEGACY_CONFIG_MIGRATED", "舊 V1 快照已轉換：原 maxLayers（含底倉）會換算為 V2 加倉層數");
   }
 
   const suppliedTimeframe = firstDefined(input.timeframe, input.entryTimeframe);
@@ -301,14 +383,49 @@ export function validateKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartin
     }
   });
 
-  if (!isIntegerInRange(config.maxLayers, 1, 20)) {
-    addIssue(issues, "maxLayers", "KRM_MAX_LAYERS_INVALID", "最大層數必須為 1 至 20 的整數，並包含底倉 L1");
+  if (!isIntegerInRange(config.maxLayers, 0, KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS)) {
+    addIssue(issues, "maxLayers", "KRM_MAX_LAYERS_INVALID", `最大加倉層數必須為 0 至 ${KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} 的整數，不包含底倉`);
   }
   if (!Number.isFinite(config.multiplier) || config.multiplier < 1 || config.multiplier > 10) {
     addIssue(issues, "multiplier", "KRM_MULTIPLIER_INVALID", "倍數必須介乎 1 至 10");
   }
   if (!Number.isFinite(config.gapPct) || config.gapPct <= 0 || config.gapPct > 100) {
     addIssue(issues, "gapPct", "KRM_GAP_INVALID", "加倉間距必須大於 0 且不超過 100 個百分點");
+  }
+  const parsedLayerConfigs = parseLayerConfigs(firstDefined(input.layerConfigs, input.Martin_Layers));
+  if (parsedLayerConfigs.error) {
+    addIssue(issues, "layerConfigs", "KRM_LAYER_FORMAT_INVALID", parsedLayerConfigs.error);
+  }
+  if (config.layerConfigs.length === 0) {
+    addIssue(warnings, "layerConfigs", "KRM_FIXED_MODE_FALLBACK", "未設定分層表，將使用固定乘數與全域加倉間距");
+  } else {
+    const sortedLayers = [...config.layerConfigs].sort((a, b) => a.layerStart - b.layerStart);
+    sortedLayers.forEach((layer, index) => {
+      const path = `layerConfigs.${index}`;
+      if (!isIntegerInRange(layer.layerStart, 1, KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS)) {
+        addIssue(issues, `${path}.layerStart`, "KRM_LAYER_START_INVALID", `起始層必須為 1 至 ${KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} 的整數`);
+      }
+      if (!isIntegerInRange(layer.layerEnd, 1, KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS)) {
+        addIssue(issues, `${path}.layerEnd`, "KRM_LAYER_END_INVALID", `結束層必須為 1 至 ${KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} 的整數`);
+      }
+      if (layer.layerStart > layer.layerEnd) {
+        addIssue(issues, `${path}.layerStart`, "KRM_LAYER_RANGE_REVERSED", "起始層不可大於結束層");
+      }
+      if (!Number.isFinite(layer.multiplier) || layer.multiplier < 1 || layer.multiplier > 10) {
+        addIssue(issues, `${path}.multiplier`, "KRM_LAYER_MULTIPLIER_INVALID", "分層乘數必須介乎 1 至 10");
+      }
+      if (layer.gapPct !== undefined && (!Number.isFinite(layer.gapPct) || layer.gapPct <= 0 || layer.gapPct > 100)) {
+        addIssue(issues, `${path}.gapPct`, "KRM_LAYER_GAP_INVALID", "分層間距留空時使用全域值；填寫時必須大於 0 且不超過 100");
+      }
+      const previous = sortedLayers[index - 1];
+      if (index === 0 && layer.layerStart !== 1) {
+        addIssue(issues, `${path}.layerStart`, "KRM_LAYER_MUST_START_AT_ONE", "第一個分層必須由 L1 開始");
+      } else if (previous && layer.layerStart <= previous.layerEnd) {
+        addIssue(issues, `${path}.layerStart`, "KRM_LAYER_OVERLAP", `層級範圍與 L${previous.layerStart}–L${previous.layerEnd} 重疊`);
+      } else if (previous && layer.layerStart !== previous.layerEnd + 1) {
+        addIssue(issues, `${path}.layerStart`, "KRM_LAYER_GAP", `層級範圍必須連續；上一段結束於 L${previous.layerEnd}`);
+      }
+    });
   }
   if (!Number.isFinite(config.hardStopLossPct) || config.hardStopLossPct <= 0 || config.hardStopLossPct > 100) {
     addIssue(issues, "hardStopLossPct", "KRM_HARD_STOP_INVALID", "硬止損必須大於 0 且不超過 100 個百分點");
@@ -356,4 +473,78 @@ export function buildKamaRainbowMartinLayerQuantities(
   if (!Number.isInteger(maxLayers) || maxLayers < 1 || maxLayers > 20) return [];
   if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > 10) return [];
   return Array.from({ length: maxLayers }, (_, index) => initialQuantity * multiplier ** index);
+}
+
+/**
+ * Get the multiplier for a specific layer based on layer configs.
+ * If no layer configs are provided or the layer is not covered, returns the default multiplier.
+ */
+export function getLayerMultiplier(
+  layer: number,
+  layerConfigs: readonly KamaRainbowMartinLayerConfig[] | undefined,
+  defaultMultiplier: number,
+): number {
+  if (!layerConfigs || layerConfigs.length === 0) return defaultMultiplier;
+  const config = layerConfigs.find(cfg => layer >= cfg.layerStart && layer <= cfg.layerEnd);
+  return config ? config.multiplier : defaultMultiplier;
+}
+
+/**
+ * Get the gap percentage for a specific layer based on layer configs.
+ * If no layer configs are provided or the layer is not covered, returns the default gap.
+ */
+export function getLayerGapPct(
+  layer: number,
+  layerConfigs: readonly KamaRainbowMartinLayerConfig[] | undefined,
+  defaultGapPct: number,
+): number {
+  if (!layerConfigs || layerConfigs.length === 0) return defaultGapPct;
+  const config = layerConfigs.find(cfg => layer >= cfg.layerStart && layer <= cfg.layerEnd);
+  return config?.gapPct ?? defaultGapPct;
+}
+
+export function getKamaRainbowMartinCumulativeMultiplier(
+  addLayer: number,
+  layerConfigs: readonly KamaRainbowMartinLayerConfig[],
+  defaultMultiplier: number,
+): number {
+  if (!Number.isInteger(addLayer) || addLayer < 1) return 1;
+  let cumulative = 1;
+  for (let layer = 1; layer <= addLayer; layer += 1) {
+    cumulative *= getLayerMultiplier(layer, layerConfigs, defaultMultiplier);
+  }
+  return cumulative;
+}
+
+export function buildKamaRainbowMartinAddLayerQuantities(
+  initialQuantity: number,
+  maxAddLayers: number,
+  layerConfigs: readonly KamaRainbowMartinLayerConfig[],
+  defaultMultiplier: number,
+): number[] {
+  if (!Number.isFinite(initialQuantity) || initialQuantity <= 0) return [];
+  if (!Number.isInteger(maxAddLayers) || maxAddLayers < 0 || maxAddLayers > KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS) return [];
+  return Array.from(
+    { length: maxAddLayers },
+    (_, index) => initialQuantity * getKamaRainbowMartinCumulativeMultiplier(index + 1, layerConfigs, defaultMultiplier),
+  );
+}
+
+/**
+ * Build layer quantities using tiered martin configuration.
+ */
+export function buildTieredLayerQuantities(
+  initialQuantity: number,
+  maxLayers: number,
+  layerConfigs: readonly KamaRainbowMartinLayerConfig[] | undefined,
+  defaultMultiplier: number,
+): number[] {
+  if (!Number.isFinite(initialQuantity) || initialQuantity <= 0) return [];
+  if (!Number.isInteger(maxLayers) || maxLayers < 0 || maxLayers > KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS) return [];
+  return [initialQuantity, ...buildKamaRainbowMartinAddLayerQuantities(
+    initialQuantity,
+    maxLayers,
+    layerConfigs ?? [],
+    defaultMultiplier,
+  )];
 }

@@ -15,6 +15,13 @@ import {
 } from "../../drizzle/schema";
 import { createDefaultExecutionPolicy } from "../../shared/executionModes";
 import {
+  KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  createKamaRainbowMartinDefaultConfig,
+} from "../../shared/strategies/kamaRainbowMartin";
+import { normalizeStrategyExecutionPolicy } from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
+import {
   buildDeploymentPreflightReport,
   type DeploymentDescriptor,
   type DeploymentPreflightFacts,
@@ -67,6 +74,28 @@ function currentManifest() {
   });
 }
 
+function krmManifest() {
+  const strategyLogicHash = buildStrategyLogicHash({
+    strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+    strategyVersion: 1,
+    logicSource: "kama-rainbow-martin-v1-leg-scoped-advanced-runtime-v1",
+  });
+  return createVersionedCapabilityManifest({
+    strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+    strategyVersion: 1,
+    strategyLogicHash,
+    certification: "CERTIFIED",
+    capabilities: {
+      supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+      martingaleLayers: true,
+      independentLegState: true,
+      hedgeGuard: true,
+      preciseLegClose: true,
+      reason: "KRM leg-scoped M2/H3 runtime",
+    },
+  });
+}
+
 function strategyRow(overrides: Partial<Strategy> = {}): Strategy {
   const manifest = currentManifest();
   return {
@@ -99,7 +128,7 @@ function passingReport(
     deploymentRevision?: number;
   } = {},
 ): DeploymentPreflightReport {
-  const manifest = currentManifest();
+  const manifest = row.capabilitySnapshot as ReturnType<typeof currentManifest>;
   const executionMode = target.executionMode ?? row.executionMode;
   const executionPolicy = target.executionPolicy ?? row.executionPolicy;
   const descriptor: DeploymentDescriptor = {
@@ -117,6 +146,9 @@ function passingReport(
     apiKeyId: row.apiKeyId,
     exchange: row.exchange,
     symbol: row.symbol,
+    strategyConfig: row.martinState && typeof row.martinState === "object"
+      ? (row.martinState as Record<string, unknown>).__snapshotConfig
+      : undefined,
   };
   const facts: DeploymentPreflightFacts = {
     now: NOW,
@@ -477,6 +509,45 @@ describe("deploymentLifecycleRepository", () => {
     expect(created.preflightReport).toBeNull();
   });
 
+  it("creates KRM H3 with canonical 4% policy and a complete editable V2 default config", async () => {
+    const harness = createDbHarness(null);
+    mocks.getDb.mockResolvedValue(harness.db);
+    const manifest = krmManifest();
+
+    const created = await createCanonicalDeployment({
+      userId: OWNER_ID,
+      name: "KRM canonical H3",
+      apiKeyId: 12,
+      symbol: "btcusdt",
+      strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+      executionMode: "HEDGE_GUARDED",
+      executionPolicy: {
+        ...createDefaultExecutionPolicy("HEDGE_GUARDED"),
+        primaryLossTriggerPct: 9,
+      },
+      capabilityManifest: manifest,
+      positionSize: 100,
+      positionMode: "usdt",
+    });
+
+    expect(created.executionPolicy).toMatchObject({
+      mode: "HEDGE_GUARDED",
+      primaryLossTriggerPct: 4,
+      hedgeMartinEnabled: false,
+    });
+    expect(created.martinState).toMatchObject({
+      __snapshotConfig: {
+        timeframe: "M30",
+        maxLayers: 11,
+        layerConfigs: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.layerConfigs,
+      },
+      [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: {
+        timeframe: "M30",
+        layerConfigs: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.layerConfigs,
+      },
+    });
+  });
+
   it("copies configuration into a fresh disabled deployment without runtime state", async () => {
     const source = strategyRow({
       enabled: true,
@@ -575,5 +646,68 @@ describe("deploymentLifecycleRepository", () => {
         },
       },
     })).rejects.toThrow("TRANSITION_KEY_CONFLICT");
+  });
+
+  it("switches KRM M2 to H3 without policy or custom layer-config drift", async () => {
+    const manifest = krmManifest();
+    const customConfig = createKamaRainbowMartinDefaultConfig();
+    customConfig.layerConfigs.push({ layerStart: 12, layerEnd: 14, multiplier: 1.2, gapPct: 3 });
+    customConfig.maxLayers = 14;
+    const row = strategyRow({
+      strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+      strategyVersion: manifest.strategyVersion,
+      capabilitySnapshot: manifest,
+      executionMode: "MULTI_POSITION",
+      executionPolicy: createDefaultExecutionPolicy("MULTI_POSITION"),
+      martinState: {
+        __snapshotConfig: customConfig,
+        [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: customConfig,
+      },
+      activationState: "DISABLED",
+      enabled: false,
+    });
+    const harness = createDbHarness(row);
+    mocks.getDb.mockResolvedValue(harness.db);
+    const requestedPolicy = {
+      ...createDefaultExecutionPolicy("HEDGE_GUARDED"),
+      primaryLossTriggerPct: 9,
+    };
+    const canonicalPolicy = normalizeStrategyExecutionPolicy(
+      KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+      requestedPolicy,
+    );
+    const report = passingReport(row, {
+      executionMode: "HEDGE_GUARDED",
+      executionPolicy: canonicalPolicy,
+      deploymentRevision: row.deploymentRevision + 1,
+    });
+
+    const result = await switchDeploymentMode({
+      deploymentId: row.id,
+      userId: OWNER_ID,
+      expectedRevision: row.deploymentRevision,
+      transitionKey: "krm-m2-to-h3-canonical",
+      executionMode: "HEDGE_GUARDED",
+      executionPolicy: requestedPolicy,
+      preflightReport: report,
+      reasonCode: "TEST_KRM_H3_SWITCH",
+      reason: "Preserve canonical KRM V2 config while switching mode.",
+      now: new Date(NOW),
+    });
+
+    expect(result.deployment.executionPolicy).toMatchObject({
+      mode: "HEDGE_GUARDED",
+      primaryLossTriggerPct: 4,
+      hedgeMartinEnabled: false,
+    });
+    expect(result.deployment.martinState).toMatchObject({
+      __snapshotConfig: {
+        timeframe: "M30",
+        maxLayers: 14,
+        layerConfigs: expect.arrayContaining([
+          { layerStart: 12, layerEnd: 14, multiplier: 1.2, gapPct: 3 },
+        ]),
+      },
+    });
   });
 });

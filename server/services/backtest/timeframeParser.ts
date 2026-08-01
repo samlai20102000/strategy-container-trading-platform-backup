@@ -70,7 +70,7 @@ export function convertToOKXFormat(timeframe: string): string {
   } else if (parsed.unit === "h") {
     bar = `${parsed.value}H`;
   } else {
-    bar = `${parsed.value}D`;
+    bar = parsed.value === 7 ? "1W" : `${parsed.value}D`;
   }
 
   if (!OKX_SUPPORTED_BARS.has(bar)) {
@@ -83,7 +83,7 @@ export function convertToOKXFormat(timeframe: string): string {
 
 /** 取得 OKX 支援的時間框架清單（供前端下拉過濾） */
 export function getOKXSupportedTimeframes(): string[] {
-  return ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "2d", "3d"];
+  return ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "2d", "3d", "7d"];
 }
 
 /**
@@ -98,7 +98,9 @@ export function convertToBybitFormat(timeframe: string): string {
   if (parsed.unit === "h") {
     return String(parsed.value * 60);
   }
-  return parsed.value === 1 ? "D" : String(parsed.value * 1440);
+  if (parsed.value === 1) return "D";
+  if (parsed.value === 7) return "W";
+  return String(parsed.value * 1440);
 }
 
 /** 取得時間框架的總秒數 */

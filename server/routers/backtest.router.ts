@@ -12,7 +12,7 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { listRegisteredStrategies } from "../services/strategyStudio";
 import { backtestJobManager } from "../services/backtest/backtestJobManager";
 import { getBacktestDatabase } from "../services/backtest/backtestDatabase";
-import { getSupportedTimeframes, isValidTimeframe, convertToOKXFormat } from "../services/backtest/timeframeParser";
+import { getSupportedTimeframes, isValidTimeframe, convertToOKXFormat, parseTimeframe } from "../services/backtest/timeframeParser";
 import { runOptimization } from "../services/backtest/optimizer";
 import { runMultiSymbolBacktest } from "../services/backtest/multiSymbolEngine";
 import { scanJobManager } from "../services/backtest/scanEngine";
@@ -61,6 +61,8 @@ import {
 } from "../../shared/strategies/kama3kMartinV41";
 import {
   assertValidKamaRainbowMartinConfig,
+  getLayerGapPct,
+  getLayerMultiplier,
   getKamaRainbowMartinTimeframeMinutes,
   KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
@@ -255,7 +257,7 @@ export function validateBacktestRequest(input: z.infer<typeof backtestRequestSch
     try {
       convertToOKXFormat(input.timeframe);
     } catch (e: any) {
-      throw new Error(`OKX 不支援此時間框架：${input.timeframe}。請選擇 1m/3m/5m/15m/30m/1h/2h/4h/6h/12h/1d`);
+      throw new Error(`OKX 不支援此時間框架：${input.timeframe}。請選擇 1m/3m/5m/15m/30m/1h/2h/4h/6h/12h/1d/7d`);
     }
   }
   const startMs = input.startDate < 1e12 ? input.startDate * 1000 : input.startDate;
@@ -277,6 +279,13 @@ export function validateBacktestRequest(input: z.infer<typeof backtestRequestSch
     } else if (input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
       const nestedConfig = input.config[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY];
       const config = assertValidKamaRainbowMartinConfig(nestedConfig ?? input.config);
+      const expectedSeconds = getKamaRainbowMartinTimeframeMinutes(config.timeframe) * 60;
+      const requestedSeconds = parseTimeframe(input.timeframe).totalSeconds;
+      if (requestedSeconds !== expectedSeconds) {
+        throw new Error(
+          `Kama 彩虹馬丁週期不一致：策略配置為 ${config.timeframe}，回測資料為 ${input.timeframe}。請重新選擇時間框架後再提交。`,
+        );
+      }
       input.config = { ...input.config, ...config };
     } else if (input.strategyKey === V25_STRATEGY_KEY) {
       const config = assertValidV25Config(input.config);
@@ -826,7 +835,9 @@ export const backtestRouter = router({
             executionPolicy: artifactBundle.artifact.executionPolicy,
             executionPolicyVersion: artifactBundle.artifact.executionPolicyVersion,
           } : {}),
-          martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
+          martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig
+            ? getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier)
+            : firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? strategy.martinMultiplier),
           maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
@@ -837,8 +848,9 @@ export const backtestRouter = router({
                   ? kamaRainbowMartinConfig.maxLayers
                   : config.Max_Layers ?? (strategy as any).maxMartinLevel),
           martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
-            kamaRainbowMartinConfig?.gapPct
-              ?? nextLadderRange?.triggerSpacingPct
+            (kamaRainbowMartinConfig
+              ? getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct)
+              : nextLadderRange?.triggerSpacingPct)
               ?? (firstRainbowRange
                 ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
                 : firstV25Range?.gap ?? config.Martin_Step_Pct ?? strategy.martinSpacingPct),
@@ -984,7 +996,9 @@ export const backtestRouter = router({
         stopLossPct: v41Columns?.stopLossPct ?? String(kamaRainbowMartinConfig?.hardStopLossPct ?? (rainbowConfig || ladderConfig ? 0 : (v25Config?.Hard_Stop_Loss_Pct ?? finiteNumber(config.stop_loss_pct, 0)))),
         takeProfitPct: v41Columns?.takeProfitPct ?? String(kamaRainbowMartinConfig ? 0 : (ladderConfig?.Trailing_Activation_Pct ?? rainbowConfig?.Take_Profit_Pct ?? v25Config?.Take_Profit_Pct ?? finiteNumber(config.Target_TP_Pct, 0))),
         maxDailyLoss: String(finiteNumber(config.daily_loss_limit, 0)),
-        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
+        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig
+          ? getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier)
+          : firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? 1),
         maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbowConfig
@@ -995,8 +1009,9 @@ export const backtestRouter = router({
                 ? kamaRainbowMartinConfig.maxLayers
                 : Math.max(1, Math.round(finiteNumber(config.Max_Layers, 1)))),
         martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
-          kamaRainbowMartinConfig?.gapPct
-            ?? nextLadderRange?.triggerSpacingPct
+          (kamaRainbowMartinConfig
+            ? getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct)
+            : nextLadderRange?.triggerSpacingPct)
             ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? 0),
@@ -1136,7 +1151,9 @@ export const backtestRouter = router({
           disabledReason: "策略配置已更新；必須重新通過部署 preflight 後才可啟用",
           capabilitySnapshot: capabilityManifest as unknown as Record<string, unknown>,
           strategyVersion: capabilityManifest.strategyVersion,
-          martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
+          martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig
+            ? getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier)
+            : firstLadderRange?.lotMultiplier ?? firstRainbowRange?.multiplier ?? firstV25Range?.multiplier ?? config.Martin_Multiplier ?? instance.martinMultiplier),
           maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
             ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
             : rainbowConfig
@@ -1147,8 +1164,9 @@ export const backtestRouter = router({
                   ? kamaRainbowMartinConfig.maxLayers
                   : config.Max_Layers ?? (instance as any).maxMartinLevel),
           martinSpacingPct: v41Columns?.martinSpacingPct ?? String(
-            kamaRainbowMartinConfig?.gapPct
-              ?? nextLadderRange?.triggerSpacingPct
+            (kamaRainbowMartinConfig
+              ? getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct)
+              : nextLadderRange?.triggerSpacingPct)
               ?? (firstRainbowRange
               ? (firstRainbowRange.useGlobalSpacing ? rainbowConfig?.Global_Spacing_Pct : firstRainbowRange.spacingPct)
               : firstV25Range?.gap ?? config.Martin_Step_Pct ?? instance.martinSpacingPct),

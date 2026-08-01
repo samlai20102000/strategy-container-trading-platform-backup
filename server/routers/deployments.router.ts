@@ -3,12 +3,14 @@ import { z } from "zod";
 import type { Strategy } from "../../drizzle/schema";
 import {
   EXECUTION_MODES,
-  createDefaultExecutionPolicy,
-  normalizeExecutionModePolicy,
   type DeploymentActivationState,
   type ExecutionMode,
   type ExecutionPolicy,
 } from "../../shared/executionModes";
+import {
+  createDefaultStrategyExecutionPolicy,
+  normalizeStrategyExecutionPolicy,
+} from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createAdapter } from "../exchanges/factory";
 import {
@@ -298,9 +300,9 @@ export const deploymentsRouter = router({
     .mutation(async ({ ctx, input }) => {
       try {
         const manifest = await requireStrategyCapabilityManifest(input.strategyKey);
-        const executionPolicy = normalizeExecutionModePolicy(
-          input.executionPolicy ?? createDefaultExecutionPolicy(input.executionMode),
-        );
+        const executionPolicy = input.executionPolicy
+          ? normalizeStrategyExecutionPolicy(input.strategyKey, input.executionPolicy)
+          : createDefaultStrategyExecutionPolicy(input.strategyKey, input.executionMode);
         return safeDeployment(await createCanonicalDeployment({
           ...input,
           userId: ctx.user.id,
@@ -522,7 +524,11 @@ export const deploymentsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const targetPolicy = normalizeExecutionModePolicy(input.executionPolicy);
+        const deployment = await getDeploymentForPreflight(input.deploymentId, ctx.user.id);
+        const targetPolicy = normalizeStrategyExecutionPolicy(
+          deployment.strategyKey,
+          input.executionPolicy,
+        );
         if (targetPolicy.mode !== input.executionMode) throw new Error("POLICY_MODE_MISMATCH");
         const retry = await getAppliedRetry({
           deploymentId: input.deploymentId,
@@ -535,7 +541,6 @@ export const deploymentsRouter = router({
         });
         if (retry) return { report: reportFromRetry(retry), ...safeMutation(retry) };
 
-        const deployment = await getDeploymentForPreflight(input.deploymentId, ctx.user.id);
         const report = await buildReadOnlyPreflight({
           deployment,
           targetMode: input.executionMode,

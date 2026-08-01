@@ -245,6 +245,7 @@ export function createKamaRainbowMartinRuntimeMeta(
           ...seed.configAtOpen,
           trailing: { ...seed.configAtOpen.trailing },
           kamaLines: seed.configAtOpen.kamaLines.map(line => ({ ...line })),
+          layerConfigs: (seed.configAtOpen.layerConfigs ?? []).map(layer => ({ ...layer })),
         }
       : null,
     initialPositionSize: seed?.initialPositionSize ? { ...seed.initialPositionSize } : null,
@@ -325,7 +326,14 @@ export function scaleKamaRainbowMartinPositionSize(
   multiplier: number,
   layer: number,
 ): KamaRainbowMartinPositionSize {
-  const value = size.value * multiplier ** Math.max(0, layer - 1);
+  return multiplyKamaRainbowMartinPositionSize(size, multiplier ** Math.max(0, layer - 1));
+}
+
+export function multiplyKamaRainbowMartinPositionSize(
+  size: KamaRainbowMartinPositionSize,
+  cumulativeMultiplier: number,
+): KamaRainbowMartinPositionSize {
+  const value = size.value * cumulativeMultiplier;
   return { mode: size.mode, value: Math.round(value * 1e12) / 1e12 };
 }
 

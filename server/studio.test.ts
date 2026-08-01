@@ -180,10 +180,10 @@ describe("Kama 彩虹馬丁註冊橋接", () => {
     config,
   };
 
-  it("公開獨立 key、名稱、V1 canonical config 與馬丁 capability", () => {
+  it("公開獨立 key、名稱、V2 canonical config 與馬丁 capability", () => {
     expect(engine.key).toBe(KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
     expect(engine.name).toBe(KAMA_RAINBOW_MARTIN_STRATEGY_NAME);
-    expect(engine.defaultConfig.version).toBe("kamaRainbowMartin.v1");
+    expect(engine.defaultConfig.version).toBe(config.version);
     expect(engine.defaultConfig.kamaLines).toHaveLength(2);
     expect(engine.capabilities.martingaleLayers).toBe(true);
     expect(engine.validateConfig(engine.defaultConfig).valid).toBe(true);

@@ -1,5 +1,7 @@
 import {
   createKamaRainbowMartinDefaultConfig,
+  getKamaRainbowMartinCumulativeMultiplier,
+  getLayerGapPct,
   validateKamaRainbowMartinConfig,
   type KamaRainbowMartinConfig,
 } from "../../../shared/strategies/kamaRainbowMartin";
@@ -7,7 +9,7 @@ import type { StrategyState } from "../base";
 import {
   createKamaRainbowMartinRuntimeMeta,
   createKamaRainbowMartinRuntimeState,
-  scaleKamaRainbowMartinPositionSize,
+  multiplyKamaRainbowMartinPositionSize,
   type KamaRainbowMartinFillRecord,
   type KamaRainbowMartinPositionSize,
   type KamaRainbowMartinRuntimeMeta,
@@ -41,9 +43,19 @@ export interface KamaRainbowMartinManagementMetrics {
   trailingActive: boolean;
   peakProfitPct: number;
   triggerProfitPct: number | null;
+  /** Internal position layer, where L1 is the base fill. */
   currentLayer: number;
+  /** User-facing add layer, where L1 is the first add after the base fill. */
+  currentAddLayer: number;
+  /** Total internal position layers, including the base fill. */
   maxLayers: number;
+  /** User-facing maximum number of add layers, excluding the base fill. */
+  maxAddLayers: number;
+  /** Next internal position layer, including the base fill offset. */
   nextLayer: number | null;
+  /** Next user-facing add layer. */
+  nextAddLayer: number | null;
+  nextGapPct: number | null;
   nextTriggerPrice: number | null;
   distanceToNextLayerPct: number | null;
   averageCost: number;
@@ -168,8 +180,15 @@ export function evaluateKamaRainbowMartinManagement(
   const eventKey = input.riskEventKey?.trim() || String(input.now);
   const profitPct = calculateKamaRainbowMartinProfitPct(nextState, currentPrice);
   const trailing = calculateKamaRainbowMartinTrailing(profitPct, runtime, config);
-  const nextLayer = nextState.currentLayer < config.maxLayers ? nextState.currentLayer + 1 : null;
-  const nextTriggerPrice = nextLayer == null ? null : calculateNextTriggerPrice(nextState, runtime, config.gapPct);
+  const currentAddLayer = Math.max(0, nextState.currentLayer - 1);
+  const nextAddLayer = currentAddLayer < config.maxLayers ? currentAddLayer + 1 : null;
+  const nextLayer = nextAddLayer == null ? null : nextAddLayer + 1;
+  const nextGapPct = nextAddLayer == null
+    ? null
+    : getLayerGapPct(nextAddLayer, config.layerConfigs, config.gapPct);
+  const nextTriggerPrice = nextGapPct == null
+    ? null
+    : calculateNextTriggerPrice(nextState, runtime, nextGapPct);
   const metrics: KamaRainbowMartinManagementMetrics = {
     profitPct,
     hardStopLossPct: config.hardStopLossPct,
@@ -178,8 +197,12 @@ export function evaluateKamaRainbowMartinManagement(
     peakProfitPct: trailing.peakProfitPct,
     triggerProfitPct: trailing.triggerProfitPct,
     currentLayer: nextState.currentLayer,
-    maxLayers: config.maxLayers,
+    currentAddLayer,
+    maxLayers: config.maxLayers + 1,
+    maxAddLayers: config.maxLayers,
     nextLayer,
+    nextAddLayer,
+    nextGapPct,
     nextTriggerPrice,
     distanceToNextLayerPct: calculateDistanceToTriggerPct(nextState, currentPrice, nextTriggerPrice),
     averageCost: nextState.avgPrice,
@@ -243,19 +266,23 @@ export function evaluateKamaRainbowMartinManagement(
     });
   }
 
-  if (nextLayer != null && nextTriggerPrice != null) {
+  if (nextLayer != null && nextAddLayer != null && nextGapPct != null && nextTriggerPrice != null) {
     const triggered = nextState.isLong ? currentPrice <= nextTriggerPrice : currentPrice >= nextTriggerPrice;
     if (triggered) {
+      const cumulativeMultiplier = getKamaRainbowMartinCumulativeMultiplier(
+        nextAddLayer,
+        config.layerConfigs,
+        config.multiplier,
+      );
       return decide(nextState, runtime, eventKey, input.now, metrics, {
         action: nextState.isLong ? "add_long" : "add_short",
         reasonCode: "KRM_MARTIN_ADD",
-        reason: `腿級固定間距馬丁 L${nextLayer}：相對上一層實際成交價逆向 ${config.gapPct}%`,
+        reason: `分層馬丁加倉 L${nextAddLayer}（持倉層 L${nextLayer}）：相對上一層實際成交價逆向 ${nextGapPct}%，累積倍率 ${cumulativeMultiplier.toFixed(4)}x`,
         price: currentPrice,
         layerNum: nextLayer,
-        orderSize: scaleKamaRainbowMartinPositionSize(
+        orderSize: multiplyKamaRainbowMartinPositionSize(
           runtime.initialPositionSize ?? { mode: "quantity", value: runtime.fills.filter(fill => fill.layer === 1).reduce((sum, fill) => sum + fill.quantity, 0) },
-          config.multiplier,
-          nextLayer,
+          cumulativeMultiplier,
         ),
       });
     }
@@ -265,14 +292,14 @@ export function evaluateKamaRainbowMartinManagement(
     return decide(nextState, runtime, eventKey, input.now, metrics, {
       action: "hold",
       reasonCode: "KRM_MARTIN_MAX_LAYER",
-      reason: `已達最大層數 L${config.maxLayers}；只監控 KILL、硬止損與 trailing`,
+      reason: `已完成最大加倉層 L${config.maxLayers}（連同底倉共 ${config.maxLayers + 1} 層）；只監控 KILL、硬止損與 trailing`,
       price: currentPrice,
     });
   }
   return decide(nextState, runtime, eventKey, input.now, metrics, {
     action: "hold",
     reasonCode: "KRM_MARTIN_WAIT",
-    reason: `持倉 L${nextState.currentLayer}；下一層 L${nextLayer} 尚未達上一層 fill 的 ${config.gapPct}% 逆向偏離`,
+    reason: `目前完成加倉 L${currentAddLayer}（持倉層 L${nextState.currentLayer}）；下一加倉 L${nextAddLayer} 尚未達上一層 fill 的 ${nextGapPct}% 逆向偏離`,
     price: currentPrice,
   });
 }
@@ -317,7 +344,9 @@ export function applyKamaRainbowMartinFillToState(
     throw new Error(`Kama 彩虹馬丁底倉配置無效：${configValidation.issues.map(issue => issue.path).join(", ")}`);
   }
   const config = configValidation.config;
-  if (targetLayer > config.maxLayers) throw new Error("Kama 彩虹馬丁成交層數超過 pinned maxLayers");
+  if (targetLayer > config.maxLayers + 1) {
+    throw new Error("Kama 彩虹馬丁成交層數超過 pinned 最大加倉層（含底倉偏移）");
+  }
 
   const record: KamaRainbowMartinFillRecord = {
     fillId: fill.fillId,

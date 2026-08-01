@@ -23,6 +23,11 @@ import {
   type ExecutionMode,
   type ExecutionPolicy,
 } from "../../shared/executionModes";
+import {
+  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  createKamaRainbowMartinDefaultConfig,
+} from "../../shared/strategies/kamaRainbowMartin";
+import { normalizeStrategyExecutionPolicy } from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
 import type { ExchangeAdapter, Position } from "../exchanges/types";
 import { getDb } from "../db";
 import { generateWebhookSecret } from "../lib/crypto";
@@ -41,6 +46,7 @@ import {
   type VersionedStrategyCapabilityManifest,
 } from "./strategyArtifacts";
 import {
+  attachSnapshotConfig,
   getBoundStrategyConfig,
   pickStrategyConfigState,
 } from "./strategySnapshotConfig";
@@ -419,7 +425,7 @@ function assertCertifiedPolicy(
   executionPolicy: unknown,
 ): ExecutionPolicy {
   if (manifest.strategyKey !== strategyKey) throw new Error("CAPABILITY_STRATEGY_KEY_MISMATCH");
-  const policy = normalizeExecutionModePolicy(executionPolicy);
+  const policy = normalizeStrategyExecutionPolicy(strategyKey, executionPolicy);
   if (policy.mode !== executionMode) throw new Error("POLICY_MODE_MISMATCH");
   if (!capabilityManifestSupportsMode(manifest, executionMode)) {
     throw new Error(`EXECUTION_MODE_NOT_CERTIFIED:${executionMode}`);
@@ -508,6 +514,14 @@ export async function createCanonicalDeployment(
   );
   const positionSize = input.positionSize ?? 0;
   const positionMode = input.positionMode ?? "quantity";
+  const resetState = resetCopiedMartinState(null, positionSize);
+  const martinState = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+    ? attachSnapshotConfig(
+      resetState,
+      strategyKey,
+      createKamaRainbowMartinDefaultConfig() as unknown as Record<string, unknown>,
+    )
+    : resetState;
   const insert: InsertStrategy = {
     userId: input.userId,
     name,
@@ -530,7 +544,7 @@ export async function createCanonicalDeployment(
     martinMultiplier: String(input.martinMultiplier ?? 1),
     maxMartinLevel: input.maxMartinLevel ?? 1,
     martinSpacingPct: String(input.martinSpacingPct ?? 0),
-    martinState: resetCopiedMartinState(null, positionSize),
+    martinState,
     reentryEnabled: input.reentryEnabled ?? true,
     reentryCooldownBars: input.reentryCooldownBars ?? 1,
     strategyKey,
@@ -639,11 +653,11 @@ export async function updateDeploymentPolicy(
   const reasonCode = boundedText(input.reasonCode, 80, "reasonCode");
   const reason = boundedText(input.reason, 2_000, "reason");
   const now = input.now ?? new Date();
-  const policy = normalizeExecutionModePolicy(input.executionPolicy);
-  const targetPolicyHash = buildExecutionPolicyHash(policy);
 
   return db.transaction(async tx => {
     const current = await lockOwnedDeployment(tx, input.deploymentId, input.userId);
+    const policy = normalizeStrategyExecutionPolicy(current.strategyKey, input.executionPolicy);
+    const targetPolicyHash = buildExecutionPolicyHash(policy);
     if (policy.mode !== current.executionMode) throw new Error("POLICY_MODE_MISMATCH");
     const existing = await findTransition(tx, transitionKey);
     if (existing) {
@@ -667,7 +681,10 @@ export async function updateDeploymentPolicy(
     }
     assertFlatForModeSwitch(await collectLedgerCounts(tx, current.id, current.userId));
     const fromPolicyHash = buildExecutionPolicyHash(
-      normalizeExecutionModePolicy(current.executionPolicy ?? { mode: current.executionMode }),
+      normalizeStrategyExecutionPolicy(
+        current.strategyKey,
+        current.executionPolicy ?? { mode: current.executionMode },
+      ),
     );
     await tx.insert(modeTransitions).values({
       transitionKey,
@@ -1136,11 +1153,15 @@ export async function switchDeploymentMode(
   const reasonCode = boundedText(input.reasonCode, 80, "reasonCode");
   const reason = boundedText(input.reason, 2_000, "reason");
   const now = input.now ?? new Date();
-  const targetPolicy: ExecutionPolicy = normalizeExecutionModePolicy(input.executionPolicy);
-  if (targetPolicy.mode !== input.executionMode) throw new Error("POLICY_MODE_MISMATCH");
 
   return db.transaction(async tx => {
     const current = await lockOwnedDeployment(tx, input.deploymentId, input.userId);
+    const targetPolicy = normalizeStrategyExecutionPolicy(
+      current.strategyKey,
+      input.executionPolicy,
+    );
+    if (targetPolicy.mode !== input.executionMode) throw new Error("POLICY_MODE_MISMATCH");
+    const toPolicyHash = buildExecutionPolicyHash(targetPolicy);
     const existing = await findTransition(tx, transitionKey);
     if (existing) {
       assertTransitionIdentity(existing, {
@@ -1149,6 +1170,7 @@ export async function switchDeploymentMode(
         expectedRevision: input.expectedRevision,
         toState: "READY_DISABLED",
         toMode: input.executionMode,
+        toPolicyHash,
       });
       if (existing.status !== "APPLIED") throw new Error("TRANSITION_RETRY_NOT_APPLIED");
       return {
@@ -1175,9 +1197,11 @@ export async function switchDeploymentMode(
     assertFlatForModeSwitch(await collectLedgerCounts(tx, current.id, current.userId));
 
     const fromPolicyHash = buildExecutionPolicyHash(
-      normalizeExecutionModePolicy(current.executionPolicy ?? { mode: current.executionMode }),
+      normalizeStrategyExecutionPolicy(
+        current.strategyKey,
+        current.executionPolicy ?? { mode: current.executionMode },
+      ),
     );
-    const toPolicyHash = buildExecutionPolicyHash(targetPolicy);
     const preflightReport = input.preflightReport;
     await tx.insert(modeTransitions).values({
       transitionKey,

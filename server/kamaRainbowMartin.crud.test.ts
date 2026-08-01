@@ -168,6 +168,11 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
       hardStopLossPct: 7,
       gapPct: 2.5,
       multiplier: 1.8,
+      maxLayers: 6,
+      layerConfigs: [
+        { layerStart: 1, layerEnd: 2, multiplier: 2.25, gapPct: 0.75 },
+        { layerStart: 3, layerEnd: 6, multiplier: 1.2, gapPct: 1.4 },
+      ],
     };
 
     const result = await appRouter.createCaller(createContext()).strategies.update({
@@ -182,9 +187,9 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
     expect(data).toMatchObject({
       stopLossPct: "7",
       takeProfitPct: "0",
-      martinMultiplier: "1.8",
+      martinMultiplier: "2.25",
       maxMartinLevel: nextConfig.maxLayers,
-      martinSpacingPct: "2.5",
+      martinSpacingPct: "0.75",
       kLinePeriod: 30,
       reentryEnabled: false,
     });

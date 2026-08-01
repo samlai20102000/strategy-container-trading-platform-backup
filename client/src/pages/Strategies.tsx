@@ -252,6 +252,37 @@ function finiteSnapshotNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function deriveKamaRainbowMartinFormBridge(config: KamaRainbowMartinConfig): {
+  martinMultiplier: number;
+  maxMartinLevel: number;
+  martinSpacingPct: number;
+  martinMode: "fixed" | "layered";
+} {
+  const orderedLayers = [...config.layerConfigs].sort(
+    (left, right) => left.layerStart - right.layerStart || left.layerEnd - right.layerEnd,
+  );
+  const firstLayer = orderedLayers[0];
+  const derivedMaxLayer = orderedLayers.length > 0
+    ? Math.max(...orderedLayers.map((layer) => layer.layerEnd))
+    : config.maxLayers;
+
+  return {
+    martinMultiplier: firstLayer?.multiplier ?? config.multiplier,
+    maxMartinLevel: derivedMaxLayer,
+    martinSpacingPct: firstLayer?.gapPct ?? config.gapPct,
+    martinMode: orderedLayers.length > 0 ? "layered" : "fixed",
+  };
+}
+
+function cloneKamaRainbowMartinConfig(config: KamaRainbowMartinConfig): Record<string, unknown> {
+  return {
+    ...config,
+    kamaLines: config.kamaLines.map((line) => ({ ...line })),
+    layerConfigs: config.layerConfigs.map((layer) => ({ ...layer })),
+    trailing: { ...config.trailing },
+  };
+}
+
 function formatSnapshotValue(value: unknown): string {
   if (value === null) return "null";
   if (value === undefined) return "—";
@@ -494,6 +525,7 @@ function StrategiesContent() {
       const rainbowConfig = normalizeRainbow20415Config(cfg);
       const trendLadderConfig = normalizeRainbowTrendLadderConfig(cfg);
       const kamaRainbowMartinConfig = normalizeKamaRainbowMartinConfig(cfg);
+      const kamaRainbowMartinBridge = deriveKamaRainbowMartinFormBridge(kamaRainbowMartinConfig);
       const v41Config = normalizeV41Config(cfg);
       const v40EntryGate = normalizeV40EntryGateValue(cfg);
       const firstRainbowRange = rainbowConfig.Martin_Ranges.find((range) => range.enabled);
@@ -511,10 +543,10 @@ function StrategiesContent() {
         direction: cfg.Direction || 'both',
         stopLossPct: isKamaRainbowMartinImport ? String(kamaRainbowMartinConfig.hardStopLossPct) : isV41Import ? String(v41Config.Max_Loss_Pct) : isV25Import ? String(v25Config.Hard_Stop_Loss_Pct) : emptyForm.stopLossPct,
         takeProfitPct: isKamaRainbowMartinImport ? "0" : isV41Import ? String(v41Config.Target_TP_Pct) : isTrendLadderImport ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbowImport ? String(rainbowConfig.Take_Profit_Pct) : isV25Import ? String(v25Config.Take_Profit_Pct) : emptyForm.takeProfitPct,
-        martinMultiplier: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.multiplier : isV41Import ? v41Config.Martin_Multiplier : isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
-        maxMartinLevel: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.maxLayers : isV41Import ? v41Config.Max_Layers : isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
-        martinSpacingPct: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.gapPct : isV41Import ? v41Config.Martin_Step_Pct : isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
-        martinLayersJson: isV41Import ? JSON.stringify(v41Config.Martin_Layers) : martinLayersJson,
+        martinMultiplier: String(isKamaRainbowMartinImport ? kamaRainbowMartinBridge.martinMultiplier : isV41Import ? v41Config.Martin_Multiplier : isTrendLadderImport ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbowImport ? (firstRainbowRange?.multiplier ?? 1) : isV25Import ? (v25Config.Martin_Ranges[0]?.multiplier ?? 1) : (cfg.Martin_Multiplier ?? 1.5)),
+        maxMartinLevel: String(isKamaRainbowMartinImport ? kamaRainbowMartinBridge.maxMartinLevel : isV41Import ? v41Config.Max_Layers : isTrendLadderImport ? trendLadderConfig.Max_Layers : isRainbowImport ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig.Martin_Ranges)) : isV25Import ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges)) : (cfg.Max_Layers ?? 11)),
+        martinSpacingPct: String(isKamaRainbowMartinImport ? kamaRainbowMartinBridge.martinSpacingPct : isV41Import ? v41Config.Martin_Step_Pct : isTrendLadderImport ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : isRainbowImport ? (firstRainbowRange?.useGlobalSpacing ? rainbowConfig.Global_Spacing_Pct : firstRainbowRange?.spacingPct ?? rainbowConfig.Global_Spacing_Pct) : isV25Import ? (v25Config.Martin_Ranges[0]?.gap ?? 0) : (cfg.Martin_Step_Pct ?? 2)),
+        martinLayersJson: isKamaRainbowMartinImport ? JSON.stringify(kamaRainbowMartinConfig.layerConfigs) : isV41Import ? JSON.stringify(v41Config.Martin_Layers) : martinLayersJson,
         maxLossPct: String(isV41Import ? v41Config.Max_Loss_Pct : (cfg.Max_Loss_Pct || 6)),
         callbackPct: String(isKamaRainbowMartinImport ? kamaRainbowMartinConfig.trailing.callbackPct : isV41Import ? v41Config.Callback_Pct : isTrendLadderImport ? trendLadderConfig.Trailing_Callback_Pct : (cfg.Callback_Pct || 0.1)),
         kLinePeriod: String(isKamaRainbowMartinImport ? KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[kamaRainbowMartinConfig.timeframe] : isV41Import ? v41Config.K_Line_Period : isTrendLadderImport ? trendLadderConfig.Management_Interval_Minutes : isRainbowImport ? rainbowConfig.Entry_Timeframe_Minutes : isV25Import ? v25Config.K_Line_Period : (cfg.K_Line_Period ?? 15)),
@@ -524,7 +556,7 @@ function StrategiesContent() {
         Initial_Capital: String(isV41Import ? v41Config.Initial_Capital : isTrendLadderImport ? trendLadderConfig.Initial_Capital : (cfg.Initial_Capital || 100)),
         First_Order_Pct: String(isV41Import ? v41Config.First_Order_Pct : (cfg.First_Order_Pct || 0.5)),
         Max_Loss_Pct: String(isV41Import ? v41Config.Max_Loss_Pct : (cfg.Max_Loss_Pct || 6)),
-        martin_mode: isV41Import || martinLayersJson.trim() ? 'layered' : 'fixed',
+        martin_mode: isKamaRainbowMartinImport ? kamaRainbowMartinBridge.martinMode : isV41Import || martinLayersJson.trim() ? 'layered' : 'fixed',
         v2_5: isV25Import ? v25Config : createV25DefaultConfig(),
         v2_0: isRainbowImport ? rainbowConfig : createRainbow20415DefaultConfig(),
         rainbowTrendLadder: isTrendLadderImport ? trendLadderConfig : createRainbowTrendLadderDefaultConfig(),
@@ -716,6 +748,7 @@ function StrategiesContent() {
     const kamaRainbowMartinConfig = isKamaRainbowMartin
       ? normalizeKamaRainbowMartinConfig(state[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY] ?? state.__snapshotConfig)
       : createKamaRainbowMartinDefaultConfig();
+    const kamaRainbowMartinBridge = deriveKamaRainbowMartinFormBridge(kamaRainbowMartinConfig);
     const v41Config = isV41
       ? normalizeV41Config(state[V41_CONFIG_KEY] ?? state.__snapshotConfig)
       : createV41DefaultConfig();
@@ -741,9 +774,9 @@ function StrategiesContent() {
       stopLossPct: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.hardStopLossPct) : s.stopLossPct,
       takeProfitPct: isKamaRainbowMartin ? "0" : isTrendLadder ? String(trendLadderConfig.Trailing_Activation_Pct) : isRainbow ? String(rainbowConfig.Take_Profit_Pct) : s.takeProfitPct,
       maxDailyLoss: s.maxDailyLoss,
-      martinMultiplier: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.multiplier) : isTrendLadder ? String(firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : ((s as any).martinMultiplier ?? "1"),
-      maxMartinLevel: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.maxLayers) : isTrendLadder ? String(trendLadderConfig.Max_Layers) : String((s as any).maxMartinLevel ?? 1),
-      martinSpacingPct: isKamaRainbowMartin ? String(kamaRainbowMartinConfig.gapPct) : isTrendLadder ? String(firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : ((s as any).martinSpacingPct ?? "0"),
+      martinMultiplier: isKamaRainbowMartin ? String(kamaRainbowMartinBridge.martinMultiplier) : isTrendLadder ? String(firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : ((s as any).martinMultiplier ?? "1"),
+      maxMartinLevel: isKamaRainbowMartin ? String(kamaRainbowMartinBridge.maxMartinLevel) : isTrendLadder ? String(trendLadderConfig.Max_Layers) : String((s as any).maxMartinLevel ?? 1),
+      martinSpacingPct: isKamaRainbowMartin ? String(kamaRainbowMartinBridge.martinSpacingPct) : isTrendLadder ? String(firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0) : ((s as any).martinSpacingPct ?? "0"),
       strategyKey,
       ...v40EntryGate,
       v2_5: isV25 ? normalizeV25Config(state.__v25Config ?? state.__snapshotConfig) : createV25DefaultConfig(),
@@ -753,6 +786,20 @@ function StrategiesContent() {
       v4_1: v41Config,
       // 從 martinState.__v35Config 載入 V3.7 優化參數（若存在）
       ...((): Pick<StrategyForm, "martinLayersJson" | "maxLossPct" | "callbackPct" | "kLinePeriod" | "reentryOnTrend" | "maxLossUsdt" | "Initial_Capital" | "First_Order_Pct" | "Max_Loss_Pct" | "martin_mode"> => {
+        if (isKamaRainbowMartin) {
+          return {
+            martinLayersJson: JSON.stringify(kamaRainbowMartinConfig.layerConfigs),
+            maxLossPct: String(kamaRainbowMartinConfig.hardStopLossPct),
+            callbackPct: String(kamaRainbowMartinConfig.trailing.callbackPct),
+            kLinePeriod: String(KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[kamaRainbowMartinConfig.timeframe]),
+            reentryOnTrend: true,
+            maxLossUsdt: "0",
+            Initial_Capital: "100",
+            First_Order_Pct: "0.5",
+            Max_Loss_Pct: String(kamaRainbowMartinConfig.hardStopLossPct),
+            martin_mode: kamaRainbowMartinBridge.martinMode,
+          };
+        }
         if (isTrendLadder) {
           return {
             martinLayersJson: JSON.stringify(trendLadderConfig.Martin_Layers),
@@ -847,6 +894,9 @@ function StrategiesContent() {
     const rainbowConfig = rainbowValidation?.config;
     const trendLadderConfig = trendLadderValidation?.config;
     const kamaRainbowMartinConfig = kamaRainbowMartinValidation?.config;
+    const kamaRainbowMartinBridge = kamaRainbowMartinConfig
+      ? deriveKamaRainbowMartinFormBridge(kamaRainbowMartinConfig)
+      : null;
     const v41Config = v41Validation?.config;
     const firstRainbowRange = rainbowConfig?.Martin_Ranges.find((range) => range.enabled);
     const firstTrendLadderMartinLayer = trendLadderConfig?.Martin_Layers.find(
@@ -926,10 +976,10 @@ function StrategiesContent() {
       stopLossPct: isKamaRainbowMartin ? (kamaRainbowMartinConfig?.hardStopLossPct ?? 0) : isRainbow || isTrendLadder ? 0 : isV41 ? (v41Config?.Max_Loss_Pct ?? 0) : (parseFloat(form.stopLossPct) || 0),
       takeProfitPct: isKamaRainbowMartin ? 0 : isTrendLadder ? (trendLadderConfig?.Trailing_Activation_Pct ?? 0) : isRainbow ? (rainbowConfig?.Take_Profit_Pct ?? 0) : isV41 ? (v41Config?.Target_TP_Pct ?? 0) : (parseFloat(form.takeProfitPct) || 0),
       maxDailyLoss: parseFloat(form.maxDailyLoss) || 0,
-      martinMultiplier: isKamaRainbowMartin ? (kamaRainbowMartinConfig?.multiplier ?? 1) : isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : isV41 ? (v41Config?.Martin_Multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
-      maxMartinLevel: isKamaRainbowMartin ? (kamaRainbowMartinConfig?.maxLayers ?? 1) : isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : isV41 ? (v41Config?.Max_Layers ?? 1) : (parseInt(form.maxMartinLevel) || 1),
+      martinMultiplier: isKamaRainbowMartin ? (kamaRainbowMartinBridge?.martinMultiplier ?? 1) : isTrendLadder ? (firstTrendLadderMartinLayer?.lotMultiplier ?? 1) : isRainbow ? (firstRainbowRange?.multiplier ?? 1) : isV41 ? (v41Config?.Martin_Multiplier ?? 1) : (parseFloat(form.martinMultiplier) || 1),
+      maxMartinLevel: isKamaRainbowMartin ? (kamaRainbowMartinBridge?.maxMartinLevel ?? 1) : isTrendLadder ? (trendLadderConfig?.Max_Layers ?? 1) : isRainbow ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbowConfig?.Martin_Ranges ?? [])) : isV41 ? (v41Config?.Max_Layers ?? 1) : (parseInt(form.maxMartinLevel) || 1),
       martinSpacingPct: isKamaRainbowMartin
-        ? (kamaRainbowMartinConfig?.gapPct ?? 0)
+        ? (kamaRainbowMartinBridge?.martinSpacingPct ?? 0)
         : isTrendLadder
         ? (firstTrendLadderMartinLayer?.triggerSpacingPct ?? 0)
         : isRainbow
@@ -942,7 +992,7 @@ function StrategiesContent() {
       v25Config: isV25 ? v25Validation?.config : undefined,
       v41Config: isV41 && v41Config ? { ...v41Config, Martin_Layers: v41Config.Martin_Layers.map((layer) => ({ ...layer })) } : undefined,
       rainbowTrendLadderConfig: isTrendLadder && trendLadderConfig ? { ...trendLadderConfig } : undefined,
-      kamaRainbowMartinConfig: isKamaRainbowMartin && kamaRainbowMartinConfig ? { ...kamaRainbowMartinConfig } : undefined,
+      kamaRainbowMartinConfig: isKamaRainbowMartin && kamaRainbowMartinConfig ? cloneKamaRainbowMartinConfig(kamaRainbowMartinConfig) : undefined,
       // V3.7 優化參數（後端存入 martinState.__v35Config）
       v35Config: (form.strategyKey !== V25_STRATEGY_KEY && form.strategyKey !== "strategy_20415" && form.strategyKey !== RAINBOW_TREND_LADDER_STRATEGY_KEY && form.strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY && form.strategyKey !== V41_STRATEGY_KEY && form.strategyKey !== "KAMA_3K_ULTIMATE_V50") ? {
         Martin_Layers: form.martin_mode === "layered" ? (form.martinLayersJson.trim() || "") : "",
@@ -2370,16 +2420,18 @@ function StrategiesContent() {
               <KamaRainbowMartinConfigPanel
                 value={form.kamaRainbowMartin}
                 onChange={(nextConfig) => {
+                  const bridge = deriveKamaRainbowMartinFormBridge(nextConfig);
                   setForm((prev) => ({
                     ...prev,
                     kamaRainbowMartin: nextConfig,
                     stopLossPct: String(nextConfig.hardStopLossPct),
                     takeProfitPct: "0",
                     callbackPct: String(nextConfig.trailing.callbackPct),
-                    martinMultiplier: String(nextConfig.multiplier),
-                    maxMartinLevel: String(nextConfig.maxLayers),
-                    martinSpacingPct: String(nextConfig.gapPct),
-                    martin_mode: "fixed",
+                    martinMultiplier: String(bridge.martinMultiplier),
+                    maxMartinLevel: String(bridge.maxMartinLevel),
+                    martinSpacingPct: String(bridge.martinSpacingPct),
+                    martinLayersJson: JSON.stringify(nextConfig.layerConfigs),
+                    martin_mode: bridge.martinMode,
                     kLinePeriod: String(KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[nextConfig.timeframe]),
                   }));
                 }}

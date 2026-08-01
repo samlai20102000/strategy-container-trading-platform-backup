@@ -14,6 +14,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Trash2,
   TrendingUp,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -25,11 +26,16 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   KAMA_RAINBOW_MARTIN_TIMEFRAMES,
-  buildKamaRainbowMartinLayerQuantities,
+  KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS,
+  buildKamaRainbowMartinAddLayerQuantities,
   createKamaRainbowMartinDefaultConfig,
+  getKamaRainbowMartinCumulativeMultiplier,
+  getLayerGapPct,
+  getLayerMultiplier,
   normalizeKamaRainbowMartinConfig,
   validateKamaRainbowMartinConfig,
   type KamaRainbowMartinConfig,
+  type KamaRainbowMartinLayerConfig,
   type KamaRainbowMartinLineConfig,
   type KamaRainbowMartinTimeframe,
 } from "@shared/strategies/kamaRainbowMartin";
@@ -143,6 +149,7 @@ function cloneConfig(config: KamaRainbowMartinConfig): KamaRainbowMartinConfig {
   return {
     ...config,
     kamaLines: config.kamaLines.map((line) => ({ ...line })),
+    layerConfigs: config.layerConfigs.map((layer) => ({ ...layer })),
     trailing: { ...config.trailing },
   };
 }
@@ -174,10 +181,11 @@ export function KamaRainbowMartinConfigPanel({
   const config = useMemo(() => normalizeKamaRainbowMartinConfig(value), [value]);
   const validation = useMemo(() => validateKamaRainbowMartinConfig(config), [config]);
   const enabledLines = useMemo(() => config.kamaLines.filter((line) => line.enabled), [config.kamaLines]);
-  const layerQuantities = useMemo(
-    () => buildKamaRainbowMartinLayerQuantities(positionSize, config.maxLayers, config.multiplier),
-    [config.maxLayers, config.multiplier, positionSize],
+  const addLayerQuantities = useMemo(
+    () => buildKamaRainbowMartinAddLayerQuantities(positionSize, config.maxLayers, config.layerConfigs, config.multiplier),
+    [config.layerConfigs, config.maxLayers, config.multiplier, positionSize],
   );
+  const layerQuantities = useMemo(() => positionSize > 0 ? [positionSize, ...addLayerQuantities] : [], [addLayerQuantities, positionSize]);
   const cumulativeExposure = layerQuantities.reduce((sum, quantity) => sum + quantity, 0);
   const estimatedBaseQuantity = positionMode === "usdt" && referencePrice && referencePrice > 0
     ? positionSize / referencePrice
@@ -217,6 +225,32 @@ export function KamaRainbowMartinConfigPanel({
     if (config.kamaLines.length <= 2) return;
     updateConfig({ kamaLines: config.kamaLines.filter((_, lineIndex) => lineIndex !== index).map((line) => ({ ...line })) });
   };
+  const commitLayerConfigs = (layerConfigs: KamaRainbowMartinLayerConfig[]) => {
+    const finiteEnds = layerConfigs.map(layer => layer.layerEnd).filter(Number.isFinite);
+    updateConfig({
+      layerConfigs: layerConfigs.map(layer => ({ ...layer })),
+      maxLayers: finiteEnds.length > 0 ? Math.max(...finiteEnds) : 0,
+    });
+  };
+  const updateLayerConfig = (index: number, patch: Partial<KamaRainbowMartinLayerConfig>) => {
+    commitLayerConfigs(config.layerConfigs.map((layer, layerIndex) => layerIndex === index ? { ...layer, ...patch } : { ...layer }));
+  };
+  const appendLayerConfig = () => {
+    const last = config.layerConfigs.at(-1);
+    const nextLayer = Math.max(1, (last?.layerEnd ?? 0) + 1);
+    if (nextLayer > KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS) return;
+    commitLayerConfigs([
+      ...config.layerConfigs.map(layer => ({ ...layer })),
+      {
+        layerStart: nextLayer,
+        layerEnd: nextLayer,
+        multiplier: last?.multiplier ?? config.multiplier,
+      },
+    ]);
+  };
+  const removeLayerConfig = (index: number) => {
+    commitLayerConfigs(config.layerConfigs.filter((_, layerIndex) => layerIndex !== index).map(layer => ({ ...layer })));
+  };
 
   return (
     <div
@@ -232,7 +266,7 @@ export function KamaRainbowMartinConfigPanel({
           <div className="flex min-w-0 flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className="border border-cyan-300/35 bg-cyan-300/10 font-mono text-[10px] tracking-[0.18em] text-cyan-200 hover:bg-cyan-300/10">KAMA RAINBOW / MARTIN / V1</Badge>
+                <Badge className="border border-cyan-300/35 bg-cyan-300/10 font-mono text-[10px] tracking-[0.18em] text-cyan-200 hover:bg-cyan-300/10">KAMA RAINBOW / MARTIN / V2</Badge>
                 <Badge className="border border-violet-300/30 bg-violet-300/10 font-mono text-[10px] tracking-[0.14em] text-violet-200 hover:bg-violet-300/10">{contextLabel}</Badge>
                 <Badge className="border border-emerald-300/30 bg-emerald-300/10 font-mono text-[10px] tracking-[0.14em] text-emerald-200 hover:bg-emerald-300/10">DEFAULT DISABLED</Badge>
               </div>
@@ -326,20 +360,63 @@ export function KamaRainbowMartinConfigPanel({
             </div>
           </Sector>
 
-          <Sector index="03" title="固定間距指數馬丁" subtitle="五層預設包含底倉 L1；每層量 = 底倉 × multiplier^(L-1)，下一層只以最近一層實際 fill 為錨點。" icon={Layers3} tone="violet">
+          <Sector index="03" title="階梯式馬丁分層參數" subtitle="底倉獨立於分層表；L1 是第一次加倉。每一段可設定逐層乘數與專屬間距，空白間距會回退全域值。" icon={Layers3} tone="violet">
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <NumberControl id="krm-max-layers" label="最大層數（含底倉）" value={config.maxLayers} onChange={(maxLayers) => updateConfig({ maxLayers })} min={1} max={20} step={1} unit="L" disabled={disabled} />
-              <NumberControl id="krm-multiplier" label="層級倍率" value={config.multiplier} onChange={(multiplier) => updateConfig({ multiplier })} min={1} max={10} step={0.1} unit="×" disabled={disabled} />
-              <NumberControl id="krm-gap" label="相鄰層實際成交間距" value={config.gapPct} onChange={(gapPct) => updateConfig({ gapPct })} min={0.01} max={100} step={0.1} unit="百分點" disabled={disabled} description="LONG 向下、SHORT 向上；每次評估最多產生一層 intent。" />
+              <NumberControl id="krm-fixed-multiplier" label="固定模式乘數" value={config.multiplier} onChange={(multiplier) => updateConfig({ multiplier })} min={1} max={10} step={0.1} unit={config.layerConfigs.length > 0 ? "已由分層覆蓋" : "×"} disabled={disabled || config.layerConfigs.length > 0} description={config.layerConfigs.length > 0 ? "分層模式已啟用；實際乘數以各列設定為準。" : "沒有分層列時，所有加倉層使用此值。"} />
+              <NumberControl id="krm-gap" label="全域加倉間距" value={config.gapPct} onChange={(gapPct) => updateConfig({ gapPct })} min={0.01} max={100} step={0.1} unit="百分點" disabled={disabled} description="分層列的間距留空時使用此值；LONG 向下、SHORT 向上。" />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3"><Label htmlFor="krm-max-layers" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-300">最大加倉層數</Label><span className="font-mono text-[10px] text-amber-300/90">自動計算</span></div>
+                <Input id="krm-max-layers" value={config.maxLayers} readOnly aria-readonly="true" className="h-10 border-amber-400/20 bg-amber-400/5 font-mono text-sm font-black text-amber-100" />
+                <p className="text-[10px] leading-4 text-slate-500">取最後一段的結束層；不包含底倉。</p>
+              </div>
             </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              {layerQuantities.map((quantity, index) => (
-                <div key={index} className="rounded-lg border border-violet-400/15 bg-violet-400/5 p-3">
-                  <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-violet-300">L{index + 1}</div>
-                  <div className="mt-2 font-mono text-sm font-black text-slate-100">{formatEstimate(quantity)} {positionMode.toUpperCase()}</div>
-                  <div className="mt-1 text-[10px] text-slate-500">{config.multiplier}^{index} × 底倉</div>
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-violet-400/15 bg-violet-400/[0.03]">
+              <div className="flex flex-col gap-3 border-b border-slate-800 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-mono text-xs font-semibold text-violet-100">分層規則（範圍 × 乘數 × 間距）</p>
+                  <p className="mt-1 text-[10px] leading-4 text-slate-500">範圍必須由 L1 起連續且不可重疊；可自行新增至 L{KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS}。</p>
                 </div>
-              ))}
+                <Button type="button" variant="outline" size="sm" disabled={disabled || config.maxLayers >= KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} onClick={appendLayerConfig} className="border-violet-400/30 bg-violet-400/10 text-violet-100 hover:bg-violet-400/20">
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />新增分層
+                </Button>
+              </div>
+              <div role="region" aria-label="Kama 彩虹馬丁分層設定表，可水平捲動" tabIndex={0} className="w-full min-w-0 overflow-x-auto overscroll-x-contain">
+                <table className="w-full min-w-[860px] text-left text-xs">
+                  <thead className="bg-slate-950/80 text-[9px] uppercase tracking-[0.16em] text-slate-500">
+                    <tr><th className="px-3 py-3">起始層</th><th className="px-3 py-3">結束層</th><th className="px-3 py-3">逐層乘數</th><th className="px-3 py-3">間距 %</th><th className="px-3 py-3">段末累積</th><th className="px-3 py-3">操作</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800 bg-[#050b11]/70">
+                    {config.layerConfigs.map((layer, index) => (
+                      <tr key={`${index}-${layer.layerStart}-${layer.layerEnd}`}>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 起始層`} type="number" min={1} max={KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} step={1} value={layer.layerStart} disabled={disabled} onChange={(event) => updateLayerConfig(index, { layerStart: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 結束層`} type="number" min={1} max={KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} step={1} value={layer.layerEnd} disabled={disabled} onChange={(event) => updateLayerConfig(index, { layerEnd: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 乘數`} type="number" min={1} max={10} step={0.1} value={layer.multiplier} disabled={disabled} onChange={(event) => updateLayerConfig(index, { multiplier: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 間距`} type="number" min={0.01} max={100} step={0.1} value={layer.gapPct ?? ""} placeholder={`全域 ${config.gapPct}`} disabled={disabled} onChange={(event) => updateLayerConfig(index, { gapPct: event.target.value === "" ? undefined : Number(event.target.value) })} className="h-9 w-32 border-slate-700 bg-slate-950/70 font-mono text-xs placeholder:text-slate-600" /></td>
+                        <td className="px-3 py-3"><div className="font-mono text-sm font-black text-violet-100">{formatEstimate(getKamaRainbowMartinCumulativeMultiplier(layer.layerEnd, config.layerConfigs, config.multiplier))}×</div><div className="mt-1 text-[10px] text-slate-500">L{layer.layerStart}–L{layer.layerEnd} · 間距 {formatEstimate(getLayerGapPct(layer.layerStart, config.layerConfigs, config.gapPct))}%</div></td>
+                        <td className="px-3 py-3"><Button type="button" variant="outline" size="sm" aria-label={`刪除分層 ${index + 1}`} disabled={disabled} onClick={() => removeLayerConfig(index)} className="border-slate-700 bg-slate-950/60 text-slate-300 hover:border-rose-400/40 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 className="h-3.5 w-3.5" /></Button></td>
+                      </tr>
+                    ))}
+                    {config.layerConfigs.length === 0 ? <tr><td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-500">尚未設定分層；目前回退固定乘數模式。按「新增分層」由 L1 開始。</td></tr> : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="mt-4 w-full overflow-x-auto rounded-xl border border-slate-800 p-3">
+              <div className="flex min-w-max gap-2">
+                {layerQuantities.map((quantity, index) => {
+                  const addLayer = index;
+                  const cumulative = addLayer === 0 ? 1 : getKamaRainbowMartinCumulativeMultiplier(addLayer, config.layerConfigs, config.multiplier);
+                  return (
+                    <div key={index} className="w-40 shrink-0 rounded-lg border border-violet-400/15 bg-violet-400/5 p-3">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-violet-300">{addLayer === 0 ? "BASE" : `L${addLayer}`}</div>
+                      <div className="mt-2 font-mono text-sm font-black text-slate-100">{formatEstimate(quantity)} {positionMode.toUpperCase()}</div>
+                      <div className="mt-1 text-[10px] text-slate-500">{formatEstimate(cumulative)}× 底倉{addLayer > 0 ? ` · ${formatEstimate(getLayerMultiplier(addLayer, config.layerConfigs, config.multiplier))}× 本層` : ""}</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
             <p className="mt-3 text-[10px] leading-5 text-slate-500">最大累積曝險估算：{formatEstimate(cumulativeExposure)} {positionMode.toUpperCase()}。實際委託仍受 deployment position cap、帳戶餘額及 {quantityPrecision} 約束。</p>
           </Sector>

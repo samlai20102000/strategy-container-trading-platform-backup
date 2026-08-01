@@ -46,6 +46,8 @@ import {
 } from "../shared/strategies/rainbowTrendLadder";
 import {
   assertValidKamaRainbowMartinConfig,
+  getLayerGapPct,
+  getLayerMultiplier,
   getKamaRainbowMartinTimeframeMinutes,
   KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
@@ -813,7 +815,9 @@ const strategiesRouter = router({
         stopLossPct: v41Columns?.stopLossPct ?? String(kamaRainbowMartinConfig?.hardStopLossPct ?? v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
         takeProfitPct: v41Columns?.takeProfitPct ?? String(kamaRainbowMartinConfig ? 0 : v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig?.multiplier ?? firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
+        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig
+          ? getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier)
+          : firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
         maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbow20415Config
@@ -823,7 +827,9 @@ const strategiesRouter = router({
               : kamaRainbowMartinConfig
                 ? kamaRainbowMartinConfig.maxLayers
                 : input.maxMartinLevel),
-        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(kamaRainbowMartinConfig?.gapPct ?? firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
+        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(kamaRainbowMartinConfig
+          ? getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct)
+          : firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
         martinState,
         strategyKey: input.strategyKey || null,
         ...(v25Config ? {
@@ -976,9 +982,13 @@ const strategiesRouter = router({
         };
         data.stopLossPct = String(kamaRainbowMartinConfig.hardStopLossPct);
         data.takeProfitPct = "0";
-        data.martinMultiplier = String(kamaRainbowMartinConfig.multiplier);
+        data.martinMultiplier = String(
+          getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier),
+        );
         data.maxMartinLevel = kamaRainbowMartinConfig.maxLayers;
-        data.martinSpacingPct = String(kamaRainbowMartinConfig.gapPct);
+        data.martinSpacingPct = String(
+          getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct),
+        );
         data.kLinePeriod = getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe);
         data.reentryEnabled = false;
       }
