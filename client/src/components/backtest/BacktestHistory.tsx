@@ -51,6 +51,33 @@ interface CompareRow {
   } | null;
 }
 
+interface RunnerExecutionContext {
+  status?: string;
+  runner?: {
+    runnerId?: string;
+    runnerVersion?: number;
+    executionPath?: string;
+  } | null;
+  failure?: {
+    stage?: string;
+    errorCode?: string;
+  } | null;
+}
+
+function runnerLabel(
+  status: string,
+  engineVersion: string | undefined,
+  executionContext: RunnerExecutionContext | null,
+): string {
+  if (engineVersion) return engineVersion;
+  const runner = executionContext?.runner;
+  if (runner?.runnerId) {
+    return `${runner.runnerId}${runner.runnerVersion ? ` · v${runner.runnerVersion}` : ""}`;
+  }
+  if (["failed", "timeout", "cancelled"].includes(status)) return "runner 未啟動";
+  return "legacy";
+}
+
 const PAGE_SIZE = 20;
 
 function executionModeMeta(value: unknown): { code: string; label: string; className: string } {
@@ -328,6 +355,9 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
               const accounting = r.accounting as { reconciled?: boolean } | null;
               const dataQuality = r.dataQuality as { candleCount?: number; duplicateCandlesRemoved?: number; invalidCandlesRemoved?: number } | null;
               const engineVersion = semantics?.version ?? environment?.engineVersion;
+              const executionContext = (r as { executionContext?: RunnerExecutionContext | null }).executionContext ?? null;
+              const failure = executionContext?.failure;
+              const displayedRunner = runnerLabel(r.status, engineVersion, executionContext);
               return (
                 <TableRow key={rowId} className={r.status === "running" ? "bg-blue-500/5" : ""}>
                   <TableCell>
@@ -354,8 +384,17 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                   <TableCell className="text-xs">
                     <div className="flex min-w-36 flex-wrap items-center gap-1">
                       <Badge variant="outline" className="font-mono text-[9px]">
-                        {engineVersion ?? "legacy"}
+                        {displayedRunner}
                       </Badge>
+                      {failure?.errorCode && (
+                        <Badge
+                          variant="destructive"
+                          className="font-mono text-[9px]"
+                          title={`失敗階段：${failure.stage ?? "UNKNOWN"}`}
+                        >
+                          {failure.errorCode}
+                        </Badge>
+                      )}
                       <Badge variant="outline" className={`text-[9px] ${r.endPositionPolicy === "force_close" ? "border-amber-500/50 text-amber-400" : "border-cyan-500/50 text-cyan-400"}`}>
                         {r.endPositionPolicy === "force_close" ? "終點強平" : "按市價"}
                       </Badge>

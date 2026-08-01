@@ -161,18 +161,20 @@ export default function Backtest() {
         name: s.name,
         defaultConfig: s.defaultConfig as Record<string, unknown>,
         schemaConfig: s.schemaConfig as SchemaConfig | null,
-        modeCapabilities: s.modeCapabilities as StrategyModeCapabilities,
-        strategyVersion: String(s.capabilityManifest.strategyVersion),
-        strategyLogicHash: s.capabilityManifest.strategyLogicHash,
+        modeCapabilities: s.backtestModeCapabilities as StrategyModeCapabilities,
+        strategyVersion: String(s.backtestCapabilityManifest.strategyVersion),
+        strategyLogicHash: s.backtestCapabilityManifest.strategyLogicHash,
       }));
     }
     if (backtestStrategiesQuery.data) {
       return backtestStrategiesQuery.data.map(s => ({
-        ...s,
+        key: s.key,
+        name: s.name,
+        defaultConfig: s.defaultConfig as Record<string, unknown>,
         schemaConfig: null as SchemaConfig | null,
-        modeCapabilities: null as StrategyModeCapabilities | null,
-        strategyVersion: undefined as string | undefined,
-        strategyLogicHash: undefined as string | undefined,
+        modeCapabilities: s.backtestModeCapabilities as StrategyModeCapabilities,
+        strategyVersion: String(s.backtestCapabilityManifest.strategyVersion),
+        strategyLogicHash: s.backtestCapabilityManifest.strategyLogicHash,
       }));
     }
     return undefined;

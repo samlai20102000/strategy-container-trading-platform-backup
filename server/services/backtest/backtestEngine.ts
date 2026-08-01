@@ -112,12 +112,13 @@ import {
   type BacktestEngineSemantics,
   type BacktestLegAccounting,
   type BacktestModeResults,
+  type BacktestRunnerIdentity,
   type BacktestVersionedExecutionContext,
 } from "./backtestContracts";
 import {
   runAdvancedKamaPortfolioBacktest,
-  supportsAdvancedKamaPortfolio,
 } from "./advancedKamaPortfolioBacktest";
+import { preflightBacktestRunner } from "./backtestRunnerPreflight";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -287,37 +288,6 @@ function buildLegacyS1LegAccounting(
   };
 }
 
-function normalizeAndAuthorizeBacktestMode(request: BacktestRequest): ExecutionPolicy {
-  const policy = normalizeExecutionModePolicy(
-    request.executionPolicy ?? { mode: request.executionMode ?? "SINGLE_EXCLUSIVE" },
-  );
-  if (request.executionMode && request.executionMode !== policy.mode) {
-    throw new Error("BACKTEST_MODE_POLICY_MISMATCH: executionMode 與 executionPolicy.mode 不一致");
-  }
-  request.executionMode = policy.mode;
-  request.executionPolicy = policy;
-  if (policy.mode === "SINGLE_EXCLUSIVE") return policy;
-
-  const capabilities = request.strategyModeCapabilities;
-  const blockers: string[] = [];
-  if (!capabilities || capabilities.contractVersion !== "strategy-mode-capabilities-v1") {
-    blockers.push("STRATEGY_MODE_CAPABILITIES_MISSING");
-  } else {
-    if (!capabilities.supportedModes.includes(policy.mode)) blockers.push("MODE_NOT_DECLARED_SUPPORTED");
-    if (!capabilities.independentLegState) blockers.push("INDEPENDENT_LEG_STATE_NOT_CERTIFIED");
-    if (!capabilities.preciseLegClose) blockers.push("PRECISE_LEG_CLOSE_NOT_CERTIFIED");
-    if (policy.mode === "HEDGE_GUARDED" && !capabilities.hedgeGuard) {
-      blockers.push("HEDGE_GUARD_NOT_CERTIFIED");
-    }
-  }
-  if (!request.strategyVersion?.trim()) blockers.push("STRATEGY_VERSION_REQUIRED");
-  if (!request.strategyLogicHash?.trim()) blockers.push("STRATEGY_LOGIC_HASH_REQUIRED");
-  if (blockers.length > 0) {
-    throw new Error(`BACKTEST_MODE_CAPABILITY_NOT_CERTIFIED:${blockers.join(",")}`);
-  }
-  return policy;
-}
-
 export class BacktestEngine {
   /**
    * 執行完整回測
@@ -357,7 +327,11 @@ export class BacktestEngine {
     if (!strategy) {
       throw new Error(`策略「${request.strategyKey}」未註冊，請確認策略 key 正確`);
     }
-    const executionPolicy = normalizeAndAuthorizeBacktestMode(request);
+    const runnerPreflight = preflightBacktestRunner(request);
+    const executionPolicy = runnerPreflight.executionPolicy;
+    // 先驗證 runner descriptor／adapter，再載入任何市場數據。M2／H3 不再依策略鍵白名單，
+    // 且缺少 adapter、版本不一致或 mode 未認證時會在任務早期 fail explicit。
+    const resolvedPortfolioAdapter = runnerPreflight.resolvedPortfolioAdapter;
     const isV35 = request.strategyKey === V40_STRATEGY_KEY;
     const isV41 = request.strategyKey === V41_STRATEGY_KEY;
     const isV50 = request.strategyKey === "KAMA_3K_ULTIMATE_V50";
@@ -447,11 +421,7 @@ export class BacktestEngine {
     // M2／H3 必須走真實 multi-leg portfolio kernel；未接入的策略一律 fail closed，
     // 禁止落回任何 S1／單持倉近似路徑冒充進階模式結果。
     if (executionPolicy.mode !== "SINGLE_EXCLUSIVE") {
-      if (!supportsAdvancedKamaPortfolio(request.strategyKey)) {
-        throw new Error(
-          `策略 ${request.strategyKey} 尚未通過 ${executionPolicy.mode} portfolio runner 認證，回測已 fail closed`,
-        );
-      }
+      if (!resolvedPortfolioAdapter) throw new Error("PORTFOLIO_ADAPTER_RESOLUTION_INVARIANT");
       onProgress?.(35, `數據就緒（${candles.length} 根），啟動 ${executionPolicy.mode} 多腿 portfolio kernel...`);
       return this.finalizeV25Result(await runAdvancedKamaPortfolioBacktest({
         request: effectiveRequest,
@@ -465,7 +435,8 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      }), effectiveRequest, startMs, endMs, continuousData.quality);
+        resolvedAdapter: resolvedPortfolioAdapter,
+      }), effectiveRequest, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // 20415 七彩虹：M1 管理 + 已收盤 M30 七線掃描，逐步調用與實盤相同的純核心。
@@ -483,7 +454,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      ), request, startMs, endMs, continuousData.quality);
+      ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // 全新七彩虹線階梯：獨立純核心回測，禁止落入通用策略近似器。
@@ -501,7 +472,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      ), effectiveRequest, startMs, endMs, continuousData.quality);
+      ), effectiveRequest, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // KRM：動態 KAMA 七線掃描與腿級 exit-first 管理共用實盤純核心；來源策略不受影響。
@@ -519,7 +490,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      ), effectiveRequest, startMs, endMs, continuousData.quality);
+      ), effectiveRequest, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // V2.5：逐 K 調用與實盤相同的獨立純核心，禁止落入通用 SMA 回測空殼。
@@ -537,7 +508,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
-      ), request, startMs, endMs, continuousData.quality);
+      ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // === V5.0 策略：複用 V3.5 KAMA+3K 回測路徑（同樣的 KAMA 指標 + 3K 形態 + 馬丁，但參數來自 V5.0 配置）===
@@ -545,14 +516,14 @@ export class BacktestEngine {
     if (!isV35 && !isV41 && !isV50 && !isV61 && !isV70) {
       return this.finalizeV25Result(await this.runGenericBacktest(
         request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
-      ), request, startMs, endMs, continuousData.quality);
+      ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // V7.0 龍捲風雙渦輪：使用專屬回測路徑
     if (isV70) {
       return this.finalizeV25Result(await this.runV70Backtest(
         request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
-      ), request, startMs, endMs, continuousData.quality);
+      ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     onProgress?.(35, `數據就緒（${candles.length} 根），計算 KAMA 指標...`);
@@ -1201,7 +1172,7 @@ export class BacktestEngine {
         : envSnapshotV35,
       endPositionPolicy,
       accounting,
-    }, request, startMs, endMs, continuousData.quality);
+    }, request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
   }
 
   /**
@@ -1260,6 +1231,7 @@ export class BacktestEngine {
     startMs: number,
     endMs: number,
     dataQuality: BacktestDataQuality,
+    verifiedRunner?: BacktestRunnerIdentity,
   ): BacktestResult {
     const executionPolicy = normalizeExecutionModePolicy(
       result.execution?.executionPolicy
@@ -1363,6 +1335,16 @@ export class BacktestEngine {
       intrabarEventPolicy: "risk_first",
       endPositionPolicy: policy,
     });
+    // 公開 runBacktest 路徑一律在載入 K 線前完成 preflight 並傳入 identity。
+    // optional fallback 僅供此 private 帳本守門器的隔離單元測試，不會繞過公開執行入口。
+    const runner = verifiedRunner ?? result.execution?.runner ?? {
+      runnerId: `isolated-finalizer:${request.strategyKey}`,
+      runnerVersion: 1,
+      descriptorVersion: "isolated-finalizer-v1",
+      strategyVersion,
+      logicRevision: strategyLogicHash,
+      executionPath: "S1_STRATEGY_ENGINE" as const,
+    };
     const execution: BacktestVersionedExecutionContext = {
       executionMode: executionPolicy.mode,
       executionPolicy,
@@ -1378,6 +1360,7 @@ export class BacktestEngine {
       simulatedAdapterVersion: BACKTEST_SIMULATED_ADAPTER_VERSION,
       engineVersion: BACKTEST_ENGINE_VERSION,
       comparisonGroupId,
+      runner,
     };
     const legAccounting = result.legAccounting
       ?? buildLegacyS1LegAccounting(result, request, accounting);

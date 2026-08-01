@@ -57,8 +57,11 @@ export function calculatePerformance(
   equityCurve: EquityPoint[],
   initialCapital: number,
 ): PerformanceMetrics {
-  const finalEquity =
-    equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].equity : initialCapital;
+  // 有限責任回測的權益不得低於零；底層 runner 仍應輸出 liquidation／bankruptcy 明細。
+  const finalEquity = Math.max(
+    0,
+    equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].equity : initialCapital,
+  );
   const totalReturnUSDT = finalEquity - initialCapital;
   const totalReturn = initialCapital > 0 ? (totalReturnUSDT / initialCapital) * 100 : 0;
 
@@ -71,9 +74,10 @@ export function calculatePerformance(
   let maxDrawdown = 0;
   let maxDrawdownUSDT = 0;
   for (const point of equityCurve) {
-    if (point.equity > peak) peak = point.equity;
-    const ddUSDT = peak - point.equity;
-    const dd = peak > 0 ? (ddUSDT / peak) * 100 : 0;
+    const boundedEquity = Math.max(0, point.equity);
+    if (boundedEquity > peak) peak = boundedEquity;
+    const ddUSDT = Math.max(0, peak - boundedEquity);
+    const dd = peak > 0 ? Math.min(100, (ddUSDT / peak) * 100) : 0;
     if (dd > maxDrawdown) {
       maxDrawdown = dd;
       maxDrawdownUSDT = ddUSDT;

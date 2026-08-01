@@ -16,6 +16,12 @@ import { getDb } from "../../db";
 import { backtestJobs } from "../../../drizzle/schema";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { normalizeExecutionModePolicy } from "../../../shared/executionModes";
+import type { BacktestRunnerIdentity } from "./backtestContracts";
+import {
+  classifyBacktestFailure,
+  preflightBacktestRunner,
+  type BacktestFailureMetadata,
+} from "./backtestRunnerPreflight";
 
 export interface BacktestJobState {
   jobId: string;
@@ -31,6 +37,8 @@ export interface BacktestJobState {
   timeoutSeconds: number;
   userId: number;
   strategyName?: string;
+  runner?: BacktestRunnerIdentity;
+  failure?: BacktestFailureMetadata;
 }
 
 const MAX_CONCURRENT_JOBS = 3;
@@ -76,6 +84,28 @@ export function buildBacktestResultPersistence(
   };
 }
 
+export function buildBacktestJobExecutionContext(job: Pick<
+  BacktestJobState,
+  "status" | "request" | "runner" | "failure"
+>) {
+  const policy = job.request.executionPolicy as Record<string, unknown> | undefined;
+  const mode = job.request.executionMode ?? policy?.mode ?? "SINGLE_EXCLUSIVE";
+  return {
+    executionMode: mode,
+    executionPolicy: job.request.executionPolicy ?? { mode },
+    executionPolicyVersion: policy?.version ?? "execution-policy-v1",
+    status: job.status === "completed"
+      ? "COMPLETED"
+      : job.status === "failed" || job.status === "timeout" || job.status === "cancelled"
+        ? "FAILED"
+        : job.status === "running"
+          ? "RUNNING"
+          : "RUNNER_READY",
+    runner: job.runner ?? null,
+    failure: job.failure ?? null,
+  };
+}
+
 class BacktestJobManager {
   private jobs = new Map<string, BacktestJobState>();
   private queue: string[] = [];
@@ -111,14 +141,8 @@ class BacktestJobManager {
   ): Promise<string> {
     await this.initialize();
 
-    const executionPolicy = normalizeExecutionModePolicy(
-      request.executionPolicy ?? { mode: request.executionMode ?? "SINGLE_EXCLUSIVE" },
-    );
-    if (request.executionMode && request.executionMode !== executionPolicy.mode) {
-      throw new Error("executionMode 與 executionPolicy.mode 不一致");
-    }
-    request.executionMode = executionPolicy.mode;
-    request.executionPolicy = executionPolicy;
+    const runnerPreflight = preflightBacktestRunner(request);
+    const executionPolicy = runnerPreflight.executionPolicy;
 
     const queuedCount = this.queue.length;
     if (queuedCount >= MAX_QUEUE_SIZE) {
@@ -138,6 +162,7 @@ class BacktestJobManager {
       timeoutSeconds: options?.timeoutSeconds ?? 0,
       userId,
       strategyName: options?.strategyName,
+      runner: runnerPreflight.runner,
     };
     this.jobs.set(jobId, job);
 
@@ -161,12 +186,7 @@ class BacktestJobManager {
           executionMode: executionPolicy.mode,
           executionPolicy,
           executionPolicyVersion: executionPolicy.version,
-          executionContext: {
-            executionMode: executionPolicy.mode,
-            executionPolicy,
-            executionPolicyVersion: executionPolicy.version,
-            status: "PENDING_FINALIZATION",
-          },
+          executionContext: buildBacktestJobExecutionContext(job),
           endPositionPolicy: request.endPositionPolicy ?? "mark_to_market",
           status: "pending",
           progress: 0,
@@ -234,7 +254,8 @@ class BacktestJobManager {
     const timeout = setTimeout(() => {
       if (job.status === "running") {
         job.status = "timeout";
-        job.error = `⏰ 回測超過 ${Math.round(timeoutMs / 1000)} 秒上限，已自動終止`;
+        job.error = `回測超過 ${Math.round(timeoutMs / 1000)} 秒上限，已自動終止`;
+        job.failure = { stage: "EXECUTION", errorCode: "BACKTEST_TIMEOUT" };
         job.message = job.error;
         job.finishedAt = Date.now();
         void this.updateJobInDB(job);
@@ -291,6 +312,7 @@ class BacktestJobManager {
         }
         job.status = "failed";
         job.error = e instanceof Error ? e.message : String(e);
+        job.failure = classifyBacktestFailure(e);
         job.message = `回測失敗：${job.error}`;
         job.finishedAt = Date.now();
         backtestWsService.broadcastError(job.jobId, job.error);
@@ -333,6 +355,7 @@ class BacktestJobManager {
         message: job.message,
       };
       if (job.error) updateData.error = job.error;
+      updateData.executionContext = buildBacktestJobExecutionContext(job);
       if (job.startedAt) updateData.startedAt = new Date(job.startedAt);
       if (job.finishedAt) updateData.completedAt = new Date(job.finishedAt);
 

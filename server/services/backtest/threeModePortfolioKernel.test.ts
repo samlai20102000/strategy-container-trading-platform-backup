@@ -204,6 +204,52 @@ describe("ThreeModePortfolioKernel", () => {
     });
     expect(forcedResult.accounting.finalEquity).toBe(forcedResult.accounting.expectedFinalEquity);
   });
+
+  it("以當前權益計算 gross／margin cap，超額候選 fail closed 且不產生成交", () => {
+    const policy = createDefaultExecutionPolicy("MULTI_POSITION");
+    const portfolio = kernel(policy, { initialCapital: 1_000, leverage: 1 });
+    portfolio.processBar({ timestamp: 1_000, price: 100 }, [candidate("risk-too-large", 1_000, "OPEN_LONG", 20)]);
+    const result = portfolio.finalize("mark_to_market", 2_000, 100);
+
+    expect(result.fills).toHaveLength(0);
+    expect(result.decisions.find(item => item.candidateId === "risk-too-large")).toMatchObject({
+      outcome: "REJECTED",
+      reasonCode: "RISK_GROSS_NOTIONAL_LIMIT",
+    });
+    expect(result.accounting.finalEquity).toBe(1_000);
+  });
+
+  it("gap loss 觸發 margin liquidation，權益以零為下限、回撤最多 100% 且仍完整對帳", () => {
+    const policy = {
+      ...createDefaultExecutionPolicy("SINGLE_EXCLUSIVE"),
+      riskBudget: {
+        ...createDefaultExecutionPolicy("SINGLE_EXCLUSIVE").riskBudget,
+        maxGrossNotionalPct: 1_000,
+        maxMarginUsagePct: 1_000,
+      },
+    } satisfies ExecutionPolicy;
+    const portfolio = kernel(policy, { initialCapital: 1_000, leverage: 2 });
+    portfolio.processBar({ timestamp: 1_000, price: 100 }, [candidate("bankrupt-open", 1_000, "OPEN_LONG", 20)]);
+    portfolio.processBar({ timestamp: 2_000, price: 1 }, []);
+    portfolio.processBar({ timestamp: 3_000, price: 2 }, [candidate("bankrupt-reentry", 3_000, "OPEN_LONG", 1)]);
+    const result = portfolio.finalize("mark_to_market", 4_000, 2);
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0]).toMatchObject({ exitReason: "MARGIN_LIQUIDATION" });
+    expect(result.accounting).toMatchObject({
+      finalEquity: 0,
+      expectedFinalEquity: 0,
+      bankrupt: true,
+      marginLiquidationCount: 1,
+      reconciled: true,
+    });
+    expect(result.accounting.bankruptcyAdjustment).toBe(980);
+    expect(Math.min(...result.equityCurve.map(point => point.equity))).toBe(0);
+    expect(result.decisions.find(item => item.candidateId === "bankrupt-reentry")).toMatchObject({
+      outcome: "REJECTED",
+      reasonCode: "ACCOUNT_BANKRUPT",
+    });
+  });
 });
 
 describe("三模式回測公平比較身份", () => {

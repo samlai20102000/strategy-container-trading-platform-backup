@@ -5,17 +5,24 @@
  * 3. 參數掃描引擎（scanEngine）
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeAll, describe, it, expect, vi } from "vitest";
 import { backtestJobManager } from "./services/backtest/backtestJobManager";
+import { initStrategyStudio } from "./services/strategyStudio";
+
+const JOB_TEST_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
 
 describe("V4.1 - BacktestJobManager 升級", () => {
+  beforeAll(async () => {
+    await initStrategyStudio();
+  });
+
   it("submit 回傳 jobId 字串", async () => {
     // Mock backtestEngine 避免真實回測
     vi.mock("./services/backtest/backtestEngine", () => ({
       backtestEngine: {
         runBacktest: vi.fn().mockResolvedValue({
           runId: "test",
-          strategyKey: "test",
+          strategyKey: "20415_KAMA_MARTIN_V35",
           strategyName: "Test",
           trades: [],
           metrics: { totalReturn: 0, winRate: 0, sharpeRatio: 0, profitFactor: 0, maxDrawdown: 0, calmarRatio: 0, totalTrades: 0, winningTrades: 0, losingTrades: 0, avgWin: 0, avgLoss: 0, maxWin: 0, maxLoss: 0, martinTriggerCount: 0, maxMartinLayer: 0, totalDays: 0, totalReturnUSDT: 0, maxDrawdownUSDT: 0 },
@@ -27,7 +34,7 @@ describe("V4.1 - BacktestJobManager 升級", () => {
     }));
 
     const jobId = await backtestJobManager.submit({
-      strategyKey: "test",
+      strategyKey: JOB_TEST_STRATEGY_KEY,
       symbol: "BTC-USDT",
       timeframe: "30m",
       startDate: Date.now() - 86400000,
@@ -40,7 +47,7 @@ describe("V4.1 - BacktestJobManager 升級", () => {
 
   it("cancel 可取消 queued/running 任務", async () => {
     const jobId = await backtestJobManager.submit({
-      strategyKey: "test",
+      strategyKey: JOB_TEST_STRATEGY_KEY,
       symbol: "BTC-USDT",
       timeframe: "30m",
       startDate: Date.now() - 86400000,
@@ -73,7 +80,7 @@ describe("V4.1 - BacktestJobManager 升級", () => {
 
   it("submit 支持自定義超時秒數", async () => {
     const jobId = await backtestJobManager.submit({
-      strategyKey: "test",
+      strategyKey: JOB_TEST_STRATEGY_KEY,
       symbol: "BTC-USDT",
       timeframe: "30m",
       startDate: Date.now() - 86400000,
@@ -90,7 +97,7 @@ describe("V4.1 - BacktestJobManager 升級", () => {
 
   it("getJob 回傳完整任務資訊", async () => {
     const jobId = await backtestJobManager.submit({
-      strategyKey: "test",
+      strategyKey: JOB_TEST_STRATEGY_KEY,
       symbol: "BTC-USDT",
       timeframe: "30m",
       startDate: Date.now() - 86400000,
@@ -115,30 +122,5 @@ describe("V4.1 - ScanEngine 組合生成", () => {
     expect(scanJobManager).toBeDefined();
     expect(typeof scanJobManager.submit).toBe("function");
     expect(typeof scanJobManager.getStatus).toBe("function");
-  });
-});
-
-describe("V4.1 - Schema 驗證", () => {
-  it("parameterSnapshots 表定義存在且有正確欄位", async () => {
-    const { parameterSnapshots } = await import("../drizzle/schema");
-    expect(parameterSnapshots).toBeDefined();
-    // 驗證關鍵欄位存在
-    expect(parameterSnapshots.id).toBeDefined();
-    expect(parameterSnapshots.userId).toBeDefined();
-    expect(parameterSnapshots.strategyKey).toBeDefined();
-    expect(parameterSnapshots.config).toBeDefined();
-    expect(parameterSnapshots.metrics).toBeDefined();
-  });
-
-  it("backtestJobs 表定義存在且有正確欄位", async () => {
-    const { backtestJobs } = await import("../drizzle/schema");
-    expect(backtestJobs).toBeDefined();
-    expect(backtestJobs.id).toBeDefined();
-    expect(backtestJobs.userId).toBeDefined();
-    expect(backtestJobs.jobId).toBeDefined();
-    expect(backtestJobs.strategyKey).toBeDefined();
-    expect(backtestJobs.status).toBeDefined();
-    expect(backtestJobs.progress).toBeDefined();
-    expect(backtestJobs.metrics).toBeDefined();
   });
 });

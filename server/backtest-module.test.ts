@@ -99,6 +99,19 @@ describe("performanceCalculator", () => {
     expect(m.maxDrawdownUSDT).toBeCloseTo(3000, 0);
   });
 
+  it("有限責任回測遇到負權益輸入時，總報酬與最大回撤分別下限／上限為 100%", () => {
+    const equity: EquityPoint[] = [
+      { timestamp: 1, equity: 10_000, price: 100 },
+      { timestamp: 2, equity: -2_500, price: 1 },
+    ];
+    const m = calculatePerformance([mkTrade(-12_500, 0)], equity, 10_000);
+
+    expect(m.totalReturn).toBe(-100);
+    expect(m.totalReturnUSDT).toBe(-10_000);
+    expect(m.maxDrawdown).toBe(100);
+    expect(m.maxDrawdownUSDT).toBe(10_000);
+  });
+
   it("空交易清單不拋錯", () => {
     const m = calculatePerformance([], [], 10000);
     expect(m.totalTrades).toBe(0);

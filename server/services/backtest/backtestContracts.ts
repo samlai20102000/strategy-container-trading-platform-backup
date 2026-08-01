@@ -9,7 +9,7 @@ import type { OHLCVRow } from "./backtestDatabase";
 
 export const BACKTEST_ENGINE_VERSION = "3.0.0-three-mode";
 export const BACKTEST_SIMULATED_ADAPTER_VERSION = "simulated-exchange-v1";
-export const BACKTEST_RISK_MODEL_VERSION = "gross-margin-v1";
+export const BACKTEST_RISK_MODEL_VERSION = "gross-margin-liquidation-v2";
 export const BACKTEST_INTRABAR_POLICY_VERSION = "risk-first-v1";
 export const BACKTEST_ACCOUNTING_TOLERANCE = 0.02;
 export const V25_END_OF_DATA_EXIT_REASON = "回測全域終點強制平倉";
@@ -28,6 +28,15 @@ export const BACKTEST_INTRABAR_EVENT_ORDER = [
 
 export type BacktestIntrabarEventKind = (typeof BACKTEST_INTRABAR_EVENT_ORDER)[number];
 
+export interface BacktestRunnerIdentity {
+  runnerId: string;
+  runnerVersion: number;
+  descriptorVersion: string;
+  strategyVersion: string | number;
+  logicRevision: string;
+  executionPath: "S1_STRATEGY_ENGINE" | "PORTFOLIO_RUNTIME_ADAPTER";
+}
+
 export interface BacktestVersionedExecutionContext {
   executionMode: ExecutionMode;
   executionPolicy: ExecutionPolicy;
@@ -43,6 +52,7 @@ export interface BacktestVersionedExecutionContext {
   simulatedAdapterVersion: typeof BACKTEST_SIMULATED_ADAPTER_VERSION;
   engineVersion: typeof BACKTEST_ENGINE_VERSION;
   comparisonGroupId: string;
+  runner: BacktestRunnerIdentity;
 }
 
 export interface BacktestEngineSemantics {
@@ -158,6 +168,10 @@ export interface BacktestLegAccounting {
   eventCount: number;
   decisionCount: number;
   rejectedDecisionCount: number;
+  /** 由 portfolio kernel 觸發的 maintenance-margin 強制平倉次數。 */
+  marginLiquidationCount?: number;
+  /** 權益已耗盡並停止新開倉。 */
+  bankrupt?: boolean;
 }
 
 export interface BacktestModeResults {
@@ -182,6 +196,8 @@ export interface BacktestModeResults {
   hedgeCost: number;
   counterfactualWithoutHedgePnl: number;
   overlapDurationMs: number;
+  marginLiquidationCount?: number;
+  bankrupt?: boolean;
 }
 
 export interface BacktestAccountingSnapshot {
@@ -201,6 +217,10 @@ export interface BacktestAccountingSnapshot {
   syntheticForceCloseCount: number;
   grossExposure?: number;
   netExposure?: number;
+  /** 權益耗盡後用於有限責任零下限的明確對帳項，不會偽裝成交易損益。 */
+  bankruptcyAdjustment?: number;
+  marginLiquidationCount?: number;
+  bankrupt?: boolean;
 }
 
 export interface BacktestPositionLike {

@@ -1,14 +1,4 @@
 import type { BaseStrategy } from "../../strategies/base";
-import {
-  evaluateV40EntryGates,
-  normalizeV40EntryGateConfig,
-  V40_STRATEGY_KEY,
-} from "../../strategies/v35/entryGate";
-import {
-  calculateLayerLot,
-  getLayerStepPct,
-  parseMartinLayers,
-} from "../martingaleEngine";
 import { buildEnvironmentSnapshot, validateRiskSettings } from "../riskSettingsValidator";
 import type { ExecutionPolicy, PositionSide } from "../../../shared/executionModes";
 import { calculateKAMASeries } from "./kama";
@@ -24,12 +14,12 @@ import {
   type BacktestPortfolioCandidate,
 } from "./threeModePortfolioKernel";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
-
-const ADVANCED_KAMA_STRATEGY_KEYS = new Set([
-  V40_STRATEGY_KEY,
-  "KAMA_3K_ULTIMATE_V50",
-  "KAMA_3K_HF_V61",
-]);
+import {
+  createPortfolioStrategyRuntimeAdapter,
+  resolvePortfolioStrategyAdapter,
+  type ResolvedPortfolioStrategyAdapter,
+} from "./portfolioStrategyAdapterRegistry";
+import { ensureBuiltInPortfolioRuntimeFactoriesRegistered } from "./builtInPortfolioRuntimeFactories";
 
 interface AdvancedKamaPortfolioInput {
   request: BacktestRequest;
@@ -43,11 +33,7 @@ interface AdvancedKamaPortfolioInput {
   commission: number;
   slippage: number;
   onProgress?: (progress: number, message: string) => void;
-}
-
-interface TrailingState {
-  activated: boolean;
-  peakPnlPct: number;
+  resolvedAdapter?: ResolvedPortfolioStrategyAdapter;
 }
 
 function numberValue(value: unknown, fallback: number): number {
@@ -136,7 +122,12 @@ function deterministicDeploymentId(request: BacktestRequest): number {
 }
 
 export function supportsAdvancedKamaPortfolio(strategyKey: string): boolean {
-  return ADVANCED_KAMA_STRATEGY_KEYS.has(strategyKey);
+  try {
+    resolvePortfolioStrategyAdapter(strategyKey, "MULTI_POSITION");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function runAdvancedKamaPortfolioBacktest(
@@ -154,9 +145,12 @@ export async function runAdvancedKamaPortfolioBacktest(
     commission,
     slippage,
     onProgress,
+    resolvedAdapter: suppliedAdapter,
   } = input;
-  if (!supportsAdvancedKamaPortfolio(request.strategyKey)) {
-    throw new Error(`策略 ${request.strategyKey} 尚未接入 advanced KAMA portfolio runner`);
+  const resolvedAdapter = suppliedAdapter
+    ?? resolvePortfolioStrategyAdapter(request.strategyKey, executionPolicy.mode);
+  if (resolvedAdapter.descriptor.strategyKey !== request.strategyKey) {
+    throw new Error(`PORTFOLIO_ADAPTER_STRATEGY_MISMATCH:${request.strategyKey}`);
   }
   if (candles.length < 4) throw new Error("advanced portfolio 回測至少需要 4 根已收盤 K 線");
 
@@ -194,9 +188,6 @@ export async function runAdvancedKamaPortfolioBacktest(
     numberValue(config.kama_slow_fastest ?? config.q2_fastest, 10),
     numberValue(config.kama_slow_slowest ?? config.q3_slowest, 6),
   );
-  const isV35 = request.strategyKey === V40_STRATEGY_KEY;
-  const isV61 = request.strategyKey === "KAMA_3K_HF_V61";
-  const v40Gate = isV35 ? normalizeV40EntryGateConfig(config) : null;
   const atrSeries = calculateATRSeries(candles, 14);
   const atrMaSeries = new Array<number>(candles.length).fill(0);
   let atrRollingSum = 0;
@@ -223,23 +214,17 @@ export async function runAdvancedKamaPortfolioBacktest(
   const maxLossUsdt = numberValue(config.Max_Loss_USDT, 0);
   const maxDrawdownPct = numberValue(config.Max_Drawdown_Pct ?? config.MaxDrawdownPercent, 35);
   const maxDeviationPct = numberValue(config.Max_Deviation_Pct ?? config.max_deviation_pct, 3);
-  const targetTpPct = numberValue(config.Target_TP_Pct, riskValidation.settings.targetTPPct);
-  const callbackPct = numberValue(config.Callback_Pct, riskValidation.settings.callbackPct);
   const maxLayers = Math.max(1, Math.trunc(numberValue(config.Max_Layers ?? config.MaxMartinLevels, 15)));
-  const martinStepPct = numberValue(config.Martin_Step_Pct, 1.5);
-  const martinMultiplier = numberValue(config.Martin_Multiplier, 1.5);
-  const martinRules = parseMartinLayers(config.Martin_Layers) ?? null;
   const baseLotUsdt = resolveBaseLotUsdt(config, request.initialCapital);
-  const enableLossShrink = booleanValue(config.enable_loss_shrink ?? config.Enable_Loss_Shrink, true);
-  const lossShrinkLevel1 = numberValue(config.loss_shrink_level1 ?? config.Loss_Shrink_Level1, 3);
-  const lossShrinkLevel1Pct = numberValue(config.loss_shrink_level1_pct ?? config.Loss_Shrink_Level1_Pct, 70);
-  const lossShrinkLevel2 = numberValue(config.loss_shrink_level2 ?? config.Loss_Shrink_Level2, 5);
-  const lossShrinkLevel2Pct = numberValue(config.loss_shrink_level2_pct ?? config.Loss_Shrink_Level2_Pct, 50);
-  const enableContinuousEntry = booleanValue(
-    config.enable_continuous_entry ?? config.Enable_Continuous_Entry,
-    true,
-  );
-  const trailingByLeg = new Map<string, TrailingState>();
+  ensureBuiltInPortfolioRuntimeFactoriesRegistered();
+  const runtimeAdapter = createPortfolioStrategyRuntimeAdapter(resolvedAdapter, {
+    strategy,
+    config,
+    candles,
+    executionPolicy,
+    initialCapital: request.initialCapital,
+    baseLotUsdt,
+  });
   let candidateSequence = 0;
 
   const nextCandidate = (
@@ -272,11 +257,11 @@ export async function runAdvancedKamaPortfolioBacktest(
     };
   };
 
+  // minimumClosedBars 是 registry 的保守資料需求提示，不得凌駕本次參數快照。
+  // 真正的 warm-up 由各 executable adapter／策略核心依其 config 決定；KAMA 共用指標只需按本次長度起跑。
   const startIndex = Math.max(fastLength + 2, slowLength + 2, 3);
   for (let index = startIndex; index < candles.length; index += 1) {
     const candle = candles[index];
-    const previous1 = candles[index - 1];
-    const previous2 = candles[index - 2];
     const price = candle.close;
     const timestamp = candle.timestamp;
     const candidates: BacktestPortfolioCandidate[] = [];
@@ -307,132 +292,37 @@ export async function runAdvancedKamaPortfolioBacktest(
         continue;
       }
 
-      const trailing = trailingByLeg.get(leg.legId) ?? { activated: false, peakPnlPct: 0 };
-      if (!trailing.activated && pnlPct >= targetTpPct) {
-        trailing.activated = true;
-        trailing.peakPnlPct = pnlPct;
-      }
-      if (trailing.activated) {
-        trailing.peakPnlPct = Math.max(trailing.peakPnlPct, pnlPct);
-        if (trailing.peakPnlPct - pnlPct >= callbackPct) {
-          candidates.push(nextCandidate(timestamp, closeAction, "TRAILING_STOP", leg.size, "REGULAR_EXIT"));
-        }
-      }
-      trailingByLeg.set(leg.legId, trailing);
+    }
 
-      if (leg.role !== "HEDGE" && leg.martinLayer + 1 < maxLayers) {
-        const nextLayer = leg.martinLayer + 2;
-        const dynamicStepPct = getLayerStepPct(nextLayer, martinRules, martinStepPct);
-        if (deviationFromLast >= dynamicStepPct) {
-          const layerUsdt = calculateLayerLot(
-            baseLotUsdt,
-            leg.martinLayer + 1,
-            martinRules,
-            martinMultiplier,
-          );
-          candidates.push(nextCandidate(
-            timestamp,
-            leg.sideCode === "LONG" ? "ADD_LONG" : "ADD_SHORT",
-            "MARTIN_DISTANCE_TRIGGER",
-            layerUsdt / price,
-            "MARTIN_ADD",
-          ));
-        }
+    const closedTrades = kernel.snapshotTrades();
+    const adapterDecision = await runtimeAdapter.evaluateBar({
+      index,
+      timestamp,
+      candle,
+      candles,
+      config,
+      strategy,
+      executionMode: executionPolicy.mode,
+      executionPolicy,
+      initialCapital: request.initialCapital,
+      baseLotUsdt,
+      openLegs: legs,
+      indicators: {
+        kamaFast: kamaFast[index],
+        kamaSlow: kamaSlow[index],
+        atr: atrSeries[index] ?? 0,
+        atrAverage: atrMaSeries[index],
+      },
+      consecutiveLosses: consecutiveLossCount(closedTrades),
+      closedTradeCount: closedTrades.length,
+    });
+    if (!hasForcedExit) {
+      for (const intent of [...adapterDecision.management, ...adapterDecision.entries]) {
+        candidates.push(nextCandidate(timestamp, intent.action, intent.reasonCode, intent.quantity, intent.eventKind));
       }
     }
 
-    const fast = kamaFast[index];
-    const slow = kamaSlow[index];
-    let signal: "long" | "short" | null = null;
-    if (!hasForcedExit && fast !== null && slow !== null) {
-      if (isV61) {
-        const atr = atrSeries[index] ?? 0;
-        const atrMa = atrMaSeries[index];
-        const minAtrRatio = numberValue(config.min_atr_ratio, 0.7);
-        if (atr > 0 && (atrMa === 0 || atr >= minAtrRatio * atrMa)) {
-          const normalizedSpread = Math.abs(fast - slow) / atr;
-          const adxPeriod = numberValue(config.adx_period, 14);
-          const adxTrendThreshold = numberValue(config.adx_trend_threshold, 25);
-          const adxStrongThreshold = numberValue(config.adx_strong_threshold, 30);
-          const atrRatioThreshold = numberValue(config.atr_ratio_threshold, 1.2);
-          let regime: "ranging" | "weak_trend" | "strong_trend" = "ranging";
-          if (index >= adxPeriod) {
-            if (normalizedSpread > adxStrongThreshold / 10 && atr > atrMa * atrRatioThreshold) {
-              regime = "strong_trend";
-            } else if (normalizedSpread > adxTrendThreshold / 10) {
-              regime = "weak_trend";
-            }
-          }
-          const bufferMultiplier = regime === "strong_trend"
-            ? numberValue(config.buffer_atr_multiplier_trend, 0.25)
-            : regime === "weak_trend"
-              ? numberValue(config.buffer_atr_multiplier_weak, 0.3)
-              : numberValue(config.buffer_atr_multiplier_ranging, 0.5);
-          const upper = slow + bufferMultiplier * atr;
-          const lower = slow - bufferMultiplier * atr;
-          const zoneMode = String(config.entry_zone_mode ?? "breakout");
-          let direction = 0;
-          if (zoneMode === "breakout") {
-            if (price > upper) direction = 1;
-            else if (price < lower) direction = -1;
-          } else if (price >= lower && price <= upper) {
-            direction = price >= (upper + lower) / 2 ? 1 : -1;
-          }
-          const directionMode = String(config.direction_mode ?? "hybrid");
-          const trendPass = direction === 1 ? fast > slow : direction === -1 ? fast < slow : false;
-          const directionPass = directionMode === "both"
-            || (directionMode === "hybrid" && regime === "ranging")
-            || trendPass;
-          if (direction !== 0 && directionPass) signal = direction === 1 ? "long" : "short";
-        }
-      } else if (isV35) {
-        const gate = evaluateV40EntryGates({
-          candles: [previous2, previous1, candle],
-          rawConfig: config,
-          currentPrice: price,
-          slowKama: slow,
-          allowedDirection: config.direction === "long" || config.direction === "short"
-            ? config.direction
-            : "both",
-        });
-        if (gate.passed) signal = gate.direction;
-      } else {
-        const longPattern = previous2.close > previous2.open
-          && previous1.close > previous1.open
-          && candle.close >= Math.max(previous2.high, previous1.high);
-        const shortPattern = previous2.close < previous2.open
-          && previous1.close < previous1.open
-          && candle.close <= Math.min(previous2.low, previous1.low);
-        if (fast > slow && longPattern) signal = "long";
-        else if (fast < slow && shortPattern) signal = "short";
-      }
-    }
-
-    if (signal && (!enableContinuousEntry ? kernel.snapshotTrades().length === 0 : true)) {
-      const refreshedLegs = kernel.snapshotOpenLegs(price);
-      const sideCode: PositionSide = signal === "long" ? "LONG" : "SHORT";
-      const sameSideOpen = refreshedLegs.some(leg => leg.sideCode === sideCode);
-      const hedgeActive = refreshedLegs.some(leg => leg.role === "HEDGE");
-      if (!sameSideOpen && !hedgeActive) {
-        const losses = consecutiveLossCount(kernel.snapshotTrades());
-        let effectiveLotUsdt = baseLotUsdt;
-        if (enableLossShrink && losses >= lossShrinkLevel2) {
-          effectiveLotUsdt *= lossShrinkLevel2Pct / 100;
-        } else if (enableLossShrink && losses >= lossShrinkLevel1) {
-          effectiveLotUsdt *= lossShrinkLevel1Pct / 100;
-        }
-        candidates.push(nextCandidate(
-          timestamp,
-          signal === "long" ? "OPEN_LONG" : "OPEN_SHORT",
-          executionPolicy.mode === "HEDGE_GUARDED" && refreshedLegs.length > 0
-            ? "H3_REVERSE_SIGNAL_CANDIDATE"
-            : "KAMA_ENTRY_SIGNAL",
-          effectiveLotUsdt / price,
-          "NEW_DIRECTION_OR_HEDGE",
-        ));
-      }
-    }
-
+    const beforeLegs = legs;
     kernel.processBar({
       timestamp,
       price,
@@ -441,10 +331,30 @@ export async function runAdvancedKamaPortfolioBacktest(
       fundingRate: numberValue(config.Backtest_Funding_Rate_Per_Bar, 0),
     }, candidates);
 
-    const openIds = new Set(kernel.snapshotOpenLegs(price).map(leg => leg.legId));
-    for (const legId of Array.from(trailingByLeg.keys())) {
-      if (!openIds.has(legId)) trailingByLeg.delete(legId);
-    }
+    const afterLegs = kernel.snapshotOpenLegs(price);
+    await runtimeAdapter.onBarCommitted?.({
+      index,
+      timestamp,
+      candle,
+      candles,
+      config,
+      strategy,
+      executionMode: executionPolicy.mode,
+      executionPolicy,
+      initialCapital: request.initialCapital,
+      baseLotUsdt,
+      openLegs: afterLegs,
+      beforeLegs,
+      afterLegs,
+      indicators: {
+        kamaFast: kamaFast[index],
+        kamaSlow: kamaSlow[index],
+        atr: atrSeries[index] ?? 0,
+        atrAverage: atrMaSeries[index],
+      },
+      consecutiveLosses: consecutiveLossCount(kernel.snapshotTrades()),
+      closedTradeCount: kernel.snapshotTrades().length,
+    });
     if (index % 2_000 === 0) {
       const progress = 35 + Math.floor(((index - startIndex) / Math.max(1, candles.length - startIndex)) * 60);
       onProgress?.(progress, `三模式 portfolio 回測 ${index}/${candles.length}（${progress}%）...`);

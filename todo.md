@@ -2527,3 +2527,33 @@
 - [x] 修復 OKX adapter 既有六項契約失敗，涵蓋 posMode、post-only fail-closed、payload、client ID 與熔斷器測試隔離
 - [x] 補齊資料遷移、向後相容、權限、冪等、樂觀鎖、審計日誌與失敗回滾測試；驗證不會自動發送真實訂單
 - [x] 執行精準及完整 Vitest、TypeScript、production build、桌面／行動 UI、測試帳戶流程與發布前安全驗收
+
+## KAMA 彩虹馬丁 M2 回測 portfolio runner 認證失敗排查（2026-08-01）
+- [x] 依畫面核對 M2、策略鍵、時間框架、canonical config 與實際失敗訊息，整理預期和實際行為
+- [x] 追查前端回測請求中的 execution mode、strategy key／version 與 capability manifest 傳遞
+- [x] 追查後端 MULTI_POSITION runner 選擇、認證判定與 fail-closed 錯誤來源
+- [x] 以現有測試、日誌及唯讀重現驗證根因與影響範圍，不發送、撤銷或平倉真實訂單
+- [x] 交付 P0／P1／P2 修復與 UI／可觀測性優化建議；如獲授權再實作
+
+## 全平台 S1／M2／H3 runner 與能力系統重構（2026-08-01）
+
+- [x] 建立全策略盤點矩陣：內建／自訂策略、策略實例、參數快照、策略定義、strategy key／version／logic hash、實盤與回測 S1／M2／H3 能力
+- [x] 追查 V4.1 `20415_KAMA_MARTIN_V41` 僅顯示 S1 未認證的宣告、runner、策略語義與測試根因
+- [x] 定義唯一 `StrategyRunnerDescriptor` 契約，統一 strategy identity、版本、semantic hash、支援模式、回測／模擬／實盤認證與 runner factory
+- [x] 移除 `ADVANCED_MODE_KEYS`、`ADVANCED_KAMA_STRATEGY_KEYS` 等重複手工白名單，所有 capability manifest 由 runner descriptor 自動推導
+- [x] 建立未來策略註冊驗證：新增策略若沒有完整 descriptor／adapter／認證證據，只允許明確支援的模式並在 CI fail explicit
+- [x] 建立通用策略語義 adapter 介面，把策略專屬 entry／management／martingale／hedge 候選接入共用 ThreeModePortfolioKernel，不以 generic 指標替代策略語義
+- [x] 完成 KAMA 彩虹馬丁 KRM 的 S1／M2／H3 同源回測 adapter，維持六線、cross／touch、腿級馬丁、exit-first 與 H3 保護語義
+- [x] 完成 V4.1 KAMA+3K 的 S1／M2／H3 runner 對應與能力認證，沿用其 AND／OR、三 K、方向鎖與原地重入實際配置
+- [x] 逐一校正所有現有內建策略的 S1／M2／H3 能力；只有語義與帳本完整的模式才可標示認證，不以一刀切假裝支援
+- [x] 打通策略實例、參數快照與策略定義的 runner identity／version／logic hash 往返，阻擋過期、缺失或語義不相容 artifact
+- [x] 更新回測建立流程為先解析與驗證 runner、再建立 job／載入 K 線，並返回結構化 stage、error code、runner ID／version 與修復提示
+- [x] 更新回測模式卡，分別呈現回測／模擬／實盤能力；不可執行模式禁用並顯示具體缺失，不再以單一綠勾或模糊「未認證」代替
+- [x] 修復失敗歷史記錄把未啟動 runner 顯示為 `legacy` 的誤導，改顯示「未啟動／能力檢查阻擋」與實際失敗階段
+- [x] 增加全域 manifest—descriptor—runner 集合、版本、logic hash 與 supported modes 雙向一致性 Vitest，防止以後新增策略再次漂移
+- [x] 增加 KRM、V4.1 及全部策略的 S1／M2／H3 決定性、雙腿隔離、H3 觸發／解除、逐腿會計、終點政策與 fail-closed 回歸測試
+- [x] 稽核馬丁理論曝險、gross／margin cap、破產／強平與最大回撤算法，禁止回測權益無限制跌穿零或輸出誤導風險數字
+- [x] 執行必要 schema 相容遷移、TypeScript、精準及完整 Vitest、production build；確認全程不送出真實訂單
+- [x] 以 KRM、V4.1、至少一個無進階能力策略及一個未來／自訂策略 fixture 驗證桌面與行動 UI、背景 job、歷史記錄及錯誤路徑
+- [x] 更新架構與新增策略接入文件，說明 descriptor／adapter／認證測試為新增策略的強制完成條件
+- [x] 核對 todo 全部完成後建立 checkpoint，自動發布並交付版本與驗收摘要

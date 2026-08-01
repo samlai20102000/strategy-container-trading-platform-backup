@@ -22,9 +22,13 @@ import { StrategyKama3kV61 } from "../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../strategies/v70/strategy_kama_3k_v70";
 import * as db from "../db";
 import {
-  getSupportedModeCapabilities,
   type StrategyModeCapabilities,
 } from "../../shared/executionModes";
+import {
+  BUILT_IN_STRATEGY_KEYS,
+  getStrategyChannelCapabilities,
+  type StrategyRunnerChannel,
+} from "./strategyRunnerDescriptors";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,17 +36,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CUSTOM_DIR = path.resolve(__dirname, "../strategies/custom");
 
 /** 內建策略 key 清單，受保護 */
-export const BUILT_IN_KEYS = [
-  "strategy_20415",
-  "RAINBOW_TREND_LADDER_V1",
-  "KAMA_RAINBOW_MARTIN_V1",
-  "KAMA_3K_BREAKOUT_V25",
-  "20415_KAMA_MARTIN_V35",
-  "20415_KAMA_MARTIN_V41",
-  "KAMA_3K_ULTIMATE_V50",
-  "KAMA_3K_HF_V61",
-  "KAMA_3K_TORNADO_V70",
-] as const;
+export const BUILT_IN_KEYS = BUILT_IN_STRATEGY_KEYS;
 
 /**
  * 既有內建策略受逐位元不可變測試保護，能力在可信註冊中心顯式宣告，
@@ -64,29 +58,6 @@ const BUILT_IN_CAPABILITIES: Readonly<Record<
 });
 const NO_STRATEGY_CAPABILITIES = Object.freeze({ martingaleLayers: false });
 
-const ADVANCED_MODE_KEYS = new Set<string>([
-  "KAMA_RAINBOW_MARTIN_V1",
-  "20415_KAMA_MARTIN_V35",
-  "KAMA_3K_ULTIMATE_V50",
-  "KAMA_3K_HF_V61",
-]);
-
-function createModeCapabilities(key: string, martingaleLayers: boolean): StrategyModeCapabilities {
-  const advanced = ADVANCED_MODE_KEYS.has(key);
-  return getSupportedModeCapabilities({
-    supportedModes: advanced
-      ? ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"]
-      : ["SINGLE_EXCLUSIVE"],
-    martingaleLayers,
-    independentLegState: advanced,
-    hedgeGuard: advanced,
-    preciseLegClose: advanced,
-    reason: advanced
-      ? "已通過 canonical advanced KAMA portfolio runner 與 multi-leg ledger 認證"
-      : "尚未完成 M2／H3 同源 runner 認證，僅允許 S1",
-  });
-}
-
 /* ==================== 註冊中心 ==================== */
 
 const strategyMap = new Map<string, BaseStrategy>();
@@ -98,6 +69,9 @@ export interface StrategyMeta {
   defaultConfig: Record<string, unknown>;
   capabilities: { martingaleLayers: boolean };
   modeCapabilities: StrategyModeCapabilities;
+  backtestModeCapabilities: StrategyModeCapabilities;
+  simulationModeCapabilities: StrategyModeCapabilities;
+  liveModeCapabilities: StrategyModeCapabilities;
   isBuiltIn: boolean;
   sourceType: "system" | "paste" | "upload";
 }
@@ -116,9 +90,12 @@ export function getStrategyCapabilities(key: string): Readonly<StrategyCapabilit
   return Object.freeze({ martingaleLayers: strategy.capabilities.martingaleLayers === true });
 }
 
-export function getStrategyModeCapabilities(key: string): Readonly<StrategyModeCapabilities> {
+export function getStrategyModeCapabilities(
+  key: string,
+  channel: StrategyRunnerChannel = "LIVE",
+): Readonly<StrategyModeCapabilities> {
   const legacy = getStrategyCapabilities(key);
-  return Object.freeze(createModeCapabilities(key, legacy.martingaleLayers === true));
+  return Object.freeze(getStrategyChannelCapabilities(key, channel, legacy.martingaleLayers === true));
 }
 
 export function listRegisteredStrategies(): StrategyMeta[] {
@@ -127,7 +104,10 @@ export function listRegisteredStrategies(): StrategyMeta[] {
     name: s.name,
     defaultConfig: s.defaultConfig,
     capabilities: getStrategyCapabilities(s.key),
-    modeCapabilities: getStrategyModeCapabilities(s.key),
+    modeCapabilities: getStrategyModeCapabilities(s.key, "LIVE"),
+    backtestModeCapabilities: getStrategyModeCapabilities(s.key, "BACKTEST"),
+    simulationModeCapabilities: getStrategyModeCapabilities(s.key, "SIMULATION"),
+    liveModeCapabilities: getStrategyModeCapabilities(s.key, "LIVE"),
     isBuiltIn: s.isBuiltIn,
     sourceType: s.isBuiltIn ? "system" : "paste",
   }));

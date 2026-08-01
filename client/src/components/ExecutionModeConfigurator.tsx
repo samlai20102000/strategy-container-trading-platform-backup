@@ -85,11 +85,11 @@ export function ExecutionModeConfigurator({
             <ShieldCheck className="h-4 w-4 text-cyan-300" />
             <h3 className="text-sm font-semibold text-foreground">執行模式與風控政策</h3>
             <Badge variant="outline" className="border-cyan-500/40 font-mono text-[10px] text-cyan-300">
-              {context === "backtest" ? "SIMULATION" : context.toUpperCase()}
+              {context === "backtest" ? "BACKTEST" : context.toUpperCase()}
             </Badge>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            回測、快照與部署共用同一 canonical policy。此處只影響模擬；建立實盤部署仍須通過 Preflight 並明確啟用。
+            回測、快照與部署共用同一 canonical policy。此處只影響回測；建立實盤部署仍須通過 Preflight 並明確啟用。
           </p>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">

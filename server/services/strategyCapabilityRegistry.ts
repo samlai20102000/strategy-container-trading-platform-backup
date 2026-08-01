@@ -2,9 +2,14 @@ import * as db from "../db";
 import {
   BUILT_IN_KEYS,
   getStrategy,
-  getStrategyModeCapabilities,
   isBuiltInKey,
 } from "./strategyStudio";
+import {
+  getBuiltInStrategyRunnerDescriptor,
+  getStrategyChannelCapabilities,
+  getStrategyRunnerDescriptor,
+  type StrategyRunnerChannel,
+} from "./strategyRunnerDescriptors";
 import {
   buildStrategyLogicHash,
   createVersionedCapabilityManifest,
@@ -12,55 +17,42 @@ import {
   type VersionedStrategyCapabilityManifest,
 } from "./strategyArtifacts";
 
-interface BuiltInRelease {
-  version: number;
-  logicRevision: string;
-  advancedCertified: boolean;
-}
-
-const BUILT_IN_RELEASES: Readonly<Record<(typeof BUILT_IN_KEYS)[number], BuiltInRelease>> = Object.freeze({
-  strategy_20415: { version: 1, logicRevision: "strategy-20415-v2-runtime", advancedCertified: false },
-  RAINBOW_TREND_LADDER_V1: { version: 1, logicRevision: "rainbow-trend-ladder-v1", advancedCertified: false },
-  KAMA_RAINBOW_MARTIN_V1: {
-    version: 1,
-    logicRevision: "kama-rainbow-martin-v1-leg-scoped-advanced-runtime-v1",
-    advancedCertified: true,
-  },
-  KAMA_3K_BREAKOUT_V25: { version: 1, logicRevision: "kama-breakout-v25", advancedCertified: false },
-  "20415_KAMA_MARTIN_V35": { version: 1, logicRevision: "advanced-kama-v35-portfolio-v1", advancedCertified: true },
-  "20415_KAMA_MARTIN_V41": { version: 1, logicRevision: "kama-v41-source-parity", advancedCertified: false },
-  KAMA_3K_ULTIMATE_V50: { version: 1, logicRevision: "advanced-kama-v50-portfolio-v1", advancedCertified: true },
-  KAMA_3K_HF_V61: { version: 1, logicRevision: "advanced-kama-v61-portfolio-v1", advancedCertified: true },
-  KAMA_3K_TORNADO_V70: { version: 1, logicRevision: "kama-v70-source-parity", advancedCertified: false },
-});
-
 function builtInManifest(
   key: (typeof BUILT_IN_KEYS)[number],
+  channel: StrategyRunnerChannel,
   versionOverride?: number,
 ): VersionedStrategyCapabilityManifest {
-  const release = BUILT_IN_RELEASES[key];
-  const strategyVersion = versionOverride ?? release.version;
+  const descriptor = getBuiltInStrategyRunnerDescriptor(key);
+  const strategyVersion = versionOverride ?? descriptor.strategyVersion;
   const strategyLogicHash = buildStrategyLogicHash({
     strategyKey: key,
     strategyVersion,
-    logicSource: release.logicRevision,
+    logicSource: {
+      logicRevision: descriptor.logicRevision,
+      adapterId: descriptor.adapterId,
+      adapterVersion: descriptor.adapterVersion,
+      channel,
+    },
   });
+  const channelCertification = descriptor.certifications[channel];
   return createVersionedCapabilityManifest({
     strategyKey: key,
     strategyVersion,
     strategyLogicHash,
-    certification: release.advancedCertified ? "CERTIFIED" : "S1_ONLY",
-    capabilities: getStrategyModeCapabilities(key),
+    certification: channelCertification.status === "CERTIFIED" ? "CERTIFIED" : "S1_ONLY",
+    capabilities: getStrategyChannelCapabilities(key, channel),
   });
 }
 
 export async function getStrategyCapabilityManifest(
   strategyKey: string,
+  channel: StrategyRunnerChannel = "LIVE",
 ): Promise<VersionedStrategyCapabilityManifest | null> {
   const definition = await db.getStrategyDefinitionByKey(strategyKey);
   if (isBuiltInKey(strategyKey)) {
     return builtInManifest(
       strategyKey as (typeof BUILT_IN_KEYS)[number],
+      channel,
       definition?.version ?? undefined,
     );
   }
@@ -71,9 +63,13 @@ export async function getStrategyCapabilityManifest(
   const strategyLogicHash = buildStrategyLogicHash({
     strategyKey,
     strategyVersion,
-    logicSource: definition?.sourceCode ?? {
+    logicSource: {
+      channel,
+      descriptor: getStrategyRunnerDescriptor(strategyKey),
+      source: definition?.sourceCode ?? {
       runtimeName: runtimeStrategy?.constructor.name ?? "unloaded-custom-strategy",
       defaultConfig: runtimeStrategy?.defaultConfig ?? definition?.defaultConfig ?? {},
+      },
     },
   });
   const fallback = createVersionedCapabilityManifest({
@@ -81,7 +77,11 @@ export async function getStrategyCapabilityManifest(
     strategyVersion,
     strategyLogicHash,
     certification: "S1_ONLY",
-    capabilities: getStrategyModeCapabilities(strategyKey),
+    capabilities: getStrategyChannelCapabilities(
+      strategyKey,
+      channel,
+      runtimeStrategy?.capabilities.martingaleLayers === true,
+    ),
   });
   if (!definition?.capabilityManifest) return fallback;
 
@@ -98,15 +98,17 @@ export async function getStrategyCapabilityManifest(
 
 export async function requireStrategyCapabilityManifest(
   strategyKey: string,
+  channel: StrategyRunnerChannel = "LIVE",
 ): Promise<VersionedStrategyCapabilityManifest> {
-  const manifest = await getStrategyCapabilityManifest(strategyKey);
+  const manifest = await getStrategyCapabilityManifest(strategyKey, channel);
   if (!manifest) throw new Error(`策略引擎「${strategyKey}」未註冊 capability manifest`);
   return manifest;
 }
 
 export async function listStrategyCapabilityManifests(
   strategyKeys: string[],
+  channel: StrategyRunnerChannel = "LIVE",
 ): Promise<VersionedStrategyCapabilityManifest[]> {
-  const manifests = await Promise.all(strategyKeys.map(getStrategyCapabilityManifest));
+  const manifests = await Promise.all(strategyKeys.map(key => getStrategyCapabilityManifest(key, channel)));
   return manifests.filter((manifest): manifest is VersionedStrategyCapabilityManifest => manifest !== null);
 }

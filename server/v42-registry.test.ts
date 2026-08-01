@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { registryManager } from "./services/registryManager";
 import { initStrategyStudio, listRegisteredStrategies } from "./services/strategyStudio";
+import { getBacktestStrategyCatalog } from "./services/backtest/backtestStrategyCatalog";
 
 describe("V4.2 RegistryManager", () => {
   beforeAll(async () => {
@@ -35,6 +36,11 @@ describe("V4.2 RegistryManager", () => {
         expect(d.capabilityManifest.strategyKey).toBe(d.key);
         expect(d.capabilityManifest.strategyVersion).toBe(d.version);
         expect(d.modeCapabilities).toEqual(d.capabilityManifest.capabilities);
+        expect(d.backtestModeCapabilities).toEqual(d.backtestCapabilityManifest.capabilities);
+        expect(d.simulationModeCapabilities).toEqual(d.simulationCapabilityManifest.capabilities);
+        expect(d.liveModeCapabilities).toEqual(d.liveCapabilityManifest.capabilities);
+        expect(d.capabilityManifest).toEqual(d.liveCapabilityManifest);
+        expect(d.modeCapabilities).toEqual(d.liveModeCapabilities);
       }
     });
 
@@ -59,13 +65,31 @@ describe("V4.2 RegistryManager", () => {
       const defs = await registryManager.getStrategyDefinitions();
       const legacy = defs.find((d) => d.key === "strategy_20415");
 
-      expect(legacy?.capabilityManifest.certification).toBe("S1_ONLY");
+      expect(legacy?.capabilityManifest.certification).toBe("CERTIFIED");
       expect(legacy?.modeCapabilities.supportedModes).toEqual(["SINGLE_EXCLUSIVE"]);
       expect(legacy?.modeCapabilities).toMatchObject({
         independentLegState: false,
         preciseLegClose: false,
         hedgeGuard: false,
       });
+    });
+
+    it("V4.1 回測公開 S1／M2／H3，但模擬與實盤仍 fail closed 為 S1", async () => {
+      const defs = await registryManager.getStrategyDefinitions();
+      const v41 = defs.find((d) => d.key === "20415_KAMA_MARTIN_V41");
+
+      expect(v41?.backtestModeCapabilities.supportedModes).toEqual([
+        "SINGLE_EXCLUSIVE",
+        "MULTI_POSITION",
+        "HEDGE_GUARDED",
+      ]);
+      expect(v41?.backtestModeCapabilities).toMatchObject({
+        independentLegState: true,
+        preciseLegClose: true,
+        hedgeGuard: true,
+      });
+      expect(v41?.simulationModeCapabilities.supportedModes).toEqual(["SINGLE_EXCLUSIVE"]);
+      expect(v41?.liveModeCapabilities.supportedModes).toEqual(["SINGLE_EXCLUSIVE"]);
     });
 
     it("內建策略的 defaultConfig 應包含 V4.0 固定金本位參數", async () => {
@@ -137,17 +161,28 @@ describe("V4.2 RegistryManager", () => {
 });
 
 describe("V4.2 前端數據源一致性驗證", () => {
-  it("registry.listDefinitions 與 backtest.getStrategies 應返回相同的策略列表", async () => {
+  it("registry.listDefinitions 與 backtest.getStrategies 應返回相同策略及 BACKTEST capability", async () => {
     // 模擬前端邏輯：registry 數據源 vs backtest 數據源
     const registryDefs = await registryManager.getStrategyDefinitions();
-    const registered = listRegisteredStrategies();
+    const backtestCatalog = await getBacktestStrategyCatalog();
 
     // 兩者應包含相同的 key 集合
     const registryKeys = new Set(registryDefs.map((d) => d.key));
-    const studioKeys = new Set(registered.map((s) => s.key));
+    const backtestKeys = new Set(backtestCatalog.map((s) => s.key));
 
-    for (const key of studioKeys) {
+    for (const key of backtestKeys) {
       expect(registryKeys.has(key)).toBe(true);
+      const primary = registryDefs.find(item => item.key === key)!;
+      const fallback = backtestCatalog.find(item => item.key === key)!;
+      expect(fallback.backtestModeCapabilities).toEqual(primary.backtestModeCapabilities);
+      expect(fallback.backtestCapabilityManifest).toEqual(primary.backtestCapabilityManifest);
     }
+
+    const v41 = backtestCatalog.find(item => item.key === "20415_KAMA_MARTIN_V41");
+    expect(v41?.backtestModeCapabilities.supportedModes).toEqual([
+      "SINGLE_EXCLUSIVE",
+      "MULTI_POSITION",
+      "HEDGE_GUARDED",
+    ]);
   });
 });

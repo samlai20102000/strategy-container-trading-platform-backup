@@ -13,6 +13,10 @@ const snapshotsSource = readFileSync(
   new URL("../client/src/pages/ParameterSnapshots.tsx", import.meta.url),
   "utf8",
 );
+const executionModeConfiguratorSource = readFileSync(
+  new URL("../client/src/components/ExecutionModeConfigurator.tsx", import.meta.url),
+  "utf8",
+);
 
 describe("V4.1 三頁共用 UI 接線契約", () => {
   it("回測中心顯示 AND/OR、n/3 並以 0/3 fail-closed 封鎖提交", () => {
@@ -21,6 +25,13 @@ describe("V4.1 三頁共用 UI 接線契約", () => {
     expect(backtestSource).toContain("ENTRY CONDITIONS {countEnabledV41EntryConditions(cfg)}/3");
     expect(backtestSource).toContain("disabled={runMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}");
     expect(backtestSource).toContain("disabled={saveSnapshotMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}");
+  });
+
+  it("回測中心主要與 fallback 清單都只採用 BACKTEST capability，V4.1 不會再被 LIVE S1-only 誤鎖", () => {
+    expect(backtestSource.match(/modeCapabilities: s\.backtestModeCapabilities as StrategyModeCapabilities/g)).toHaveLength(2);
+    expect(backtestSource).not.toContain("modeCapabilities: s.modeCapabilities as StrategyModeCapabilities");
+    expect(executionModeConfiguratorSource).toContain('context === "backtest" ? "BACKTEST"');
+    expect(executionModeConfiguratorSource).toContain("此處只影響回測");
   });
 
   it("策略交易頁用 canonical 空白預設並同時封鎖無效表單及無效快照", () => {

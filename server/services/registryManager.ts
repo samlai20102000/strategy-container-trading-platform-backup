@@ -40,6 +40,12 @@ export interface RegistryDefinition {
   version: number;
   capabilityManifest: VersionedStrategyCapabilityManifest;
   modeCapabilities: VersionedStrategyCapabilityManifest["capabilities"];
+  backtestCapabilityManifest: VersionedStrategyCapabilityManifest;
+  backtestModeCapabilities: VersionedStrategyCapabilityManifest["capabilities"];
+  simulationCapabilityManifest: VersionedStrategyCapabilityManifest;
+  simulationModeCapabilities: VersionedStrategyCapabilityManifest["capabilities"];
+  liveCapabilityManifest: VersionedStrategyCapabilityManifest;
+  liveModeCapabilities: VersionedStrategyCapabilityManifest["capabilities"];
   loaded: boolean;
   updatedAt: Date | null;
 }
@@ -134,11 +140,21 @@ export class RegistryManager {
       }));
 
     const result = await Promise.all([...builtIns, ...customs].map(async (definition) => {
-      const capabilityManifest = await requireStrategyCapabilityManifest(definition.key);
+      const [backtestCapabilityManifest, simulationCapabilityManifest, liveCapabilityManifest] = await Promise.all([
+        requireStrategyCapabilityManifest(definition.key, "BACKTEST"),
+        requireStrategyCapabilityManifest(definition.key, "SIMULATION"),
+        requireStrategyCapabilityManifest(definition.key, "LIVE"),
+      ]);
       return {
         ...definition,
-        capabilityManifest,
-        modeCapabilities: capabilityManifest.capabilities,
+        capabilityManifest: liveCapabilityManifest,
+        modeCapabilities: liveCapabilityManifest.capabilities,
+        backtestCapabilityManifest,
+        backtestModeCapabilities: backtestCapabilityManifest.capabilities,
+        simulationCapabilityManifest,
+        simulationModeCapabilities: simulationCapabilityManifest.capabilities,
+        liveCapabilityManifest,
+        liveModeCapabilities: liveCapabilityManifest.capabilities,
       };
     }));
     this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
@@ -164,7 +180,11 @@ export class RegistryManager {
       return null;
     }
 
-    const capabilityManifest = await requireStrategyCapabilityManifest(key);
+    const [backtestCapabilityManifest, simulationCapabilityManifest, liveCapabilityManifest] = await Promise.all([
+      requireStrategyCapabilityManifest(key, "BACKTEST"),
+      requireStrategyCapabilityManifest(key, "SIMULATION"),
+      requireStrategyCapabilityManifest(key, "LIVE"),
+    ]);
     const result: RegistryDefinition = {
       key: memStrategy?.key ?? dbDef!.key,
       name: memStrategy?.name ?? dbDef!.name,
@@ -181,8 +201,14 @@ export class RegistryManager {
         | "paste"
         | "upload",
       version: dbDef?.version ?? 1,
-      capabilityManifest,
-      modeCapabilities: capabilityManifest.capabilities,
+      capabilityManifest: liveCapabilityManifest,
+      modeCapabilities: liveCapabilityManifest.capabilities,
+      backtestCapabilityManifest,
+      backtestModeCapabilities: backtestCapabilityManifest.capabilities,
+      simulationCapabilityManifest,
+      simulationModeCapabilities: simulationCapabilityManifest.capabilities,
+      liveCapabilityManifest,
+      liveModeCapabilities: liveCapabilityManifest.capabilities,
       loaded: !!memStrategy,
       updatedAt: dbDef?.updatedAt ?? null,
     };

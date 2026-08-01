@@ -29,6 +29,7 @@ import {
 
 const QUANTITY_EPSILON = 1e-10;
 const MONEY_EPSILON = 1e-8;
+const DEFAULT_MAINTENANCE_MARGIN_RATE = 0.005;
 
 export interface BacktestPortfolioCandidate extends CandidateIntent {
   /** 同 K 棒事件優先級；未提供時依 action 推導。 */
@@ -53,6 +54,8 @@ export interface ThreeModePortfolioConfig {
   commissionRate: number;
   slippageRate: number;
   quantityPrecision?: number;
+  /** 維持保證金率（notional 比例）；預設 0.5%，僅供回測強平邊界。 */
+  maintenanceMarginRate?: number;
   capabilities?: ModeRuntimeCapabilities;
 }
 
@@ -247,10 +250,20 @@ export class ThreeModePortfolioKernel {
   private lastMarkedAt: number | null = null;
   private lastPrice = 0;
   private lastHedgeClosedAt: number | undefined;
+  private marginLiquidationCount = 0;
+  private bankruptcyAdjustment = 0;
+  private bankrupt = false;
 
   constructor(input: ThreeModePortfolioConfig) {
     if (!finitePositive(input.initialCapital)) throw new Error("initialCapital 必須大於 0");
     if (!finitePositive(input.leverage)) throw new Error("leverage 必須大於 0");
+    if (input.maintenanceMarginRate !== undefined && (
+      !Number.isFinite(input.maintenanceMarginRate)
+      || input.maintenanceMarginRate < 0
+      || input.maintenanceMarginRate >= 1
+    )) {
+      throw new Error("maintenanceMarginRate 必須介於 0（含）與 1（不含）之間");
+    }
     if (input.executionPolicy.version !== EXECUTION_POLICY_VERSION) {
       throw new Error(`不支援的 execution policy version: ${input.executionPolicy.version}`);
     }
@@ -258,6 +271,7 @@ export class ThreeModePortfolioKernel {
     this.config = {
       ...input,
       quantityPrecision: input.quantityPrecision ?? 8,
+      maintenanceMarginRate: input.maintenanceMarginRate ?? DEFAULT_MAINTENANCE_MARGIN_RATE,
       capabilities: input.capabilities ?? {
         supportsIndependentLongShort: true,
         canPreciselyCloseLeg: true,
@@ -273,6 +287,10 @@ export class ThreeModePortfolioKernel {
     this.assertBar(bar);
     this.applyFunding(bar);
     this.markMarket(bar);
+    if (this.applyMarginLiquidation(bar)) {
+      this.markMarket(bar);
+      return;
+    }
     this.applyAutomaticHedgeLifecycle(bar);
 
     const ordered = [...candidates].sort((left, right) => {
@@ -286,6 +304,7 @@ export class ThreeModePortfolioKernel {
 
     for (const candidate of ordered) this.processCandidate(candidate, bar);
     this.rebalanceActiveHedge(bar);
+    this.applyMarginLiquidation(bar);
     this.markMarket(bar);
   }
 
@@ -423,6 +442,13 @@ export class ThreeModePortfolioKernel {
 
   private evaluateCandidate(candidate: BacktestPortfolioCandidate, bar: BacktestPortfolioBar): ModeDecision {
     if (isCloseAction(candidate.action)) return this.evaluateScopedClose(candidate);
+    if (this.bankrupt) {
+      return deterministicDecision(candidate, this.config.executionPolicy, {
+        outcome: "REJECTED",
+        reasonCode: "ACCOUNT_BANKRUPT",
+        contextSnapshot: { equity: 0, newExposureBlocked: true },
+      });
+    }
     if (this.config.executionPolicy.mode === "SINGLE_EXCLUSIVE") {
       return this.evaluateS1(candidate, this.config.executionPolicy);
     }
@@ -559,8 +585,9 @@ export class ThreeModePortfolioKernel {
     const net = existing.reduce((sum, leg) => sum + signedDirection(leg.side) * leg.quantity * price, 0)
       + signedDirection(side) * proposedNotional;
     const margin = gross / this.config.leverage;
-    const grossLimit = this.config.initialCapital * this.config.executionPolicy.riskBudget.maxGrossNotionalPct / 100;
-    const marginLimit = this.config.initialCapital * this.config.executionPolicy.riskBudget.maxMarginUsagePct / 100;
+    const riskEquity = this.currentEquity(price);
+    const grossLimit = riskEquity * this.config.executionPolicy.riskBudget.maxGrossNotionalPct / 100;
+    const marginLimit = riskEquity * this.config.executionPolicy.riskBudget.maxMarginUsagePct / 100;
     if (gross > grossLimit + MONEY_EPSILON) {
       return {
         approved: false,
@@ -817,13 +844,78 @@ export class ThreeModePortfolioKernel {
     return signedDirection(leg.side) * (price - leg.averageEntryPrice) * leg.quantity;
   }
 
-  private currentEquity(price: number): number {
+  private rawCurrentEquity(price: number): number {
     const legs = Array.from(this.legs.values());
     const realizedGross = legs.reduce((sum, leg) => sum + leg.realizedGrossPnl, 0);
     const fees = legs.reduce((sum, leg) => sum + leg.fees, 0);
     const funding = legs.reduce((sum, leg) => sum + leg.funding, 0);
     const unrealized = this.openLegs().reduce((sum, leg) => sum + this.unrealizedGrossPnl(leg, price), 0);
     return this.config.initialCapital + realizedGross + funding - fees + unrealized;
+  }
+
+  private currentEquity(price: number): number {
+    return Math.max(0, this.rawCurrentEquity(price) + this.bankruptcyAdjustment);
+  }
+
+  private applyMarginLiquidation(bar: BacktestPortfolioBar): boolean {
+    const open = this.openLegs();
+    const rawEquity = this.rawCurrentEquity(bar.price);
+    const maintenanceMargin = open.reduce(
+      (sum, leg) => sum + leg.quantity * bar.price * this.config.maintenanceMarginRate,
+      0,
+    );
+    const mustLiquidate = open.length > 0 && (
+      rawEquity <= MONEY_EPSILON
+      || rawEquity <= maintenanceMargin + MONEY_EPSILON
+    );
+    if (!mustLiquidate) {
+      if (open.length === 0 && rawEquity <= MONEY_EPSILON && !this.bankrupt) {
+        this.bankruptcyAdjustment += Math.max(0, -rawEquity);
+        this.bankrupt = true;
+      }
+      return false;
+    }
+
+    this.marginLiquidationCount += 1;
+    for (const leg of [...open]) {
+      const candidate: BacktestPortfolioCandidate = {
+        candidateId: `margin-liquidation:${this.config.deploymentId}:${bar.timestamp}:${leg.legId}`.slice(0, 128),
+        deploymentId: this.config.deploymentId,
+        action: leg.side === "LONG" ? "CLOSE_LONG" : "CLOSE_SHORT",
+        side: leg.side,
+        requestedQuantity: leg.quantity,
+        signalPrice: bar.price,
+        barTimestamp: bar.timestamp,
+        source: "RISK",
+        reasonCode: "MARGIN_LIQUIDATION",
+        reason: "權益不足以維持保證金，回測強制平倉",
+        createdAt: bar.timestamp,
+        eventKind: "FORCED_RISK_EXIT",
+      };
+      const decision = deterministicDecision(candidate, this.config.executionPolicy, {
+        outcome: "CLOSE_ONLY",
+        reasonCode: "MARGIN_LIQUIDATION",
+        targetLegId: leg.legId,
+        targetSide: leg.side,
+        targetRole: leg.role,
+        approvedQuantity: leg.quantity,
+        reduceOnly: true,
+        contextSnapshot: {
+          closeLegIds: [leg.legId],
+          rawEquity,
+          maintenanceMargin,
+        },
+      });
+      this.recordDecision(candidate, decision, "FORCED_RISK_EXIT");
+      this.closeLeg(leg, leg.quantity, bar, candidate, decision, "CLOSE");
+    }
+
+    const postLiquidationEquity = this.rawCurrentEquity(bar.price);
+    if (postLiquidationEquity <= MONEY_EPSILON) {
+      this.bankruptcyAdjustment += Math.max(0, -postLiquidationEquity);
+      this.bankrupt = true;
+    }
+    return true;
   }
 
   private applyAutomaticHedgeLifecycle(bar: BacktestPortfolioBar): void {
@@ -987,7 +1079,9 @@ export class ThreeModePortfolioKernel {
     const realizedPnl = this.trades.reduce((sum, trade) => sum + trade.pnl, 0);
     const unrealizedPnl = openLegs.reduce((sum, leg) => sum + leg.unrealizedPnl, 0);
     const finalEquity = roundBacktestMoney(this.currentEquity(price));
-    const expectedFinalEquity = roundBacktestMoney(this.config.initialCapital + realizedPnl + unrealizedPnl);
+    const expectedFinalEquity = roundBacktestMoney(
+      this.config.initialCapital + realizedPnl + unrealizedPnl + this.bankruptcyAdjustment,
+    );
     const difference = roundBacktestMoney(finalEquity - expectedFinalEquity);
     const grossExposure = openLegs.reduce((sum, leg) => sum + leg.markPrice * leg.size, 0);
     const netExposure = openLegs.reduce(
@@ -1012,6 +1106,9 @@ export class ThreeModePortfolioKernel {
         : 0,
       grossExposure: roundBacktestMoney(grossExposure),
       netExposure: roundBacktestMoney(netExposure),
+      bankruptcyAdjustment: roundBacktestMoney(this.bankruptcyAdjustment),
+      marginLiquidationCount: this.marginLiquidationCount,
+      bankrupt: this.bankrupt,
     };
     if (!accounting.reconciled) {
       throw new Error(
@@ -1036,6 +1133,8 @@ export class ThreeModePortfolioKernel {
       eventCount: this.events.length,
       decisionCount: this.decisions.length,
       rejectedDecisionCount: this.rejectedDecisionCount,
+      marginLiquidationCount: this.marginLiquidationCount,
+      bankrupt: this.bankrupt,
     };
     const byRole = (role: PositionLegRole) => attributions
       .filter(leg => leg.role === role)
@@ -1067,6 +1166,8 @@ export class ThreeModePortfolioKernel {
         relationships.reduce((sum, item) => sum + item.counterfactualWithoutHedgePnl, 0),
       ),
       overlapDurationMs: this.overlapDurationMs,
+      marginLiquidationCount: this.marginLiquidationCount,
+      bankrupt: this.bankrupt,
     };
     return {
       decisions: [...this.decisions],

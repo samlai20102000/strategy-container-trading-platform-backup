@@ -68,6 +68,7 @@ import {
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
 } from "../../shared/strategies/kamaRainbowMartin";
 import { deriveV41StrategyColumns } from "../services/v41StrategyConfig";
+import { getBacktestStrategyCatalog } from "../services/backtest/backtestStrategyCatalog";
 
 const executionModeSchema = z.enum([
   "SINGLE_EXCLUSIVE",
@@ -320,13 +321,7 @@ export const backtestRouter = router({
   // ==================== 策略與時間框架 ====================
 
   /** 策略清單（內建 + 自訂，含 defaultConfig 供表單動態生成） */
-  getStrategies: protectedProcedure.query(() => {
-    return listRegisteredStrategies().map((s) => ({
-      key: s.key,
-      name: s.name,
-      defaultConfig: s.defaultConfig,
-    }));
-  }),
+  getStrategies: protectedProcedure.query(() => getBacktestStrategyCatalog()),
 
   /** 支援的時間框架清單 */
   getTimeframes: protectedProcedure.query(() => getSupportedTimeframes()),
