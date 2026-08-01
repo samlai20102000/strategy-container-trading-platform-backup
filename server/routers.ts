@@ -1330,6 +1330,7 @@ const strategiesRouter = router({
                 size: strategyTotalSize,
                 reduceOnly: true,
                 posSide: posSide,
+                clientOrderId: `clOrdId_RESET_STATE_CLOSE_${existing.id}_${posSide}_${Date.now()}`,
                 ...orderPolicyFields({
                   strategyId: existing.id,
                   source: "MANUAL",
@@ -1463,6 +1464,7 @@ const strategiesRouter = router({
         size: strategyTotalSize,
         reduceOnly: true,
         posSide: posSide,
+        clientOrderId: `clOrdId_MANUAL_CLOSE_${strategy.id}_${posSide}_${Date.now()}`,
         ...orderPolicyFields({
           strategyId: strategy.id,
           source: "MANUAL",
@@ -1623,6 +1625,7 @@ const strategiesRouter = router({
               posSide,
               undefined,
               undefined,
+              `clOrdId_EMERGENCY_CLOSE_${strategy.id}_${posSide}_${Date.now()}`,
               closePolicyOptions({
                 strategyId: strategy.id,
                 source: "RISK",

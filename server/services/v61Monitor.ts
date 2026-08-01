@@ -31,6 +31,9 @@ import { loadStrategyState, saveStrategyState } from "./strategyStateManager";
 import { notifyOwner } from "./notifier";
 import { validateAndProcessMartinConfig } from "./parameterValidator";
 import { getLayerStepPct } from "./martingaleEngine";
+import { getLatestADX, getLatestATR } from "./indicators";
+import { KLineInput } from "./indicators";
+import { V61_REGIME_PARAMS } from "../strategies/v61/strategy_kama_3k_v61";
 import { resolveTradeFill, tradeFillRecordFields } from "./tradeFillTruth";
 
 const V61_KEY = "KAMA_3K_HF_V61";
@@ -101,6 +104,10 @@ export async function runV61Check(): Promise<void> {
   }
 }
 
+import { V61Config } from "../strategies/v61/strategy_kama_3k_v61";
+
+import { getRegime, calculateATRMA } from "./v61Utils"; // 從 v61Utils 導入共用邏輯
+
 export async function checkV61Strategy(strategy: any): Promise<boolean> {
   const state = loadStrategyState(strategy);
   if (state.totalSize <= 0 || state.avgPrice <= 0) return false; // 無持倉
@@ -123,6 +130,7 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
 
   // 取得當前標記價（匹配策略方向，避免跨策略污染）
   let currentPrice = 0;
+  let candles: KLineInput[] = [];
   try {
     const positions = await adapter.getPositions(strategy.symbol);
     const expectedSide = state.isLong ? "long" : "short";
@@ -133,6 +141,13 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
     }
     if (!pos || pos.markPrice <= 0) return false;
     currentPrice = pos.markPrice;
+
+    // 獲取 K 線數據用於 regime 判斷
+    
+    candles = await adapter.getCandles(strategy.symbol, strategy.timeframe || 15, 100); // 獲取足夠的 K 線數據
+    // 暫時使用空陣列避免編譯錯誤
+
+    if (candles.length < 10) return false; // 確保有足夠的 K 線數據進行 regime 判斷
 
     // ===== 自動校準：比對 OKX 實際持倉與本地 martinState =====
     const exchangeSize = pos.size;
@@ -147,7 +162,8 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
         await saveStrategyState(strategy.id, state);
       }
     }
-  } catch {
+  } catch (e) {
+    console.error(`[V61Monitor] 獲取持倉或 K 線數據失敗:`, e instanceof Error ? e.message : e);
     return false;
   }
 
@@ -164,7 +180,7 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
     ? ((currentPrice - avgPrice) / avgPrice) * 100
     : ((avgPrice - currentPrice) / avgPrice) * 100;
   const pnlPct = rawPnlPct * leverage;
-
+  
   // 計算浮虧佔本金百分比
   const unrealizedLoss = isLong
     ? Math.max(0, (avgPrice - currentPrice) * totalSize)
@@ -260,12 +276,16 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
     Martin_Layers: v61Config.Martin_Layers,
   });
   const maxLayers = martinCfg.maxLayers;
-  const globalStepPct = Number(v61Config.martin_step_pct ?? v61Config.Martin_Step_Pct) || Number((strategy as any).martinSpacingPct) || 2.0;
+  // const globalStepPct = Number(v61Config.martin_step_pct ?? v61Config.Martin_Step_Pct) || Number((strategy as any).martinSpacingPct) || 2.0; // 移除此行，改用 regime 決定 stepPct
+
+  // 根據當前市場制度獲取馬丁參數
+  const currentRegime = getRegime(candles, v61Config as V61Config);
+  const regimeMartinParams = V61_REGIME_PARAMS[currentRegime] || V61_REGIME_PARAMS.ranging;
 
   if (pnlPct < 0 && currentLayer > 0 && currentLayer < maxLayers) {
-    // 使用 getLayerStepPct 讀取下一層的專屬間距（分層模式優先，否則用全局間距）
+    // 使用 getLayerStepPct 讀取下一層的專屬間距（分層模式優先，否則用 regime 決定）
     const nextLayer = currentLayer + 1;
-    const stepPct = getLayerStepPct(nextLayer, martinCfg.sortedLayers, globalStepPct);
+    const stepPct = getLayerStepPct(nextLayer, martinCfg.sortedLayers, regimeMartinParams.step[nextLayer - 1] || 2.0); // 使用 regime 參數的 step
 
     const lastLayerPrice = state.lastLayerPrice || avgPrice;
     // 🔥 偏離% 基於價格變動（不乘槓桿）—— 加倉是為了攤平成本，應基於價格偏離
@@ -274,7 +294,7 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
       : ((currentPrice - lastLayerPrice) / lastLayerPrice) * 100;
 
     if (deviation >= stepPct) {
-      console.log(`[V61Monitor] 策略 ${strategy.id} 馬丁加倉條件滿足 (價格偏離 ${deviation.toFixed(2)}% >= ${stepPct}%, 槓桿後=${(deviation * leverage).toFixed(2)}%, 層=${nextLayer}/${maxLayers}, 模式=${martinCfg.usedMode})`);
+      console.log(`[V61Monitor] 策略 ${strategy.id} 馬丁加倉條件滿足 (價格偏離 ${deviation.toFixed(2)}% >= ${stepPct}%, 槓桿後=${(deviation * leverage).toFixed(2)}%, 層=${nextLayer}/${maxLayers}, 模式=${martinCfg.usedMode}, 制度=${currentRegime})`);
       // 加倉由 autoTradeSignalGenerator 觸發
     }
   }
@@ -300,6 +320,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
         undefined,
         undefined,
         undefined,
+        `clOrdId_V61_CLOSE_DISABLE_${strategy.id}_${Date.now()}`,
         closePolicyOptions({
           strategyId: strategy.id,
           source: "RISK",
@@ -369,7 +390,8 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
           orderType: "market",
           orderId,
           ...tradeFillRecordFields(exchangeCloseResult, price, state.totalSize),
-          realizedPnl: pnl !== undefined ? String(pnl.toFixed(6)) : undefined,
+          realizedPnl: pnl !== undefined ?
+ String(pnl.toFixed(6)) : undefined,
           reduceOnly: true,
           status: "filled",
           triggerSource: "v61_stop_loss",
@@ -416,6 +438,7 @@ async function closePosition(
         undefined,
         undefined,
         undefined,
+        `clOrdId_V61_CLOSE_POS_${strategy.id}_${Date.now()}`,
         closePolicyOptions({
           strategyId: strategy.id,
           source: "RISK",
@@ -525,6 +548,7 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
       size: closeSize,
       reduceOnly: true,
       posSide,
+      clientOrderId: `clOrdId_V61_PARTIAL_CLOSE_${strategy.id}_${triggerLayer}_${Date.now()}`,
       ...orderPolicyFields({
         strategyId: strategy.id,
         source: "EXECUTOR",

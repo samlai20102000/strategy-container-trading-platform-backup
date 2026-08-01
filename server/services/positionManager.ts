@@ -77,6 +77,7 @@ export async function placeInitialOrder(
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
+      clientOrderId: `clOrdId_V40_INITIAL_ENTRY_${strategy.id}_${Date.now()}`,
       ...orderPolicyFields({
         strategyId: strategy.id,
         source: "EXECUTOR",

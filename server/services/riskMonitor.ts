@@ -178,6 +178,7 @@ async function enforceRisk(
       opts.posSide,
       undefined,
       undefined,
+      `clOrdId_RISK_MONITOR_${strategy.id}_${eventType}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         source: "RISK",

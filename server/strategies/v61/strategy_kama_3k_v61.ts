@@ -12,6 +12,7 @@
 
 import { BaseStrategyV35 } from '../base';
 import { getLatestADX, getLatestATR, determineMarketRegime, KLineInput } from '../../services/indicators';
+import { getRegime, calculateATRMA } from '../../services/v61Utils'; // 從 v61Utils 導入共用邏輯
 
 // ===== V6.1 Config 類型 =====
 export interface V61Config {
@@ -266,42 +267,7 @@ export class StrategyKama3kV61 extends BaseStrategyV35 {
     return { action: 'HOLD', lotSize: 0, reason: 'V6.1 uses generateSignalV61' };
   }
 
-  /**
-   * 取得當前市場制度
-   */
-  getRegime(candles: KLineInput[]): string {
-    const adxResult = getLatestADX(candles, this.cfg.adx_period);
-    const atrVal = getLatestATR(candles, 14);
-    
-    if (!adxResult || !atrVal) return 'ranging';
-    
-    const adxVal = adxResult?.adx ?? 0;
-    // 計算 ATR MA(50)
-    const atrMa = this.calculateATRMA(candles, 50);
-    
-    if (adxVal > this.cfg.adx_strong_threshold && (atrVal ?? 0) > atrMa * this.cfg.atr_ratio_threshold) {
-      return 'strong_trend';
-    } else if (adxVal > this.cfg.adx_trend_threshold) {
-      return 'weak_trend';
-    }
-    return 'ranging';
-  }
 
-  /**
-   * 計算 ATR 移動平均
-   */
-  private calculateATRMA(candles: KLineInput[], period: number): number {
-    if (candles.length < period + 14) return 0;
-    const atrValues: number[] = [];
-    for (let i = 14; i <= candles.length; i++) {
-      const slice = candles.slice(0, i);
-      const atr = getLatestATR(slice, 14);
-      if (atr) atrValues.push(atr);
-    }
-    if (atrValues.length < period) return atrValues[atrValues.length - 1] || 0;
-    const recent = atrValues.slice(-period);
-    return recent.reduce((a, b) => a + b, 0) / recent.length;
-  }
 
   /**
    * 取得動態緩衝區倍數
@@ -438,10 +404,10 @@ export class StrategyKama3kV61 extends BaseStrategyV35 {
     this.resetDailyIfNeeded(currentTime);
 
     // 計算指標
-    const regime = this.getRegime(candles);
+    const regime = getRegime(candles, this.cfg);
     const regimeParams = V61_REGIME_PARAMS[regime] || V61_REGIME_PARAMS.ranging;
     const atrVal = getLatestATR(candles, 14) || 0;
-    const atrMa = this.calculateATRMA(candles, 50);
+    const atrma = calculateATRMA(candles, 50);
 
     // 計算 KAMA
     const closes = candles.map(c => c.close);
@@ -473,8 +439,8 @@ export class StrategyKama3kV61 extends BaseStrategyV35 {
     }
 
     // 最小 ATR 過濾
-    if (atrVal < this.cfg.min_atr_ratio * atrMa) {
-      return { action: 'wait', reason: `ATR 過低 (${(atrVal/atrMa).toFixed(2)} < ${this.cfg.min_atr_ratio})`, confidence: 0, regime };
+    if (atrVal < this.cfg.min_atr_ratio * atrma) {
+      return { action: 'wait', reason: `ATR 過低 (${(atrVal/atrma).toFixed(2)} < ${this.cfg.min_atr_ratio})`, confidence: 0, regime };
     }
 
     // Bar-Lock 檢查

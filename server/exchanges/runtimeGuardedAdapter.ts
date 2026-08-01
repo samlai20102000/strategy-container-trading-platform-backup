@@ -204,6 +204,7 @@ export function createRuntimeGuardedAdapter(
           posSide?: "long" | "short",
           timeoutMsOrOptions?: number | CloseExecutionOptions,
           priceOffsetPct?: number,
+          clientOrderIdFromCaller?: string,
           smartOptions?: CloseExecutionOptions,
         ): Promise<OrderResult> => {
           const options = property === "closePosition"
@@ -235,6 +236,8 @@ export function createRuntimeGuardedAdapter(
                 posSide,
                 typeof timeoutMsOrOptions === "number" ? timeoutMsOrOptions : undefined,
                 priceOffsetPct,
+                // clientOrderId 應由調用者提供，這裡不自動生成
+                clientOrderIdFromCaller,
                 { ...options, policyContext },
               );
           }
@@ -254,6 +257,7 @@ export function createRuntimeGuardedAdapter(
               size: leg.quantity,
               reduceOnly: true,
               posSide: leg.side,
+              clientOrderId: `clOrdId_RUNTIME_LEG_CLOSE_${context.strategy.id}_${leg.legId || leg.side}_${Date.now()}`,
               executionClass: options?.executionClass,
               emergencyReason: options?.emergencyReason,
               policyContext,

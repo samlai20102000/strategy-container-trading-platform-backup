@@ -1,4 +1,8 @@
 import { randomBytes } from "node:crypto";
+
+function normalizeSymbol(symbol: string): string {
+  return symbol.replace(/[-_/]/g, "").toUpperCase();
+}
 import type { InsertOrderPolicyEvent } from "../../drizzle/schema";
 import { recordOrderPolicyEvent } from "../db";
 import type {
@@ -76,6 +80,8 @@ export interface MakerFirstDependencies {
     initialFilledSize: number;
     completedMakerAttempts: number;
   };
+  /** 檢查 policyRunId 是否已存在且處於活動狀態，用於冪等鎖。 */
+  checkActivePolicyRun?: (policyRunId: string) => Promise<boolean>;
 }
 
 const APPROVED_EMERGENCY_REASONS = new Set<EmergencyReason>([
@@ -189,9 +195,10 @@ function rejectedResult(message: string, intent: MakerFirstOrderIntent): OrderRe
 function aggregateCloseResults(results: OrderResult[]): OrderResult {
   if (results.length === 0) {
     return {
-      success: true,
-      rawResponse: JSON.stringify({ policy: MAKER_FIRST_POLICY_VERSION, skipped: "NO_OPEN_POSITION" }),
-      executionStatus: "filled",
+      success: false,
+      rawResponse: JSON.stringify({ policy: MAKER_FIRST_POLICY_VERSION, rejected: "NO_MATCHING_POSITION" }),
+      errorMessage: "指定方向無匹配持倉可平",
+      executionStatus: "cancelled",
       executedReduceOnly: true,
       childResults: [],
     };
@@ -231,6 +238,11 @@ export async function executeMakerFirst(
   const requestedSize = intent.size;
   const resumeState = dependencies.resumeState;
   const policyRunId = resumeState?.policyRunId ?? createClientOrderId(0, false);
+
+  // Intent Idempotency Lock: Check if this policyRunId is already active
+  if (dependencies.checkActivePolicyRun && (await dependencies.checkActivePolicyRun(policyRunId))) {
+    return rejectedResult("INTENT_ALREADY_ACTIVE", intent);
+  }
 
   const rejectPreflight = async (reasonCode: string): Promise<OrderResult> => {
     const clientOrderId = policyRunId;
@@ -706,9 +718,9 @@ export async function executeMakerFirst(
     return {
       success: false,
       rawResponse: lastRawResponse,
-      errorMessage: intent.reduceOnly
-        ? "正常平倉 maker-only 尚未完全成交；剩餘量維持待處理，絕不自動轉市價"
-        : "開倉／加倉 maker-only 已逾期；剩餘量已取消，絕不轉市價",
+        errorMessage: intent.reduceOnly || totalFilled > 0
+          ? "Maker-only 尚未完全成交；剩餘量維持待處理，絕不自動轉市價"
+          : "開倉／加倉 maker-only 已逾期；剩餘量已取消，絕不轉市價",
       filledSize: totalFilled || undefined,
       executionStatus: totalFilled > 0 ? "partially_filled" : "cancelled",
       executedSide: intent.side,
@@ -769,7 +781,7 @@ async function executeClosePositions(
   dependencies: MakerFirstDependencies,
 ): Promise<OrderResult> {
   const positions = (await adapter.getPositions(symbol)).filter(position => {
-    if (position.symbol.replace(/[-_/]/g, "").toUpperCase() !== symbol.replace(/[-_/]/g, "").toUpperCase()) return false;
+    if (normalizeSymbol(position.symbol) !== normalizeSymbol(symbol)) return false;
     return !posSide || position.side === posSide;
   });
   const results: OrderResult[] = [];
@@ -785,7 +797,40 @@ async function executeClosePositions(
       policyContext: options?.policyContext,
     }, config, dependencies));
   }
-  return aggregateCloseResults(results);
+  const aggregatedResult = aggregateCloseResults(results);
+
+  // 強制平倉後驗證：如果 aggregatedResult 聲稱成功，必須重查持倉
+  if (aggregatedResult.success) {
+    const currentPositions = await adapter.getPositions(symbol);
+    const remainingTargetPositions = currentPositions.filter(position => {
+      if (normalizeSymbol(position.symbol) !== normalizeSymbol(symbol)) return false;
+      return !posSide || position.side === posSide;
+    });
+
+    // 如果聲稱成功但目標持倉仍存在，則判定為驗證失敗
+    if (remainingTargetPositions.length > 0) {
+      return {
+        ...aggregatedResult,
+        success: false,
+        errorMessage: "平倉聲稱成功但持倉仍存在，驗證失敗",
+        executionStatus: "cancelled",
+        policyAudit: {
+          policyVersion: MAKER_FIRST_POLICY_VERSION,
+          executionClass: options?.executionClass ?? "MAKER_ONLY", // 確保 executionClass 有定義
+          emergencyReason: options?.emergencyReason,
+          attempts: aggregatedResult.policyAudit?.attempts ?? 0,
+          fallbackUsed: true,
+          requestedSize: aggregatedResult.policyAudit?.requestedSize ?? 0,
+          filledSize: aggregatedResult.policyAudit?.filledSize ?? 0,
+          remainingSize: aggregatedResult.policyAudit?.remainingSize ?? 0,
+          finalOrderType: "none",
+          clientOrderIds: aggregatedResult.policyAudit?.clientOrderIds ?? [],
+        },
+      };
+    }
+  }
+
+  return aggregatedResult;
 }
 
 /**

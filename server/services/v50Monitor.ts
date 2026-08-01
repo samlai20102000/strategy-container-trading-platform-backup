@@ -285,6 +285,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
         undefined,
         undefined,
         undefined,
+        `clOrdId_V50_CLOSE_DISABLE_${strategy.id}_${Date.now()}`,
         closePolicyOptions({
           strategyId: strategy.id,
           source: "RISK",
@@ -388,6 +389,7 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
         undefined,
         undefined,
         undefined,
+        `clOrdId_V50_CLOSE_TP_${strategy.id}_${Date.now()}`,
         closePolicyOptions({
           strategyId: strategy.id,
           source: "RISK",
@@ -503,6 +505,7 @@ async function partialClose(strategy: any, adapter: ExchangeAdapter, closeSize: 
       size: closeSize,
       reduceOnly: true,
       posSide,
+      clientOrderId: `clOrdId_V50_PARTIAL_CLOSE_${strategy.id}_${triggerLayer}_${Date.now()}`,
       ...orderPolicyFields({
         strategyId: strategy.id,
         source: "EXECUTOR",

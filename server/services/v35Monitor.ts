@@ -298,6 +298,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
+      clientOrderId: `clOrdId_V35_MARTIN_ADD_${strategy.id}_${nextLayer}_${Date.now()}`,
       ...orderPolicyFields({
         strategyId: strategy.id,
         source: "EXECUTOR",
@@ -605,6 +606,7 @@ async function executeReentry(
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
+      clientOrderId: `clOrdId_V35_REENTRY_${strategy.id}_${Date.now()}`,
       ...orderPolicyFields({
         strategyId: strategy.id,
         source: "EXECUTOR",
@@ -676,6 +678,7 @@ async function executeFullClose(
       closeDir,
       undefined,
       undefined,
+      `clOrdId_V35_FULL_CLOSE_${strategy.id}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         source: "RISK",

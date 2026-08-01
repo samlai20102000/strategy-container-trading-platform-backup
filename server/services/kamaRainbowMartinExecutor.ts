@@ -167,6 +167,7 @@ export async function executeKamaRainbowMartinSignal(
       size: requestedQuantity,
       reduceOnly: true,
       posSide,
+      clientOrderId: `clOrdId_KRM_CLOSE_${strategy.id}_${posSide}_${Date.now()}`,
       ...orderPolicyFields({
         strategyId: strategy.id,
         signalId,
@@ -288,6 +289,7 @@ export async function executeKamaRainbowMartinSignal(
     leverage: Number(strategy.leverage || 1),
     reduceOnly: false,
     posSide: opensLong ? "long" : "short",
+    clientOrderId: `clOrdId_KRM_${strategy.id}_${action}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,

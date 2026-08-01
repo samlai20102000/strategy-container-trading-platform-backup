@@ -347,6 +347,7 @@ export async function executeSignal(
       closePosSide,
       undefined,
       undefined,
+      `clOrdId_EXECUTOR_CLOSE_${strategy.id}_${closePosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -479,6 +480,7 @@ export async function executeSignal(
         genericClosePosSide,
         undefined,
         undefined,
+        `clOrdId_GENERIC_CLOSE_${strategy.id}_${genericClosePosSide}_${Date.now()}`,
         closePolicyOptions({
           strategyId: strategy.id,
           signalId,
@@ -594,6 +596,7 @@ export async function executeSignal(
     size,
     price: strategy.orderType === "limit" ? signal.price : undefined,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_RAINBOW_TREND_LADDER_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -742,6 +745,7 @@ async function executeSignalRainbowTrendLadder(
       expectedSide,
       undefined,
       undefined,
+      `clOrdId_RAINBOW_20415_CLOSE_${strategy.id}_${expectedSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -853,11 +857,12 @@ async function executeSignalRainbowTrendLadder(
     orderType: "market",
     size: quantity,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_RAINBOW20415_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
       source: "EXECUTOR",
-      reasonCode: `rainbow_trend_ladder_${action}`,
+      reasonCode: `rainbow_20415_${action}`,
     }),
   });
   await createTrade({
@@ -1031,6 +1036,7 @@ async function executeSignalRainbow20415(
       state.isLong ? "long" : "short",
       undefined,
       undefined,
+      `clOrdId_V35_CLOSE_${strategy.id}_${state.isLong ? "long" : "short"}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -1115,6 +1121,7 @@ async function executeSignalRainbow20415(
     orderType: "market",
     size: quantity,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_V35_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -1441,6 +1448,7 @@ async function executeSignalV35(
       closePosSide,
       undefined,
       undefined,
+      `clOrdId_V41_CLOSE_${strategy.id}_${closePosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -1531,6 +1539,7 @@ async function executeSignalV35(
     orderType: "market",
     size: decision.lotSize,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_V41_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -1725,6 +1734,7 @@ async function executeSignalV50(
       closePosSide,
       undefined,
       undefined,
+      `clOrdId_RAINBOW20415_CLOSE_${strategy.id}_${closePosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -1801,6 +1811,7 @@ async function executeSignalV50(
     orderType: "market",
     size: decision.lotSize,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_RAINBOW20415_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -1985,6 +1996,7 @@ async function executeSignalV61(
       closePosSide,
       undefined,
       undefined,
+      `clOrdId_RAINBOW_LADDER_CLOSE_${strategy.id}_${closePosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -2076,6 +2088,7 @@ async function executeSignalV61(
     size: decision.lotSize,
     price: v61OrderType === 'limit' ? entryPrice : undefined,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_RAINBOW_LADDER_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -2220,6 +2233,7 @@ async function executeSignalV25(
       closePosSide,
       undefined,
       undefined,
+      `clOrdId_V25_CLOSE_${strategy.id}_${closePosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -2346,11 +2360,12 @@ async function executeSignalV25(
     orderType: "market",
     size: orderQuantity,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_V25_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
       source: "EXECUTOR",
-      reasonCode: `v25_${isLong ? "long" : "short"}_entry_or_add`,
+      reasonCode: `v25_${signal.action}`,
     }),
   });
   await createTrade({
@@ -2490,6 +2505,7 @@ async function executeSignalV70(
       closePosSide,
       undefined,
       undefined,
+      `clOrdId_V70_CLOSE_${strategy.id}_${closePosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         signalId,
@@ -2573,6 +2589,7 @@ async function executeSignalV70(
     orderType: "market",
     size: decision.lotSize,
     leverage: strategy.leverage,
+    clientOrderId: `clOrdId_V70_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -2712,6 +2729,7 @@ async function handleDailyLossBreach(
       dailyLossPosSide,
       undefined,
       undefined,
+      `clOrdId_DAILY_LOSS_${strategy.id}_${dailyLossPosSide}_${Date.now()}`,
       closePolicyOptions({
         strategyId: strategy.id,
         source: "RISK",

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type {
   Balance,
   BestBidAsk,
+  Candle,
   ExchangeCapabilitySnapshot,
   ExchangeAdapter,
   ExchangeInstrumentSnapshot,
@@ -195,6 +196,49 @@ async function convertToContracts(
 }
 
 export class OKXAdapter implements ExchangeAdapter {
+  async getCandles(symbol: string, interval: number, limit: number): Promise<Candle[]> {
+    const instId = this.normalizeSymbol(symbol);
+    const intervalMap: Record<number, string> = {
+      1: "1m",
+      3: "3m",
+      5: "5m",
+      15: "15m",
+      30: "30m",
+      60: "1H",
+      120: "2H",
+      240: "4H",
+      360: "6H",
+      720: "12H",
+      1440: "1D",
+      10080: "1W",
+      43200: "1M",
+    };
+    const bar = intervalMap[interval];
+    if (!bar) {
+      throw new Error(`不支持的 K 線時間間隔: ${interval} 分鐘`);
+    }
+
+    const data = await this.request("GET", "/api/v5/market/candles", {
+      instId,
+      bar,
+      limit: String(limit),
+    });
+
+    if (data.code === "0" && data.data) {
+      return data.data.map((c: string[]) => ({
+        timestamp: parseInt(c[0], 10),
+        open: parseFloat(c[1]),
+        high: parseFloat(c[2]),
+        low: parseFloat(c[3]),
+        close: parseFloat(c[4]),
+        volume: parseFloat(c[5]),
+        currencyVolume: parseFloat(c[6]),
+      }));
+    }
+    return [];
+  }
+
+
   readonly exchange = "okx" as const;
   private baseUrl = "https://www.okx.com";
   private isTestnet: boolean;
@@ -376,6 +420,8 @@ export class OKXAdapter implements ExchangeAdapter {
     return config.posMode;
   }
 
+
+
   async getOrderDetail(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult> {
     const instId = this.normalizeSymbol(symbol);
     const req: Record<string, string> = { instId };
@@ -462,7 +508,7 @@ export class OKXAdapter implements ExchangeAdapter {
 
   async placeOrder(params: OrderParams): Promise<OrderResult> {
     const instId = this.normalizeSymbol(params.symbol);
-    const clientOrderId = params.clientOrderId || `clOrdId_${Date.now()}`;
+    const clientOrderId = params.clientOrderId;
 
     // 熔斷器檢查
     if (isCircuitOpen(instId)) {
@@ -579,6 +625,8 @@ export class OKXAdapter implements ExchangeAdapter {
     }
     return [];
   }
+
+
 
   async getPositions(symbol?: string): Promise<Position[]> {
     const params: Record<string, unknown> = { instType: "SWAP" };

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type {
   Balance,
   BestBidAsk,
+  Candle,
   ExchangeCapabilitySnapshot,
   ExchangeAdapter,
   ExchangeInstrumentSnapshot,
@@ -386,6 +387,49 @@ export class BybitAdapter implements ExchangeAdapter {
     }
   }
 
+  async getCandles(symbol: string, interval: number, limit: number): Promise<Candle[]> {
+    const instId = this.normalizeSymbol(symbol);
+    const intervalMap: Record<number, string> = {
+      1: "1",
+      3: "3",
+      5: "5",
+      15: "15",
+      30: "30",
+      60: "60",
+      120: "120",
+      240: "240",
+      360: "360",
+      720: "720",
+      1440: "D",
+      10080: "W",
+      43200: "M",
+    };
+    const intervalStr = intervalMap[interval];
+    if (!intervalStr) {
+      throw new Error(`不支持的 K 線時間間隔: ${interval} 分鐘`);
+    }
+
+    const data = await this.request("GET", "/v5/market/kline", {
+      category: "linear",
+      symbol: instId,
+      interval: intervalStr,
+      limit: String(limit),
+    });
+
+    if (data.retCode === 0 && data.result?.list) {
+      return data.result.list.map((c: string[]) => ({
+        timestamp: parseInt(c[0], 10),
+        open: parseFloat(c[1]),
+        high: parseFloat(c[2]),
+        low: parseFloat(c[3]),
+        close: parseFloat(c[4]),
+        volume: parseFloat(c[5]),
+        currencyVolume: parseFloat(c[6]),
+      }));
+    }
+    return [];
+  }
+
   async getOrderDetail(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult> {
     try {
       if (!orderId && !clientOrderId) {
@@ -613,6 +657,7 @@ export class BybitAdapter implements ExchangeAdapter {
           size: pos.size,
           reduceOnly: true,
           posSide: pos.side,
+          clientOrderId: `clOrdId_BYBIT_CLOSE_${symbol}_${pos.side}_${Date.now()}`,
         });
         childResults.push(lastResult);
       }

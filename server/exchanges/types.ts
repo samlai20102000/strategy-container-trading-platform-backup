@@ -22,7 +22,7 @@ export interface OrderParams {
   /** 僅允許 maker 成交；交易所若判定會立即成交，必須拒單而非轉 taker。 */
   postOnly?: boolean;
   /** 由中央執行層建立的冪等客戶端訂單識別碼。 */
-  clientOrderId?: string;
+  clientOrderId: string;
   /** 方案 B 執行分類；未指定時中央執行層一律視為 MAKER_ONLY。 */
   executionClass?: "MAKER_ONLY" | "EMERGENCY_EXIT";
   /** 只有三種已批准理由可授權 emergency taker。 */
@@ -179,6 +179,16 @@ export interface ExchangeInstrumentSnapshot {
   details?: Record<string, unknown>;
 }
 
+export interface Candle {
+  timestamp: number; // Unix 毫秒
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number; // 交易量 (base currency)
+  currencyVolume: number; // 交易量 (quote currency)
+}
+
 export interface ExchangeAdapter {
   readonly exchange: "bybit" | "okx";
 
@@ -214,6 +224,7 @@ export interface ExchangeAdapter {
 
   /** 查詢所有活動訂單 */
   getOpenOrders(symbol?: string): Promise<OrderResult[]>;
+  getCandles(symbol: string, interval: number, limit: number): Promise<Candle[]>;
 
   /** 撤單 */
   cancelOrder(symbol: string, orderId?: string, clientOrderId?: string): Promise<OrderResult>;
@@ -228,7 +239,7 @@ export interface ExchangeAdapter {
    * @param timeoutMs 限價單等待超時（毫秒），預設 3000ms
    * @param priceOffsetPct 限價偏移百分比（相對 markPrice），預設 0.02%（確保快速成交）
    */
-  closePositionSmart(symbol: string, posSide?: "long" | "short", timeoutMs?: number, priceOffsetPct?: number, options?: CloseExecutionOptions): Promise<OrderResult>;
+  closePositionSmart(symbol: string, posSide?: "long" | "short", timeoutMs?: number, priceOffsetPct?: number, clientOrderId?: string, options?: CloseExecutionOptions): Promise<OrderResult>;
 
   /** 查詢已實現盈虧記錄（用於統計） */
   getClosedPnl(symbol?: string, startTime?: number): Promise<{ symbol: string; pnl: number; time: number }[]>;

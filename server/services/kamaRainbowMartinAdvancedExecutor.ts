@@ -256,6 +256,7 @@ async function executeAdvancedClose(input: {
     size: normalized.qty,
     reduceOnly: true,
     posSide: positionSideLower,
+    clientOrderId: `clOrdId_KRM_ADV_CLOSE_${strategy.id}_${targetLeg.legId}_${Date.now()}`,
     ...orderPolicyFields({
       strategyId: strategy.id,
       signalId,
@@ -467,6 +468,7 @@ export async function executeKamaRainbowMartinAdvancedSignal(input: {
     orderType: "market",
     size: approvedNormalized.qty,
     leverage: Number(strategy.leverage || 1),
+    clientOrderId: `clOrdId_KRM_ADV_ENTRY_${strategy.id}_${signalId}_${Date.now()}`,
     reduceOnly: false,
     posSide: opensLong ? "long" : "short",
     ...orderPolicyFields({
