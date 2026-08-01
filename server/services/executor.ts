@@ -4,7 +4,6 @@ import {
   disableStrategySystem,
   getApiKeyById,
   listEnabledStrategies,
-  getStrategyById,
   getTodayRealizedPnl,
   updateSignal,
   updateStrategyMartinState,
@@ -104,6 +103,7 @@ import {
   verifyV41TrustedEntrySeal,
   type V41TrustedEntrySeal,
 } from "./v41TrustedEntrySeal";
+import { loadCanonicalRuntimeDeployment } from "./canonicalRuntimeDeployment";
 
 /**
  * 策略執行引擎
@@ -217,6 +217,16 @@ export async function executeSignal(
   signalId: number,
   options: ExecuteSignalOptions = {},
 ): Promise<ExecutionResult> {
+  try {
+    strategy = (await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)).strategy;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`[executor] Canonical runtime Gate 拒絕 deployment ${strategy.id}: ${detail}`);
+    return {
+      status: "rejected",
+      message: `Canonical runtime Gate 拒絕執行：${detail}`,
+    };
+  }
     // 0. 統一交易對驗證和標準化（應用於所有策略）
   // ★ 先獲取 API Key 的 isTestnet 狀態，用於交易對驗證
   let isTestnet = false;
@@ -2198,7 +2208,9 @@ async function executeSignalV25(
     signal = generated;
   }
 
-  const freshStrategy = (await getStrategyById(strategy.id)) || strategy;
+  const freshStrategy = (
+    await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
+  ).strategy;
   const state = loadStrategyState(freshStrategy) as V25RuntimeState;
   const rawState =
     freshStrategy.martinState && typeof freshStrategy.martinState === "object"

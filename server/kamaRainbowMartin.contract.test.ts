@@ -7,6 +7,7 @@ import {
   buildKamaRainbowMartinAddLayerQuantities,
   buildKamaRainbowMartinLayerQuantities,
   createKamaRainbowMartinDefaultConfig,
+  getKamaRainbowMartinLayerProtection,
   getKamaRainbowMartinMinimumHistoryBars,
   normalizeKamaRainbowMartinConfig,
   validateKamaRainbowMartinConfig,
@@ -116,6 +117,68 @@ describe("Kama 彩虹馬丁 canonical contract", () => {
       layerConfigs: [{ layerStart: 2, layerEnd: 4, multiplier: 1.5 }],
     });
     expect(wrongStart.issues.map(issue => issue.code)).toContain("KRM_LAYER_MUST_START_AT_ONE");
+  });
+
+  it("分層保護欄位可由快照字串／nested trailing 正規化並完整往返", () => {
+    const config = createKamaRainbowMartinDefaultConfig();
+    const normalized = normalizeKamaRainbowMartinConfig({
+      ...config,
+      layerConfigs: [{
+        layerStart: "1",
+        layerEnd: "4",
+        multiplier: "1.25",
+        gapPct: "3",
+        hardStopLossPct: "8",
+        trailing: {
+          enabled: "true",
+          activationPct: "2.5",
+          callbackPct: "0.8",
+          stepPct: "0.25",
+        },
+      }],
+    });
+    expect(normalized.layerConfigs).toEqual([{
+      layerStart: 1,
+      layerEnd: 4,
+      multiplier: 1.25,
+      gapPct: 3,
+      hardStopLossPct: 8,
+      trailingEnabled: true,
+      trailingActivationPct: 2.5,
+      trailingCallbackPct: 0.8,
+      trailingStepPct: 0.25,
+    }]);
+    expect(validateKamaRainbowMartinConfig(normalized).valid).toBe(true);
+  });
+
+  it("腿級保護空欄位回退全域值，非法止損與 callback 關係則 fail closed", () => {
+    const config = createKamaRainbowMartinDefaultConfig();
+    const inherited = getKamaRainbowMartinLayerProtection(
+      1,
+      config.layerConfigs,
+      config.hardStopLossPct,
+      config.trailing,
+    );
+    expect(inherited).toEqual({
+      hardStopLossPct: config.hardStopLossPct,
+      trailing: config.trailing,
+    });
+    const invalid = validateKamaRainbowMartinConfig({
+      ...config,
+      layerConfigs: [{
+        layerStart: 1,
+        layerEnd: 11,
+        multiplier: 1.5,
+        hardStopLossPct: 0,
+        trailingActivationPct: 2,
+        trailingCallbackPct: 2,
+      }],
+    });
+    expect(invalid.valid).toBe(false);
+    expect(invalid.issues.map(issue => issue.code)).toEqual(expect.arrayContaining([
+      "KRM_LAYER_HARD_STOP_INVALID",
+      "KRM_LAYER_TRAILING_CALLBACK_TOO_LARGE",
+    ]));
   });
 
   it("拒絕未知版本、重複 id／名稱與 fast 大於 slow", () => {

@@ -1,6 +1,7 @@
 import {
   createKamaRainbowMartinDefaultConfig,
   getKamaRainbowMartinCumulativeMultiplier,
+  getKamaRainbowMartinLayerProtection,
   getLayerGapPct,
   validateKamaRainbowMartinConfig,
   type KamaRainbowMartinConfig,
@@ -179,8 +180,18 @@ export function evaluateKamaRainbowMartinManagement(
   const currentPrice = input.currentPrice;
   const eventKey = input.riskEventKey?.trim() || String(input.now);
   const profitPct = calculateKamaRainbowMartinProfitPct(nextState, currentPrice);
-  const trailing = calculateKamaRainbowMartinTrailing(profitPct, runtime, config);
   const currentAddLayer = Math.max(0, nextState.currentLayer - 1);
+  const activeProtection = getKamaRainbowMartinLayerProtection(
+    currentAddLayer,
+    config.layerConfigs,
+    config.hardStopLossPct,
+    config.trailing,
+  );
+  const trailing = calculateKamaRainbowMartinTrailing(profitPct, runtime, {
+    ...config,
+    hardStopLossPct: activeProtection.hardStopLossPct,
+    trailing: activeProtection.trailing,
+  });
   const nextAddLayer = currentAddLayer < config.maxLayers ? currentAddLayer + 1 : null;
   const nextLayer = nextAddLayer == null ? null : nextAddLayer + 1;
   const nextGapPct = nextAddLayer == null
@@ -191,8 +202,8 @@ export function evaluateKamaRainbowMartinManagement(
     : calculateNextTriggerPrice(nextState, runtime, nextGapPct);
   const metrics: KamaRainbowMartinManagementMetrics = {
     profitPct,
-    hardStopLossPct: config.hardStopLossPct,
-    trailingEnabled: config.trailing.enabled,
+    hardStopLossPct: activeProtection.hardStopLossPct,
+    trailingEnabled: activeProtection.trailing.enabled,
     trailingActive: trailing.active,
     peakProfitPct: trailing.peakProfitPct,
     triggerProfitPct: trailing.triggerProfitPct,
@@ -247,11 +258,11 @@ export function evaluateKamaRainbowMartinManagement(
       price: currentPrice,
     });
   }
-  if (profitPct <= -config.hardStopLossPct) {
+  if (profitPct <= -activeProtection.hardStopLossPct) {
     return decide(nextState, runtime, eventKey, input.now, metrics, {
       action: "close",
       reasonCode: "KRM_HARD_STOP",
-      reason: `硬止損：浮盈 ${profitPct.toFixed(4)}% ≤ -${config.hardStopLossPct}%`,
+      reason: `硬止損：浮盈 ${profitPct.toFixed(4)}% ≤ -${activeProtection.hardStopLossPct}%`,
       price: currentPrice,
       closeReason: "HARD_STOP",
     });

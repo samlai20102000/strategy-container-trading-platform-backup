@@ -36,6 +36,7 @@ interface CompareRow {
   strategyKey: string;
   symbol: string;
   timeframe: string;
+  executionMode?: string;
   endPositionPolicy?: string;
   engineVersion?: string;
   reconciled?: boolean;
@@ -51,6 +52,19 @@ interface CompareRow {
 }
 
 const PAGE_SIZE = 20;
+
+function executionModeMeta(value: unknown): { code: string; label: string; className: string } {
+  if (value === "MULTI_POSITION") {
+    return { code: "M2", label: "雙向獨立", className: "border-violet-500/45 text-violet-300" };
+  }
+  if (value === "HEDGE_GUARDED") {
+    return { code: "H3", label: "保護對沖", className: "border-amber-500/45 text-amber-300" };
+  }
+  if (value === "SINGLE_EXCLUSIVE") {
+    return { code: "S1", label: "單倉互斥", className: "border-cyan-500/45 text-cyan-300" };
+  }
+  return { code: "舊版", label: "未記錄模式", className: "border-muted-foreground/30 text-muted-foreground" };
+}
 
 function fmtDate(ts: number | Date): string {
   const d = ts instanceof Date ? ts : new Date(ts);
@@ -140,6 +154,7 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
           strategyKey: data.run.strategyKey,
           symbol: data.run.symbol,
           timeframe: data.run.timeframe,
+          executionMode: (data.run as { executionMode?: string }).executionMode,
           endPositionPolicy: data.run.endPositionPolicy,
           engineVersion: data.engineSemantics?.version ?? data.environment?.engineVersion,
           reconciled: data.accounting?.reconciled,
@@ -225,6 +240,10 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                       <TableHead key={r.runId} className="text-xs text-center">
                         <div>{strategyNameMap[r.strategyKey] ?? r.strategyKey}</div>
                         <div className="text-[10px] text-muted-foreground">{r.symbol} / {r.timeframe}</div>
+                        {(() => {
+                          const mode = executionModeMeta(r.executionMode);
+                          return <Badge variant="outline" className={`mt-1 text-[9px] ${mode.className}`}>{mode.code} · {mode.label}</Badge>;
+                        })()}
                       </TableHead>
                     ))}
                   </TableRow>
@@ -320,9 +339,15 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                   </TableCell>
                   <TableCell className="text-xs">{fmtDate(r.createdAt)}</TableCell>
                   <TableCell className="text-xs">
-                    <Badge variant="outline" className="text-[10px]">
-                      {r.strategyName || strategyNameMap[r.strategyKey] || r.strategyKey}
-                    </Badge>
+                    <div className="flex flex-col items-start gap-1">
+                      <Badge variant="outline" className="text-[10px]">
+                        {r.strategyName || strategyNameMap[r.strategyKey] || r.strategyKey}
+                      </Badge>
+                      {(() => {
+                        const mode = executionModeMeta((r as { executionMode?: string }).executionMode);
+                        return <Badge variant="outline" className={`text-[9px] ${mode.className}`}>{mode.code} · {mode.label}</Badge>;
+                      })()}
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs font-mono">{r.symbol}</TableCell>
                   <TableCell className="text-xs">{r.timeframe}</TableCell>

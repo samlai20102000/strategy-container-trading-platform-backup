@@ -267,6 +267,15 @@ export class OKXAdapter implements ExchangeAdapter {
     preferredEndpointIndex = OKX_ENDPOINTS.indexOf(this.baseUrl);
   }
 
+  private getCircuitKey(instId: string): string {
+    const accountFingerprint = crypto
+      .createHash("sha256")
+      .update(this.apiKey)
+      .digest("hex")
+      .slice(0, 16);
+    return `${this.isTestnet ? "demo" : "live"}:${accountFingerprint}:${instId}`;
+  }
+
   private sign(timestamp: string, method: string, path: string, body: string): string {
     return crypto
       .createHmac("sha256", this.apiSecret)
@@ -508,11 +517,27 @@ export class OKXAdapter implements ExchangeAdapter {
 
   async placeOrder(params: OrderParams): Promise<OrderResult> {
     const instId = this.normalizeSymbol(params.symbol);
-    const clientOrderId = params.clientOrderId;
+    const circuitKey = this.getCircuitKey(instId);
+    const clientOrderId = params.clientOrderId?.slice(0, 32);
+
+    if (
+      params.postOnly
+      && (
+        params.orderType !== "limit"
+        || !Number.isFinite(params.price)
+        || Number(params.price) <= 0
+      )
+    ) {
+      return {
+        success: false,
+        errorMessage: "post-only fail-closed：必須使用有效價格的限價單，已取消交易所 mutation",
+        rawResponse: "{}",
+      };
+    }
 
     // 熔斷器檢查
-    if (isCircuitOpen(instId)) {
-      const state = circuitBreakers.get(instId)!;
+    if (isCircuitOpen(circuitKey)) {
+      const state = circuitBreakers.get(circuitKey)!;
       const remainSec = Math.ceil((state.cooldownUntil - Date.now()) / 1000);
       console.warn(`[OKX placeOrder] 熔斷器開啟中，${instId} 剩餘冷卻 ${remainSec} 秒`);
       return { success: false, errorMessage: `熔斷器開啟：${instId} 冷卻中`, rawResponse: "{}" };
@@ -537,9 +562,13 @@ export class OKXAdapter implements ExchangeAdapter {
       return { success: false, errorMessage: e.message, rawResponse: "{}" };
     }
 
+    const effectivePosSide = posMode === "long_short_mode"
+      ? (params.posSide ?? (params.side === "buy" ? "long" : "short"))
+      : undefined;
+
     // 設置槓桿
     if (params.leverage && params.leverage > 0) {
-      await this.setLeverage(instId, params.leverage, params.posSide);
+      await this.setLeverage(instId, params.leverage, effectivePosSide);
     }
 
     // 構建訂單請求
@@ -547,14 +576,12 @@ export class OKXAdapter implements ExchangeAdapter {
       instId,
       tdMode: params.marginMode || "cross",
       side: params.side,
-      posSide: posMode === "net_mode" ? "net" : params.posSide,
-      ordType: params.orderType,
+      ...(effectivePosSide && { posSide: effectivePosSide }),
+      ordType: params.postOnly ? "post_only" : params.orderType,
       sz: String(contracts),
-      clOrdId: clientOrderId,
+      ...(clientOrderId && { clOrdId: clientOrderId }),
       // 價格僅限限價單
       ...(params.orderType === "limit" && { px: String(params.price) }),
-      // postOnly 僅限限價單
-      ...(params.postOnly && params.orderType === "limit" && { posOnly: true }),
       // reduceOnly
       ...(params.reduceOnly && { reduceOnly: true }),
       // timeInForce
@@ -569,7 +596,7 @@ export class OKXAdapter implements ExchangeAdapter {
         const detail = data.data?.[0];
 
         if (data.code === "0" && detail?.sCode === "0") {
-          resetCircuit(instId);
+          resetCircuit(circuitKey);
           this.markEndpointSuccess();
           return {
             success: true,
@@ -577,7 +604,7 @@ export class OKXAdapter implements ExchangeAdapter {
             clientOrderId: detail.clOrdId,
             rawResponse: JSON.stringify(data),
             state: detail.state === "live" ? "live" : detail.state === "filled" ? "filled" : detail.state === "canceled" ? "canceled" : "unknown",
-            postOnly: detail.posOnly === "true",
+            postOnly: params.postOnly || detail.ordType === "post_only" || detail.posOnly === "true",
           };
         } else {
           const errCode = detail?.sCode || data.code;
@@ -586,7 +613,7 @@ export class OKXAdapter implements ExchangeAdapter {
 
           // 50001 錯誤，記錄熔斷器並切換端點重試
           if (RETRYABLE_ERROR_CODES.has(errCode)) {
-            recordCircuitFail(instId);
+            recordCircuitFail(circuitKey);
             this.switchEndpoint();
             console.warn(`[OKX placeOrder] 50001 錯誤，切換端點並重試 (${attempt + 1}/${PLACE_ORDER_MAX_RETRIES})`);
             await new Promise(resolve => setTimeout(resolve, computeBackoff(attempt)));

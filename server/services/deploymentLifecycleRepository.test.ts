@@ -28,9 +28,15 @@ import {
   type DeploymentPreflightReport,
 } from "./deploymentLifecycle";
 import {
+  buildStrategyArtifactEnvelope,
   buildStrategyLogicHash,
   createVersionedCapabilityManifest,
 } from "./strategyArtifacts";
+import {
+  SNAPSHOT_ARTIFACT_STATE_KEY,
+  SNAPSHOT_CONFIG_STATE_KEY,
+  SNAPSHOT_META_STATE_KEY,
+} from "./strategySnapshotConfig";
 
 const mocks = vi.hoisted(() => ({ getDb: vi.fn() }));
 
@@ -507,6 +513,64 @@ describe("deploymentLifecycleRepository", () => {
     expect(created.deploymentKey).toMatch(/^deployment:7:/);
     expect(created.webhookSecret).toHaveLength(48);
     expect(created.preflightReport).toBeNull();
+  });
+
+  it("seals the selected strategy config, source provenance and execution profile into a disabled draft", async () => {
+    const harness = createDbHarness(null);
+    mocks.getDb.mockResolvedValue(harness.db);
+    const manifest = currentManifest();
+    const strategyConfig = {
+      timeframe: "30m",
+      entryThreshold: 1.25,
+      layerConfigs: [{ layer: 1, multiplier: 1.5, gapPct: 0.8 }],
+    };
+    const executionPolicy = createDefaultExecutionPolicy("MULTI_POSITION");
+    const artifact = buildStrategyArtifactEnvelope({
+      artifactScope: "EXECUTION_PROFILE",
+      strategyKey: manifest.strategyKey,
+      strategyVersion: manifest.strategyVersion,
+      strategyLogicHash: manifest.strategyLogicHash,
+      config: strategyConfig,
+      executionMode: "MULTI_POSITION",
+      executionPolicy,
+      capabilityManifest: manifest,
+      source: { origin: "PARAMETER_SNAPSHOT", sourceSnapshotId: 321 },
+    });
+
+    const created = await createCanonicalDeployment({
+      userId: OWNER_ID,
+      name: "Snapshot-backed deployment",
+      apiKeyId: 12,
+      symbol: "ethusdt",
+      strategyKey: manifest.strategyKey,
+      executionMode: "MULTI_POSITION",
+      executionPolicy,
+      capabilityManifest: manifest,
+      strategyConfig,
+      sourceMetadata: {
+        sourceKind: "PARAMETER_SNAPSHOT",
+        snapshotId: 321,
+        snapshotName: "M2 validated profile",
+      },
+      strategyArtifact: artifact,
+    });
+
+    expect(created).toMatchObject({
+      enabled: false,
+      activationState: "DRAFT",
+      symbol: "ETHUSDT",
+      executionMode: "MULTI_POSITION",
+    });
+    expect(created.martinState).toMatchObject({
+      [SNAPSHOT_CONFIG_STATE_KEY]: strategyConfig,
+      [SNAPSHOT_META_STATE_KEY]: {
+        strategyKey: manifest.strategyKey,
+        sourceKind: "PARAMETER_SNAPSHOT",
+        snapshotId: 321,
+        snapshotName: "M2 validated profile",
+      },
+      [SNAPSHOT_ARTIFACT_STATE_KEY]: artifact,
+    });
   });
 
   it("creates KRM H3 with canonical 4% policy and a complete editable V2 default config", async () => {

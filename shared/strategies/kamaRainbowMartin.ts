@@ -48,6 +48,21 @@ export interface KamaRainbowMartinLayerConfig {
   multiplier: number;
   /** Optional gap from the previous actual fill; blank uses the global gapPct. */
   gapPct?: number;
+  /** Optional leg hard-stop override after this add layer has filled. */
+  hardStopLossPct?: number;
+  /** Optional trailing switch override; blank inherits the global switch. */
+  trailingEnabled?: boolean;
+  /** Optional trailing activation override; blank inherits the global value. */
+  trailingActivationPct?: number;
+  /** Optional trailing callback override; blank inherits the global value. */
+  trailingCallbackPct?: number;
+  /** Optional trailing staircase step override; blank inherits the global value. */
+  trailingStepPct?: number;
+}
+
+export interface KamaRainbowMartinLayerProtection {
+  hardStopLossPct: number;
+  trailing: KamaRainbowMartinTrailingConfig;
 }
 
 export interface KamaRainbowMartinConfig {
@@ -148,6 +163,17 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+function toOptionalNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function toOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return toBoolean(value, false);
+}
+
 function toTimeframe(value: unknown, fallback: KamaRainbowMartinTimeframe): KamaRainbowMartinTimeframe {
   const normalized = String(value ?? "").trim().toUpperCase();
   return KAMA_RAINBOW_MARTIN_TIMEFRAMES.includes(normalized as KamaRainbowMartinTimeframe)
@@ -232,7 +258,13 @@ function parseLayerConfigs(value: unknown): ParsedKamaRainbowMartinLayers {
   return {
     layers: source.map(item => {
       const raw = isRecord(item) ? item : {};
+      const rawTrailing = isRecord(raw.trailing) ? raw.trailing : {};
       const rawGap = firstDefined(raw.gapPct, raw.stepPct, raw.gap, raw.spacingPct);
+      const hardStopLossPct = toOptionalNumber(firstDefined(raw.hardStopLossPct, raw.hardStopPct));
+      const trailingEnabled = toOptionalBoolean(firstDefined(raw.trailingEnabled, rawTrailing.enabled));
+      const trailingActivationPct = toOptionalNumber(firstDefined(raw.trailingActivationPct, rawTrailing.activationPct));
+      const trailingCallbackPct = toOptionalNumber(firstDefined(raw.trailingCallbackPct, rawTrailing.callbackPct));
+      const trailingStepPct = toOptionalNumber(firstDefined(raw.trailingStepPct, rawTrailing.stepPct));
       return {
         layerStart: toNumber(firstDefined(raw.layerStart, raw.start), Number.NaN),
         layerEnd: toNumber(firstDefined(raw.layerEnd, raw.end), Number.NaN),
@@ -240,6 +272,11 @@ function parseLayerConfigs(value: unknown): ParsedKamaRainbowMartinLayers {
         ...(rawGap === undefined || rawGap === null || rawGap === ""
           ? {}
           : { gapPct: toNumber(rawGap, Number.NaN) }),
+        ...(hardStopLossPct === undefined ? {} : { hardStopLossPct }),
+        ...(trailingEnabled === undefined ? {} : { trailingEnabled }),
+        ...(trailingActivationPct === undefined ? {} : { trailingActivationPct }),
+        ...(trailingCallbackPct === undefined ? {} : { trailingCallbackPct }),
+        ...(trailingStepPct === undefined ? {} : { trailingStepPct }),
       };
     }),
   };
@@ -417,6 +454,23 @@ export function validateKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartin
       if (layer.gapPct !== undefined && (!Number.isFinite(layer.gapPct) || layer.gapPct <= 0 || layer.gapPct > 100)) {
         addIssue(issues, `${path}.gapPct`, "KRM_LAYER_GAP_INVALID", "分層間距留空時使用全域值；填寫時必須大於 0 且不超過 100");
       }
+      if (layer.hardStopLossPct !== undefined && (!Number.isFinite(layer.hardStopLossPct) || layer.hardStopLossPct <= 0 || layer.hardStopLossPct > 100)) {
+        addIssue(issues, `${path}.hardStopLossPct`, "KRM_LAYER_HARD_STOP_INVALID", "分層硬止損留空時使用全域值；填寫時必須大於 0 且不超過 100");
+      }
+      for (const [field, value, code, label] of [
+        ["trailingActivationPct", layer.trailingActivationPct, "KRM_LAYER_TRAILING_ACTIVATION_INVALID", "Trailing 啟動"],
+        ["trailingCallbackPct", layer.trailingCallbackPct, "KRM_LAYER_TRAILING_CALLBACK_INVALID", "Trailing 回調"],
+        ["trailingStepPct", layer.trailingStepPct, "KRM_LAYER_TRAILING_STEP_INVALID", "Trailing 步長"],
+      ] as const) {
+        if (value !== undefined && (!Number.isFinite(value) || value <= 0 || value > 100)) {
+          addIssue(issues, `${path}.${field}`, code, `分層 ${label} 留空時使用全域值；填寫時必須大於 0 且不超過 100`);
+        }
+      }
+      const effectiveActivation = layer.trailingActivationPct ?? config.trailing.activationPct;
+      const effectiveCallback = layer.trailingCallbackPct ?? config.trailing.callbackPct;
+      if (Number.isFinite(effectiveActivation) && Number.isFinite(effectiveCallback) && effectiveCallback >= effectiveActivation) {
+        addIssue(issues, `${path}.trailingCallbackPct`, "KRM_LAYER_TRAILING_CALLBACK_TOO_LARGE", "分層 Trailing 回調必須小於該層生效的啟動值");
+      }
       const previous = sortedLayers[index - 1];
       if (index === 0 && layer.layerStart !== 1) {
         addIssue(issues, `${path}.layerStart`, "KRM_LAYER_MUST_START_AT_ONE", "第一個分層必須由 L1 開始");
@@ -501,6 +555,26 @@ export function getLayerGapPct(
   if (!layerConfigs || layerConfigs.length === 0) return defaultGapPct;
   const config = layerConfigs.find(cfg => layer >= cfg.layerStart && layer <= cfg.layerEnd);
   return config?.gapPct ?? defaultGapPct;
+}
+
+export function getKamaRainbowMartinLayerProtection(
+  addLayer: number,
+  layerConfigs: readonly KamaRainbowMartinLayerConfig[] | undefined,
+  defaultHardStopLossPct: number,
+  defaultTrailing: KamaRainbowMartinTrailingConfig,
+): KamaRainbowMartinLayerProtection {
+  const layer = addLayer > 0
+    ? layerConfigs?.find(config => addLayer >= config.layerStart && addLayer <= config.layerEnd)
+    : undefined;
+  return {
+    hardStopLossPct: layer?.hardStopLossPct ?? defaultHardStopLossPct,
+    trailing: {
+      enabled: layer?.trailingEnabled ?? defaultTrailing.enabled,
+      activationPct: layer?.trailingActivationPct ?? defaultTrailing.activationPct,
+      callbackPct: layer?.trailingCallbackPct ?? defaultTrailing.callbackPct,
+      stepPct: layer?.trailingStepPct ?? defaultTrailing.stepPct,
+    },
+  };
 }
 
 export function getKamaRainbowMartinCumulativeMultiplier(

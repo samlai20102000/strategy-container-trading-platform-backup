@@ -24,6 +24,9 @@ const LEGACY_CONFIG_KEY_BY_STRATEGY: Readonly<Record<string, string>> = {
 
 export type SnapshotSourceMetadata = {
   strategyKey: string;
+  sourceKind?: "STRATEGY_DEFINITION" | "STRATEGY_INSTANCE" | "PARAMETER_SNAPSHOT" | "BACKTEST_RUN";
+  sourceStrategyId?: number;
+  sourceBacktestRunId?: string;
   snapshotId?: number;
   snapshotName?: string | null;
   importedAt?: number;
@@ -91,6 +94,9 @@ export function attachSnapshotConfig(
     [SNAPSHOT_CONFIG_STATE_KEY]: { ...config },
     [SNAPSHOT_META_STATE_KEY]: {
       strategyKey,
+      sourceKind: metadata.sourceKind,
+      sourceStrategyId: metadata.sourceStrategyId,
+      sourceBacktestRunId: metadata.sourceBacktestRunId,
       snapshotId: metadata.snapshotId,
       snapshotName: metadata.snapshotName ?? null,
       importedAt: metadata.importedAt ?? Date.now(),
@@ -145,6 +151,27 @@ export function getBoundStrategyArtifact(
   if (artifact.contractVersion !== "strategy-artifact-v1") return undefined;
   if (artifact.strategyKey !== strategyKey) return undefined;
   return artifact as unknown as StrategyArtifactEnvelope;
+}
+
+/**
+ * 只替換已驗證 execution profile artifact，不觸碰策略 runtime state、原始配置或來源 metadata。
+ * lifecycle policy／mode 變更與 runtime legacy migration 共用此唯一寫入邊界。
+ */
+export function replaceBoundStrategyArtifact(
+  state: Record<string, unknown> | null | undefined,
+  strategyKey: string,
+  artifact: StrategyArtifactEnvelope,
+): Record<string, unknown> {
+  if (artifact.strategyKey !== strategyKey) {
+    throw new Error("ARTIFACT_STRATEGY_KEY_MISMATCH");
+  }
+  if (artifact.artifactScope !== "EXECUTION_PROFILE") {
+    throw new Error("RUNTIME_ARTIFACT_SCOPE_INVALID");
+  }
+  return {
+    ...(state ?? {}),
+    [SNAPSHOT_ARTIFACT_STATE_KEY]: artifact,
+  };
 }
 
 /** 保留所有雙底線開頭的配置／中繼資料，避免未來策略在狀態更新時丟失。 */

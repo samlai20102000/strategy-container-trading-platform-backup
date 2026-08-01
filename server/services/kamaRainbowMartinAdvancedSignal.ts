@@ -41,6 +41,7 @@ interface LegCandidate {
   reason: string;
   reasonCode: string;
   price: number;
+  observedAt: number;
   eventKey: string;
   layerNum?: number;
   orderSize?: { mode: "quantity" | "usdt"; value: number };
@@ -129,6 +130,7 @@ async function evaluateLegs(input: AdvancedSignalInput, legs: PositionLeg[]): Pr
       reason: decision.reason,
       reasonCode: decision.reasonCode,
       price,
+      observedAt: quote.capturedAt,
       eventKey,
       layerNum: decision.layerNum,
       orderSize: decision.orderSize,
@@ -190,6 +192,48 @@ function selectH3ProtectionCandidate(
   });
 }
 
+/**
+ * H3 的 minimum hold 只限制「主腿恢復後主動解除保護」；硬止損、KILL 與
+ * trailing 等安全退出仍由 management candidate 優先處理，不得被持有時間阻擋。
+ */
+function selectH3RecoveryCandidate(
+  input: AdvancedSignalInput,
+  candidates: LegCandidate[],
+): LegCandidate | null {
+  if (input.mode !== "HEDGE_GUARDED") return null;
+  const policy = normalizeExecutionModePolicy(
+    input.strategy.executionPolicy ?? { mode: input.strategy.executionMode || "SINGLE_EXCLUSIVE" },
+  );
+  if (policy.mode !== "HEDGE_GUARDED" || policy.unwindPolicy !== "CLOSE_HEDGE_ON_RECOVERY") {
+    return null;
+  }
+  const primary = candidates.find(candidate => candidate.leg.role === "PRIMARY");
+  const hedge = candidates.find(candidate => candidate.leg.role === "HEDGE");
+  if (!primary || !hedge) return null;
+
+  const avgPrice = Number(primary.leg.avgEntryPrice);
+  if (!(avgPrice > 0) || !(primary.price > 0)) return null;
+  const primaryLossPct = primary.leg.side === "LONG"
+    ? (primary.price - avgPrice) / avgPrice * 100
+    : (avgPrice - primary.price) / avgPrice * 100;
+  if (!Number.isFinite(primaryLossPct) || primaryLossPct <= -policy.primaryLossTriggerPct) return null;
+
+  const hedgeOpenedAt = hedge.leg.openedAt?.getTime();
+  if (!hedgeOpenedAt || !Number.isFinite(hedgeOpenedAt)) return null;
+  const heldMs = Math.max(0, hedge.observedAt - hedgeOpenedAt);
+  const minimumHoldMs = policy.minimumHedgeHoldSeconds * 1_000;
+  if (heldMs < minimumHoldMs) return null;
+
+  return {
+    ...hedge,
+    action: "CLOSE",
+    reason: `H3 主腿已恢復至 ${primaryLossPct.toFixed(4)}%，保護腿已持有 ${Math.floor(heldMs / 1_000)} 秒，依 policy 解除保護`,
+    reasonCode: "KRM_H3_RECOVERY_UNWIND",
+    eventKey: `${hedge.eventKey}:h3-recovery:${policy.primaryLossTriggerPct}:${policy.minimumHedgeHoldSeconds}`,
+    closeReason: "OTHER",
+  };
+}
+
 export async function generateKamaRainbowMartinAdvancedSignal(
   input: AdvancedSignalInput,
 ): Promise<KamaRainbowMartinAdvancedSignalResult> {
@@ -240,6 +284,26 @@ export async function generateKamaRainbowMartinAdvancedSignal(
         layerNum: selected.layerNum,
         orderSize: selected.orderSize,
         closeReason: selected.closeReason,
+      }),
+      holdReason: null,
+    };
+  }
+
+  const recovery = selectH3RecoveryCandidate(input, candidates);
+  if (recovery) {
+    return {
+      signal: sealedSignal({
+        strategy: input.strategy,
+        config: input.config,
+        mode: input.mode,
+        action: "CLOSE",
+        reason: recovery.reason,
+        reasonCode: recovery.reasonCode,
+        price: recovery.price,
+        eventKey: recovery.eventKey,
+        cycleId: recovery.leg.cycleId,
+        legId: recovery.leg.legId,
+        closeReason: recovery.closeReason,
       }),
       holdReason: null,
     };

@@ -19,6 +19,7 @@ import {
   type StrategyModeEnvelope,
 } from "./executionModeEngine";
 import { recordModeDecision } from "./threeModeLedger";
+import { loadCanonicalRuntimeDeployment } from "./canonicalRuntimeDeployment";
 
 const ACTIVE_LEG_STATES = [
   "PENDING",
@@ -53,6 +54,9 @@ export interface RuntimeModeAuthorization {
 }
 
 export interface RuntimeModeGuardDependencies {
+  loadCanonicalStrategy: (
+    strategy: RuntimeModeGuardInput["strategy"],
+  ) => Promise<RuntimeModeGuardInput["strategy"]>;
   loadRuntimeContext: (
     strategy: RuntimeModeGuardInput["strategy"],
     adapter: ExchangeAdapter,
@@ -145,6 +149,9 @@ export async function loadRuntimeModeContext(
 }
 
 const defaultDependencies: RuntimeModeGuardDependencies = {
+  loadCanonicalStrategy: async strategy => (
+    await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
+  ).strategy,
   loadRuntimeContext: loadRuntimeModeContext,
   recordDecision: recordModeDecision,
 };
@@ -176,13 +183,48 @@ export async function authorizeRuntimeModeAction(
   input: RuntimeModeGuardInput,
   dependencies: RuntimeModeGuardDependencies = defaultDependencies,
 ): Promise<RuntimeModeAuthorization> {
-  const runtime = await dependencies.loadRuntimeContext(input.strategy, input.adapter);
-  const envelope = evaluateStrategyMode(input.strategy, input.signal, input.signalId, runtime);
+  let strategy: RuntimeModeGuardInput["strategy"];
+  try {
+    strategy = await dependencies.loadCanonicalStrategy(input.strategy);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.slice(0, 200) : "unknown canonical runtime error";
+    const base = evaluateStrategyMode(input.strategy, input.signal, input.signalId, undefined);
+    const envelope: StrategyModeEnvelope = {
+      ...base,
+      decision: {
+        ...base.decision,
+        outcome: "REJECTED",
+        reasonCode: "CANONICAL_RUNTIME_CONTEXT_INVALID",
+        contextSnapshot: {
+          ...base.decision.contextSnapshot,
+          canonicalRuntimeError: detail,
+          failClosed: true,
+        },
+      },
+    };
+    try {
+      await dependencies.recordDecision({
+        userId: input.strategy.userId,
+        strategyId: input.strategy.id,
+        deploymentKey: input.strategy.deploymentKey,
+        cycleId: input.cycleId ?? null,
+        legId: input.legId ?? null,
+        source: envelope.candidate.source,
+        candidateIntent: envelope.candidate as unknown as Record<string, unknown>,
+        decision: envelope.decision,
+      });
+    } catch (persistenceError) {
+      return persistenceFailureEnvelope(envelope, persistenceError);
+    }
+    return { allowed: false, envelope };
+  }
+  const runtime = await dependencies.loadRuntimeContext(strategy, input.adapter);
+  const envelope = evaluateStrategyMode(strategy, input.signal, input.signalId, runtime);
   try {
     const inserted = await dependencies.recordDecision({
-      userId: input.strategy.userId,
-      strategyId: input.strategy.id,
-      deploymentKey: input.strategy.deploymentKey,
+      userId: strategy.userId,
+      strategyId: strategy.id,
+      deploymentKey: strategy.deploymentKey,
       cycleId: input.cycleId ?? null,
       legId: input.legId ?? envelope.decision.targetLegId ?? null,
       source: envelope.candidate.source,

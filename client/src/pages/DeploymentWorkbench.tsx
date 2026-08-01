@@ -40,6 +40,9 @@ import {
   normalizeStrategyExecutionPolicy,
 } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
 import DashboardLayout from "@/components/DashboardLayout";
+import ExecutionProfileSummary from "@/components/ExecutionProfileSummary";
+import { InstanceSelector } from "@/components/InstanceSelector";
+import { SymbolCombobox } from "@/components/SymbolCombobox";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -85,11 +88,14 @@ import {
   isFreshEligiblePreflight,
   type WorkbenchLifecycleAction,
 } from "@/lib/deploymentWorkbench";
+import { buildDeploymentLineage } from "@/lib/deploymentLineage";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 
 type DeploymentRow = RouterOutputs["deployments"]["list"][number];
 type TransitionRow = RouterOutputs["deployments"]["getHistory"][number];
 type RecentModeDecisionRow = RouterOutputs["deployments"]["getStatus"]["recentDecisions"][number];
+type WorkbenchPanel = "manage" | "quick-start";
+type QuickStartSource = "STRATEGY_INSTANCE" | "PARAMETER_SNAPSHOT" | "STRATEGY_DEFINITION";
 
 interface PreflightCheckView {
   code: string;
@@ -622,6 +628,9 @@ function HistoryTimeline({ rows }: { rows: TransitionRow[] }) {
 
 export default function DeploymentWorkbench() {
   const utils = trpc.useUtils();
+  const [workspacePanel, setWorkspacePanel] = useState<WorkbenchPanel>(() => (
+    new URLSearchParams(window.location.search).get("panel") === "quick-start" ? "quick-start" : "manage"
+  ));
   const [search, setSearch] = useState("");
   const [modeFilter, setModeFilter] = useState<ExecutionMode | "ALL">("ALL");
   const [stateFilter, setStateFilter] = useState<DeploymentActivationState | "ALL">("ALL");
@@ -636,6 +645,34 @@ export default function DeploymentWorkbench() {
   const [copyOpen, setCopyOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
+  const [quickCreatedId, setQuickCreatedId] = useState<number | null>(null);
+  const [quickSymbolSpec, setQuickSymbolSpec] = useState<{
+    base: string;
+    quote: string;
+    minOrderQty?: number;
+    qtyStep?: number;
+  } | null>(null);
+  const [quickForm, setQuickForm] = useState({
+    sourceKind: "STRATEGY_INSTANCE" as QuickStartSource,
+    sourceStrategyId: "",
+    sourceSnapshotId: "",
+    strategyKey: "",
+    name: "",
+    apiKeyId: "",
+    symbol: "BTCUSDT",
+    executionMode: "SINGLE_EXCLUSIVE" as ExecutionMode,
+    positionSize: "30",
+    positionMode: "usdt" as "usdt" | "quantity",
+    leverage: "1",
+    direction: "both" as "long" | "short" | "both",
+    maxPositionPct: "20",
+    stopLossPct: "0",
+    takeProfitPct: "0",
+    maxDailyLoss: "0",
+  });
+  const [quickPolicy, setQuickPolicy] = useState<ExecutionPolicy>(() => (
+    createDefaultStrategyExecutionPolicy(undefined, "SINGLE_EXCLUSIVE")
+  ));
 
   const listInput = useMemo(() => ({
     includeArchived,
@@ -644,6 +681,7 @@ export default function DeploymentWorkbench() {
   }), [includeArchived, modeFilter, stateFilter]);
   const statusInput = useMemo(() => ({ deploymentId: selectedId ?? 0 }), [selectedId]);
   const historyInput = useMemo(() => ({ deploymentId: selectedId ?? 0, limit: 100 }), [selectedId]);
+  const quickSnapshotsInput = useMemo(() => ({ sortBy: "createdAt" as const, limit: 100 }), []);
 
   const deploymentsQuery = trpc.deployments.list.useQuery(listInput, {
     refetchInterval: 15_000,
@@ -659,6 +697,8 @@ export default function DeploymentWorkbench() {
   });
   const apiKeysQuery = trpc.apiKeys.list.useQuery();
   const registryQuery = trpc.registry.listDefinitions.useQuery(undefined);
+  const quickStrategiesQuery = trpc.strategies.list.useQuery(undefined, { staleTime: 5_000 });
+  const quickSnapshotsQuery = trpc.backtest.getSnapshots.useQuery(quickSnapshotsInput, { staleTime: 5_000 });
 
   const deployments = deploymentsQuery.data ?? [];
   const filteredDeployments = useMemo(() => {
@@ -693,6 +733,24 @@ export default function DeploymentWorkbench() {
   const activePolicy = normalizeStrategyExecutionPolicy(
     activeDeployment?.strategyKey,
     activeDeployment?.executionPolicy ?? { mode: activeMode },
+  );
+  const activeLineage = buildDeploymentLineage(activeDeployment);
+  const quickSelectedApiKey = apiKeysQuery.data?.find(key => String(key.id) === quickForm.apiKeyId) ?? null;
+  const quickSelectedStrategy = quickStrategiesQuery.data?.find(strategy => String(strategy.id) === quickForm.sourceStrategyId) ?? null;
+  const quickSelectedSnapshot = quickSnapshotsQuery.data?.find(snapshot => String(snapshot.id) === quickForm.sourceSnapshotId) ?? null;
+  const quickCreatedDeployment = deployments.find(item => item.id === quickCreatedId)
+    ?? (activeDeployment?.id === quickCreatedId ? activeDeployment : null);
+  const quickPreflightReady = quickCreatedId !== null
+    && preflightReport?.deploymentId === quickCreatedId
+    && preflightReport.deploymentRevision === Number(quickCreatedDeployment?.deploymentRevision ?? preflightReport.deploymentRevision)
+    && isFreshEligiblePreflight(preflightReport);
+  const quickCanCreate = Boolean(
+    quickForm.name.trim()
+    && quickForm.apiKeyId
+    && quickForm.strategyKey
+    && quickForm.symbol.trim()
+    && (quickForm.sourceKind !== "STRATEGY_INSTANCE" || quickForm.sourceStrategyId)
+    && (quickForm.sourceKind !== "PARAMETER_SNAPSHOT" || quickForm.sourceSnapshotId)
   );
 
   const stats = useMemo(() => ({
@@ -733,6 +791,125 @@ export default function DeploymentWorkbench() {
   const disableMutation = trpc.deployments.disable.useMutation({ onSuccess: () => { toast.success("部署已停用"); refreshDeployment(); }, onError: mutationError });
   const blockMutation = trpc.deployments.block.useMutation({ onSuccess: () => { toast.success("部署已 fail-closed 封鎖"); refreshDeployment(); }, onError: mutationError });
   const archiveMutation = trpc.deployments.archive.useMutation({ onSuccess: () => { toast.success("部署已封存"); refreshDeployment(); }, onError: mutationError });
+
+  const resetQuickResult = () => {
+    setQuickCreatedId(null);
+    setLatestReport(null);
+  };
+
+  const setQuickMode = (executionMode: ExecutionMode) => {
+    resetQuickResult();
+    setQuickForm(form => ({ ...form, executionMode }));
+    setQuickPolicy(createDefaultStrategyExecutionPolicy(quickForm.strategyKey || undefined, executionMode));
+  };
+
+  const selectQuickStrategy = (value: string) => {
+    resetQuickResult();
+    const strategy = quickStrategiesQuery.data?.find(item => String(item.id) === value);
+    const strategyKey = strategy?.strategyKey ?? "";
+    const executionMode = asMode(strategy?.executionMode);
+    setQuickForm(form => ({
+      ...form,
+      sourceStrategyId: value === "__none" ? "" : value,
+      sourceSnapshotId: "",
+      strategyKey,
+      name: strategy ? `${strategy.name} · ${DEPLOYMENT_MODE_META[executionMode].code} 部署` : form.name,
+      apiKeyId: strategy?.apiKeyId ? String(strategy.apiKeyId) : form.apiKeyId,
+      symbol: strategy?.symbol ?? form.symbol,
+      executionMode,
+    }));
+    setQuickPolicy(normalizeStrategyExecutionPolicy(strategyKey || undefined, {
+      ...(strategy?.executionPolicy && typeof strategy.executionPolicy === "object" ? strategy.executionPolicy : {}),
+      mode: executionMode,
+    }));
+  };
+
+  const selectQuickSnapshot = (value: string) => {
+    resetQuickResult();
+    const snapshot = quickSnapshotsQuery.data?.find(item => String(item.id) === value);
+    const settings = snapshot?.backtestSettings as Record<string, unknown> | null | undefined;
+    const config = snapshot?.config as Record<string, unknown> | null | undefined;
+    const executionMode = snapshot?.artifact?.executionMode
+      ? asMode(snapshot.artifact.executionMode)
+      : quickForm.executionMode;
+    const sourceSymbol = settings?.symbol ?? config?.symbol ?? config?.Symbol;
+    const rawSize = settings?.baseLotSize ?? settings?.tradeAmount;
+    setQuickForm(form => ({
+      ...form,
+      sourceStrategyId: "",
+      sourceSnapshotId: value,
+      strategyKey: snapshot?.strategyKey ?? "",
+      name: snapshot ? `${snapshot.snapshotName || snapshot.strategyName || snapshot.strategyKey} · 部署` : form.name,
+      symbol: typeof sourceSymbol === "string" ? sourceSymbol.replace(/-/g, "").toUpperCase() : form.symbol,
+      positionSize: typeof rawSize === "number" && rawSize > 0 ? String(rawSize) : form.positionSize,
+      executionMode,
+    }));
+    setQuickPolicy(normalizeStrategyExecutionPolicy(snapshot?.strategyKey, {
+      ...(snapshot?.artifact?.executionPolicy ?? {}),
+      mode: executionMode,
+    }));
+  };
+
+  const selectQuickDefinition = (strategyKey: string) => {
+    resetQuickResult();
+    const definition = registryQuery.data?.find(item => item.key === strategyKey);
+    const executionMode = quickForm.executionMode;
+    setQuickForm(form => ({
+      ...form,
+      sourceStrategyId: "",
+      sourceSnapshotId: "",
+      strategyKey,
+      name: definition ? `${definition.name} · ${DEPLOYMENT_MODE_META[executionMode].code} 部署` : form.name,
+    }));
+    setQuickPolicy(createDefaultStrategyExecutionPolicy(strategyKey || undefined, executionMode));
+  };
+
+  const quickCreateMutation = trpc.deployments.create.useMutation({
+    onSuccess: deployment => {
+      setQuickCreatedId(deployment.id);
+      setSelectedId(deployment.id);
+      toast.success("停用部署草稿已建立", { description: "正在執行唯讀 Preflight；不會送出訂單。" });
+      void utils.deployments.list.invalidate();
+      runPreflightMutation.mutate({
+        deploymentId: deployment.id,
+        expectedRevision: Number(deployment.deploymentRevision ?? 1),
+        transitionKey: buildDeploymentTransitionKey("quick-preflight", deployment.id),
+      });
+    },
+    onError: mutationError,
+  });
+
+  const createQuickDraft = () => {
+    const positionSize = Number(quickForm.positionSize);
+    const leverage = Number(quickForm.leverage);
+    const maxPositionPct = Number(quickForm.maxPositionPct);
+    const stopLossPct = Number(quickForm.stopLossPct);
+    const takeProfitPct = Number(quickForm.takeProfitPct);
+    const maxDailyLoss = Number(quickForm.maxDailyLoss);
+    if (!quickCanCreate || !Number.isFinite(positionSize) || positionSize <= 0 || !Number.isInteger(leverage) || leverage < 1) {
+      toast.error("請完成來源、帳戶、交易對、正數倉位與槓桿設定");
+      return;
+    }
+    quickCreateMutation.mutate({
+      name: quickForm.name.trim(),
+      description: `由部署工作台快速啟動流程建立；來源 ${quickForm.sourceKind}，建立後固定停用並執行唯讀 Preflight。`,
+      apiKeyId: Number(quickForm.apiKeyId),
+      symbol: quickForm.symbol.trim().toUpperCase(),
+      strategyKey: quickForm.strategyKey,
+      ...(quickForm.sourceKind === "STRATEGY_INSTANCE" ? { sourceStrategyId: Number(quickForm.sourceStrategyId) } : {}),
+      ...(quickForm.sourceKind === "PARAMETER_SNAPSHOT" ? { sourceSnapshotId: Number(quickForm.sourceSnapshotId) } : {}),
+      executionMode: quickForm.executionMode,
+      executionPolicy: { ...quickPolicy } as Record<string, unknown>,
+      positionSize,
+      positionMode: quickForm.positionMode,
+      leverage,
+      direction: quickForm.direction,
+      maxPositionPct: Number.isFinite(maxPositionPct) ? maxPositionPct : 0,
+      stopLossPct: Number.isFinite(stopLossPct) ? stopLossPct : 0,
+      takeProfitPct: Number.isFinite(takeProfitPct) ? takeProfitPct : 0,
+      maxDailyLoss: Number.isFinite(maxDailyLoss) ? maxDailyLoss : 0,
+    });
+  };
 
   const isLifecyclePending = [
     runPreflightMutation,
@@ -858,8 +1035,8 @@ export default function DeploymentWorkbench() {
               >
                 <RefreshCw className="mr-2 h-4 w-4" />重新載入
               </Button>
-              <Button onClick={() => setCreateOpen(true)}>
-                <Plus className="mr-2 h-4 w-4" />建立部署草稿
+              <Button onClick={() => setWorkspacePanel("quick-start")}>
+                <Plus className="mr-2 h-4 w-4" />快速啟動
               </Button>
             </div>
           </div>
@@ -873,6 +1050,18 @@ export default function DeploymentWorkbench() {
           </AlertDescription>
         </Alert>
 
+        <Tabs
+          value={workspacePanel}
+          onValueChange={value => setWorkspacePanel(value as WorkbenchPanel)}
+          className="space-y-6"
+          data-testid="deployment-workbench-panels"
+        >
+          <TabsList className="grid h-auto w-full grid-cols-2 rounded-xl bg-muted/55 p-1 sm:w-[520px]">
+            <TabsTrigger value="manage" className="py-2.5"><Boxes className="mr-2 h-4 w-4" />部署管理</TabsTrigger>
+            <TabsTrigger value="quick-start" className="py-2.5"><Play className="mr-2 h-4 w-4" />快速啟動</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="manage" className="space-y-6">
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
             { label: "目前範圍", value: stats.total, suffix: " deployments", icon: Boxes, tone: "text-cyan-300 bg-cyan-500/10" },
@@ -1025,7 +1214,7 @@ export default function DeploymentWorkbench() {
                     </TabsList>
 
                     <TabsContent value="overview" className="space-y-5">
-                      {statusQuery.isLoading ? <div className="grid gap-3 sm:grid-cols-2"><Skeleton className="h-40" /><Skeleton className="h-40" /></div> : (
+                      {statusQuery.isLoading && !activeDeployment ? <div className="grid gap-3 sm:grid-cols-2"><Skeleton className="h-40" /><Skeleton className="h-40" /></div> : (
                         <>
                           <div className="grid gap-4 lg:grid-cols-2">
                             <div className="rounded-xl border border-border/60 bg-background/25 p-5">
@@ -1047,6 +1236,40 @@ export default function DeploymentWorkbench() {
                               </div>
                               <Separator className="my-4" />
                               <p className="text-sm leading-6 text-muted-foreground">{DEPLOYMENT_MODE_META[activeMode].shortDescription}。能力 stale 或不相容時一律 fail closed。</p>
+                            </div>
+                            <div
+                              data-testid="deployment-version-lineage"
+                              className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.035] p-5 lg:col-span-2"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <h3 className="flex items-center gap-2 font-semibold"><History className="h-4 w-4 text-cyan-300" />Version lineage</h3>
+                                  <p className="mt-1 text-xs leading-5 text-muted-foreground">直接讀取封印 artifact 與不可由頁面覆蓋的來源 metadata；缺值明確顯示為「—」，不自行推斷。</p>
+                                </div>
+                                <Badge variant="outline" className="border-cyan-500/30 font-mono text-cyan-300">deployment #{activeDeployment.id}</Badge>
+                              </div>
+                              <dl className="mt-4 grid gap-2 sm:grid-cols-2">
+                                {[
+                                  ["Source kind", activeLineage.sourceKind],
+                                  ["Source strategy ID", activeLineage.sourceStrategyId],
+                                  ["Source snapshot ID", activeLineage.sourceSnapshotId],
+                                  ["Snapshot name", activeLineage.snapshotName],
+                                  ["Parameter-set version", activeLineage.parameterSetVersion],
+                                  ["Strategy version", activeLineage.strategyVersion],
+                                  ["Policy version", activeLineage.executionPolicyVersion],
+                                  ["Artifact contract", activeLineage.artifactContractVersion],
+                                  ["Artifact origin", activeLineage.artifactOrigin],
+                                  ["Artifact hash", activeLineage.artifactHash],
+                                  ["Imported at", formatDate(activeLineage.importedAt)],
+                                  ["Migrated by", activeLineage.migratedBy],
+                                  ["Migrated at", formatDate(activeLineage.migratedAt)],
+                                ].map(([label, value]) => (
+                                  <div key={label} className="min-w-0 rounded-lg border border-border/45 bg-background/35 px-3 py-2.5">
+                                    <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
+                                    <dd className="mt-1 break-all font-mono text-xs leading-5 text-foreground">{value}</dd>
+                                  </div>
+                                ))}
+                              </dl>
                             </div>
                           </div>
 
@@ -1097,6 +1320,246 @@ export default function DeploymentWorkbench() {
             )}
           </Card>
         </section>
+          </TabsContent>
+
+          <TabsContent value="quick-start" className="space-y-5">
+            <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]" data-testid="quick-start-panel">
+              <div className="space-y-5">
+                <Card className="border-border/70 bg-card/70">
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-cyan-300">Step 1 · Source</p>
+                        <CardTitle className="mt-2 text-lg">選擇可信策略來源</CardTitle>
+                        <p className="mt-2 text-sm leading-6 text-muted-foreground">來源只決定要封印的策略與 Execution Profile；建立結果固定為 DRAFT／disabled。</p>
+                      </div>
+                      <ShieldCheck className="h-6 w-6 text-cyan-300" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      {([
+                        ["STRATEGY_INSTANCE", "策略實例", "沿用目前實例與綁定 artifact"],
+                        ["PARAMETER_SNAPSHOT", "參數快照", "由可信快照完整還原"],
+                        ["STRATEGY_DEFINITION", "策略定義", "從 registry 預設值開始"],
+                      ] as const).map(([kind, label, description]) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => {
+                            resetQuickResult();
+                            setQuickForm(form => ({
+                              ...form,
+                              sourceKind: kind,
+                              sourceStrategyId: "",
+                              sourceSnapshotId: "",
+                              strategyKey: "",
+                              name: "",
+                            }));
+                            setQuickPolicy(createDefaultStrategyExecutionPolicy(undefined, quickForm.executionMode));
+                          }}
+                          className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] duration-150 active:scale-[0.98] ${quickForm.sourceKind === kind ? "border-cyan-400/40 bg-cyan-500/10" : "border-border/60 bg-background/30 hover:border-border"}`}
+                        >
+                          <span className="font-semibold">{label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-muted-foreground">{description}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {quickForm.sourceKind === "STRATEGY_INSTANCE" && (
+                      <div className="space-y-2">
+                        <Label>策略實例</Label>
+                        <InstanceSelector value={quickForm.sourceStrategyId} onChange={selectQuickStrategy} placeholder="選擇已建立策略實例" />
+                      </div>
+                    )}
+                    {quickForm.sourceKind === "PARAMETER_SNAPSHOT" && (
+                      <div className="space-y-2">
+                        <Label>參數快照</Label>
+                        <Select value={quickForm.sourceSnapshotId || undefined} onValueChange={selectQuickSnapshot}>
+                          <SelectTrigger><SelectValue placeholder={quickSnapshotsQuery.isLoading ? "載入快照中..." : "選擇可信參數快照"} /></SelectTrigger>
+                          <SelectContent>
+                            {(quickSnapshotsQuery.data ?? []).length === 0
+                              ? <SelectItem value="__none" disabled>暫無參數快照</SelectItem>
+                              : quickSnapshotsQuery.data?.map(snapshot => (
+                                <SelectItem key={snapshot.id} value={String(snapshot.id)}>
+                                  {snapshot.snapshotName || `快照 #${snapshot.id}`} · {snapshot.strategyName || snapshot.strategyKey}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    {quickForm.sourceKind === "STRATEGY_DEFINITION" && (
+                      <div className="space-y-2">
+                        <Label>Registry 策略定義</Label>
+                        <Select value={quickForm.strategyKey || undefined} onValueChange={selectQuickDefinition}>
+                          <SelectTrigger><SelectValue placeholder="選擇策略定義" /></SelectTrigger>
+                          <SelectContent>{registryQuery.data?.map(strategy => <SelectItem key={strategy.key} value={strategy.key}>{strategy.name}{strategy.isBuiltIn ? " · 內建" : " · 自訂"}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {quickForm.strategyKey && (
+                      <div className="rounded-lg border border-border/60 bg-background/35 px-4 py-3 text-sm">
+                        <span className="text-muted-foreground">Resolved strategy key</span>
+                        <code className="ml-2 break-all text-cyan-200">{quickForm.strategyKey}</code>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/70 bg-card/70">
+                  <CardHeader>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-violet-300">Step 2 · Venue</p>
+                    <CardTitle className="mt-2 text-lg">帳戶、交易所規格與交易對</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2 sm:col-span-2"><Label>部署名稱</Label><Input value={quickForm.name} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, name: event.target.value })); }} placeholder="例如：BTC H3 保護部署" /></div>
+                    <div className="space-y-2">
+                      <Label>交易所 API 帳戶</Label>
+                      <Select value={quickForm.apiKeyId || undefined} onValueChange={apiKeyId => { resetQuickResult(); setQuickSymbolSpec(null); setQuickForm(form => ({ ...form, apiKeyId })); }}>
+                        <SelectTrigger><SelectValue placeholder="選擇已驗證 API key" /></SelectTrigger>
+                        <SelectContent>{apiKeysQuery.data?.map(key => <SelectItem key={key.id} value={String(key.id)}>{key.label} · {key.exchange.toUpperCase()}{key.isTestnet ? " · Testnet" : " · Production"}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>交易對</Label>
+                      {quickSelectedApiKey && ["okx", "bybit"].includes(quickSelectedApiKey.exchange.toLowerCase()) ? (
+                        <SymbolCombobox
+                          value={quickForm.symbol}
+                          exchange={quickSelectedApiKey.exchange.toLowerCase() as "okx" | "bybit"}
+                          testnet={Boolean(quickSelectedApiKey.isTestnet)}
+                          onChange={option => {
+                            resetQuickResult();
+                            setQuickSymbolSpec(option);
+                            setQuickForm(form => ({ ...form, symbol: option.symbol }));
+                          }}
+                        />
+                      ) : (
+                        <Input value={quickForm.symbol} onChange={event => { resetQuickResult(); setQuickSymbolSpec(null); setQuickForm(form => ({ ...form, symbol: event.target.value.toUpperCase() })); }} />
+                      )}
+                    </div>
+                    {quickSelectedApiKey && (
+                      <div className="rounded-lg border border-border/60 bg-background/35 p-3 text-xs text-muted-foreground sm:col-span-2">
+                        <div className="flex flex-wrap gap-x-5 gap-y-2">
+                          <span>Exchange：<strong className="text-foreground">{quickSelectedApiKey.exchange.toUpperCase()}</strong></span>
+                          <span>Environment：<strong className={quickSelectedApiKey.isTestnet ? "text-emerald-300" : "text-amber-300"}>{quickSelectedApiKey.isTestnet ? "Testnet" : "Production"}</strong></span>
+                          <span>Base／Quote：<strong className="text-foreground">{quickSymbolSpec ? `${quickSymbolSpec.base}/${quickSymbolSpec.quote}` : "選擇交易對後載入"}</strong></span>
+                          <span>Min qty：<strong className="text-foreground">{quickSymbolSpec?.minOrderQty ?? "—"}</strong></span>
+                          <span>Qty step：<strong className="text-foreground">{quickSymbolSpec?.qtyStep ?? "—"}</strong></span>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/70 bg-card/70">
+                  <CardHeader>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-300">Step 3 · Mode & Risk</p>
+                    <CardTitle className="mt-2 text-lg">Execution mode 與風控預算</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-5">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      {EXECUTION_MODES.map(mode => {
+                        const meta = DEPLOYMENT_MODE_META[mode];
+                        return (
+                          <button key={mode} type="button" onClick={() => setQuickMode(mode)} className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] active:scale-[0.98] ${quickForm.executionMode === mode ? meta.accent : "border-border bg-background/30"}`}>
+                            <span className="font-mono text-lg font-bold">{meta.code}</span><p className="mt-1 font-semibold">{meta.label}</p><p className="mt-1 text-xs leading-5 opacity-80">{meta.shortDescription}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="space-y-2"><Label>基礎倉位</Label><Input type="number" min="0" step="any" value={quickForm.positionSize} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, positionSize: event.target.value })); }} /></div>
+                      <div className="space-y-2"><Label>倉位單位</Label><Select value={quickForm.positionMode} onValueChange={positionMode => { resetQuickResult(); setQuickForm(form => ({ ...form, positionMode: positionMode as "usdt" | "quantity" })); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="usdt">USDT 名義金額</SelectItem><SelectItem value="quantity">Base 數量</SelectItem></SelectContent></Select></div>
+                      <div className="space-y-2"><Label>槓桿</Label><Input type="number" min="1" max="125" value={quickForm.leverage} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, leverage: event.target.value })); }} /></div>
+                      <div className="space-y-2"><Label>允許方向</Label><Select value={quickForm.direction} onValueChange={direction => { resetQuickResult(); setQuickForm(form => ({ ...form, direction: direction as "long" | "short" | "both" })); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="both">LONG + SHORT</SelectItem><SelectItem value="long">僅 LONG</SelectItem><SelectItem value="short">僅 SHORT</SelectItem></SelectContent></Select></div>
+                      <div className="space-y-2"><Label>最大部位 %</Label><Input type="number" min="0" max="100" value={quickForm.maxPositionPct} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, maxPositionPct: event.target.value })); }} /></div>
+                      <div className="space-y-2"><Label>止損 %</Label><Input type="number" min="0" max="100" value={quickForm.stopLossPct} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, stopLossPct: event.target.value })); }} /></div>
+                      <div className="space-y-2"><Label>止盈 %</Label><Input type="number" min="0" value={quickForm.takeProfitPct} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, takeProfitPct: event.target.value })); }} /></div>
+                      <div className="space-y-2"><Label>每日最大損失</Label><Input type="number" min="0" value={quickForm.maxDailyLoss} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, maxDailyLoss: event.target.value })); }} /></div>
+                    </div>
+                    <details className="rounded-xl border border-border/60 bg-background/25 p-4">
+                      <summary className="cursor-pointer font-semibold">進階 Execution Policy</summary>
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground">沿用工作台既有 PolicyEditor；變更仍由後端 capability manifest 認證。</p>
+                      <div className="mt-4"><PolicyEditor policy={quickPolicy} strategyKey={quickForm.strategyKey || undefined} onChange={policy => { resetQuickResult(); setQuickPolicy(policy); }} /></div>
+                    </details>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">
+                <Card className="border-cyan-500/25 bg-card/80 shadow-lg shadow-cyan-950/10">
+                  <CardHeader>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-300">Step 4 · Seal & Preflight</p>
+                    <CardTitle className="mt-2 text-lg">安全檢閱與明確啟用</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <ExecutionProfileSummary
+                      strategyKey={quickForm.strategyKey || null}
+                      executionMode={quickForm.executionMode}
+                      executionPolicy={quickPolicy}
+                      artifactScope={quickSelectedSnapshot?.artifact?.artifactScope ?? (quickSelectedStrategy?.executionMode ? "EXECUTION_PROFILE" : "GENERATED_PROFILE")}
+                      strategyVersion={quickSelectedSnapshot?.artifact?.strategyVersion}
+                      integrityValid={quickSelectedSnapshot?.integrityValid}
+                      compatible={quickSelectedSnapshot?.compatibility.compatible}
+                    />
+                    <div className="space-y-2 rounded-xl border border-border/60 bg-background/35 p-4 text-sm">
+                      {[
+                        [Boolean(quickForm.strategyKey), "可信策略來源已解析"],
+                        [Boolean(quickForm.apiKeyId), "API 帳戶已選擇"],
+                        [Boolean(quickForm.symbol.trim()), "交易對與規格已確認"],
+                        [quickForm.positionSize !== "" && Number(quickForm.positionSize) > 0, "倉位與風控輸入有效"],
+                        [true, "建立結果固定 DRAFT／disabled"],
+                      ].map(([ok, label]) => (
+                        <div key={String(label)} className="flex items-center gap-2">
+                          {ok ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-300" /> : <CircleDotDashed className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                          <span className={ok ? "text-foreground" : "text-muted-foreground"}>{String(label)}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {!quickCreatedId ? (
+                      <Button className="w-full" size="lg" disabled={!quickCanCreate || quickCreateMutation.isPending || runPreflightMutation.isPending} onClick={createQuickDraft}>
+                        {quickCreateMutation.isPending || runPreflightMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileCheck2 className="mr-2 h-4 w-4" />}
+                        建立停用草稿並執行 Preflight
+                      </Button>
+                    ) : (
+                      <div className="space-y-3">
+                        <Alert className={quickPreflightReady ? "border-emerald-500/30 bg-emerald-500/10" : "border-amber-500/30 bg-amber-500/10"}>
+                          {quickPreflightReady ? <ShieldCheck className="h-4 w-4 text-emerald-300" /> : <ShieldAlert className="h-4 w-4 text-amber-300" />}
+                          <AlertTitle>{quickPreflightReady ? "Preflight 通過，部署仍停用" : runPreflightMutation.isPending ? "正在執行唯讀 Preflight" : "Preflight 未通過或已失效"}</AlertTitle>
+                          <AlertDescription>{quickPreflightReady ? "這是此流程唯一會啟用新曝險的按鈕；仍需再次確認。" : "請檢閱 blocker evidence，修復後重新預檢。"}</AlertDescription>
+                        </Alert>
+                        {preflightReport?.deploymentId === quickCreatedId && <PreflightPanel report={preflightReport} />}
+                        {quickPreflightReady ? (
+                          <Button className="w-full bg-emerald-600 text-white hover:bg-emerald-500" size="lg" onClick={() => { setSelectedId(quickCreatedId); setPendingAction("ACTIVATE"); }}>
+                            <Play className="mr-2 h-4 w-4" />明確啟用此部署
+                          </Button>
+                        ) : (
+                          <Button
+                            className="w-full"
+                            variant="outline"
+                            disabled={runPreflightMutation.isPending || !quickCreatedDeployment}
+                            onClick={() => quickCreatedDeployment && runPreflightMutation.mutate({
+                              deploymentId: quickCreatedDeployment.id,
+                              expectedRevision: Number(quickCreatedDeployment.deploymentRevision),
+                              transitionKey: buildDeploymentTransitionKey("quick-recheck", quickCreatedDeployment.id),
+                            })}
+                          >
+                            {runPreflightMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}修復後重新 Preflight
+                          </Button>
+                        )}
+                        <Button variant="ghost" className="w-full" onClick={() => setWorkspacePanel("manage")}>返回部署管理檢閱完整狀態</Button>
+                      </div>
+                    )}
+                    <p className="text-xs leading-5 text-muted-foreground">Preflight 只讀取帳戶、商品規格、能力 manifest、ledger 與風險證據；本步驟不送出訂單。</p>
+                  </CardContent>
+                </Card>
+              </aside>
+            </section>
+          </TabsContent>
+        </Tabs>
       </div>
 
       <AlertDialog open={pendingAction !== null} onOpenChange={open => { if (!open) setPendingAction(null); }}>

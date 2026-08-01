@@ -41,11 +41,24 @@ import {
 } from "@/components/V40EntryGatePanel";
 import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
 import { trpc } from "@/lib/trpc";
+import ExecutionProfileSummary from "@/components/ExecutionProfileSummary";
+import {
+  DEPLOYMENT_MODE_META,
+  DEPLOYMENT_SAFETY_COPY,
+  buildDeploymentTransitionKey,
+  canSwitchDeploymentMode,
+} from "@/lib/deploymentWorkbench";
 import {
   getStrategyApiIdentity,
   type SafeApiAccountSummary,
   type StrategyApiBindingSummary,
 } from "@/lib/strategyApiIdentity";
+import {
+  EXECUTION_MODES,
+  type DeploymentActivationState,
+  type ExecutionMode,
+} from "@shared/executionModes";
+import { createDefaultStrategyExecutionPolicy } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
 import {
   V25_STRATEGY_KEY,
   createV25DefaultConfig,
@@ -128,6 +141,33 @@ interface MartinLayerPreviewRow {
   avgPrice: number;
   triggerPrice: number;
   lotSize: number;
+}
+
+function strategyExecutionMode(value: unknown): ExecutionMode {
+  return EXECUTION_MODES.includes(value as ExecutionMode)
+    ? value as ExecutionMode
+    : "SINGLE_EXCLUSIVE";
+}
+
+function strategyActivationState(value: unknown): DeploymentActivationState {
+  const state = String(value ?? "LEGACY") as DeploymentActivationState;
+  return [
+    "LEGACY",
+    "DRAFT",
+    "DISABLED",
+    "PREFLIGHT_FAILED",
+    "READY_DISABLED",
+    "ARMED",
+    "ACTIVE",
+    "PAUSED",
+    "DRAINING",
+    "BLOCKED",
+    "ARCHIVED",
+  ].includes(state) ? state : "LEGACY";
+}
+
+function isCanonicalDeploymentRow(strategy: { activationState?: unknown }): boolean {
+  return strategyActivationState(strategy.activationState) !== "LEGACY";
 }
 
 export default function StrategiesPage() {
@@ -346,6 +386,7 @@ function StrategiesContent() {
   const [strategySearch, setStrategySearch] = useState("");
   const [strategyFilter, setStrategyFilter] = useState<"all" | "martingale" | "non_martingale" | "running" | "stopped">("all");
   const [strategyPage, setStrategyPage] = useState(1);
+  const [draftModeByStrategyId, setDraftModeByStrategyId] = useState<Record<number, ExecutionMode>>({});
   const [expandedMartinStrategyIds, setExpandedMartinStrategyIds] = useState<Set<number>>(() => new Set());
   const [refreshingMartinStrategyId, setRefreshingMartinStrategyId] = useState<number | null>(null);
   const strategyPageSize = 8;
@@ -376,7 +417,7 @@ function StrategiesContent() {
   );
   const canonicalActionRequired = useMemo(
     () => (strategies ?? []).filter(strategy =>
-      (strategy as any).executionMode !== "LEGACY"
+      isCanonicalDeploymentRow(strategy)
       && ["DRAINING", "BLOCKED", "PREFLIGHT_FAILED"].includes(String((strategy as any).activationState ?? "")),
     ),
     [strategies],
@@ -713,6 +754,113 @@ function StrategiesContent() {
     },
     onError: (e) => toast.error(`重置失敗：${e.message}`),
   });
+
+  const createDeploymentDraftMutation = trpc.deployments.create.useMutation({
+    onSuccess: (deployment) => {
+      toast.success("停用部署草稿已建立", {
+        description: DEPLOYMENT_SAFETY_COPY.defaultDisabled,
+      });
+      void utils.strategies.list.invalidate();
+      window.location.assign(`/deployments?deploymentId=${deployment.id}`);
+    },
+    onError: (error) => toast.error(`建立部署草稿失敗：${error.message}`),
+  });
+
+  const switchDeploymentModeMutation = trpc.deployments.switchMode.useMutation({
+    onSuccess: (result) => {
+      toast.success("模式切換與 flat Preflight 已完成", {
+        description: "部署保持停用；請到部署工作台檢閱最新報告後再明確啟用。",
+      });
+      void utils.strategies.list.invalidate();
+      void utils.deployments.list.invalidate();
+      void utils.deployments.getStatus.invalidate({ deploymentId: result.deployment.id });
+    },
+    onError: (error) => {
+      toast.error(`模式切換未執行：${error.message}`, {
+        description: "任何持倉、能力、revision 或安全 Gate 不明時均維持 fail-closed。",
+      });
+      void utils.strategies.list.invalidate();
+    },
+  });
+
+  const createDisabledDraftFromStrategy = (
+    strategy: NonNullable<typeof strategies>[number],
+    executionMode: ExecutionMode,
+  ) => {
+    const strategyKey = String((strategy as any).strategyKey ?? "").trim();
+    if (!strategyKey || strategyKey === "none") {
+      toast.error("此策略沒有可封印的 registry strategyKey，無法建立 canonical 部署草稿。");
+      return;
+    }
+    const modeMeta = DEPLOYMENT_MODE_META[executionMode];
+    if (!confirm(
+      `以「${strategy.name}」建立 ${modeMeta.code} · ${modeMeta.label} 的停用部署草稿？\n\n建立後不會送單、不會自動啟用；必須到部署工作台重新執行唯讀 Preflight 並明確啟用。`,
+    )) return;
+
+    createDeploymentDraftMutation.mutate({
+      name: `${strategy.name} · ${modeMeta.code} 草稿`.slice(0, 100),
+      description: `由策略 #${strategy.id} 建立的 canonical ${modeMeta.code} 停用部署草稿。`,
+      apiKeyId: strategy.apiKeyId,
+      symbol: strategy.symbol,
+      strategyKey,
+      executionMode,
+      executionPolicy: createDefaultStrategyExecutionPolicy(strategyKey, executionMode) as unknown as Record<string, unknown>,
+      sourceStrategyId: strategy.id,
+      positionSize: Math.max(0.00000001, Number(strategy.positionSize) || 0.01),
+      positionMode: (strategy as any).positionMode === "quantity" ? "quantity" : "usdt",
+      leverage: Math.max(1, Math.round(Number(strategy.leverage) || 1)),
+      direction: ["long", "short", "both"].includes(String(strategy.direction))
+        ? strategy.direction as "long" | "short" | "both"
+        : "both",
+      orderType: strategy.orderType === "limit" ? "limit" : "market",
+      maxPositionPct: Math.max(0, Number(strategy.maxPositionPct) || 0),
+      stopLossPct: Math.max(0, Number(strategy.stopLossPct) || 0),
+      takeProfitPct: Math.max(0, Number(strategy.takeProfitPct) || 0),
+      maxDailyLoss: Math.max(0, Number(strategy.maxDailyLoss) || 0),
+      martinMultiplier: Math.max(1, Number((strategy as any).martinMultiplier) || 1),
+      maxMartinLevel: Math.max(1, Math.round(Number((strategy as any).maxMartinLevel) || 1)),
+      martinSpacingPct: Math.max(0, Number((strategy as any).martinSpacingPct) || 0),
+      reentryEnabled: (strategy as any).reentryEnabled !== false,
+      reentryCooldownBars: Math.max(0, Math.round(Number((strategy as any).reentryCooldownBars) || 0)),
+      tradeMode: (strategy as any).tradeMode === "auto" ? "auto" : "webhook",
+      kLinePeriod: Math.max(1, Math.round(Number((strategy as any).kLinePeriod) || 15)),
+    });
+  };
+
+  const switchCanonicalDeploymentMode = (
+    strategy: NonNullable<typeof strategies>[number],
+    executionMode: ExecutionMode,
+  ) => {
+    const currentMode = strategyExecutionMode((strategy as any).executionMode);
+    if (executionMode === currentMode) return;
+    const activationState = strategyActivationState((strategy as any).activationState);
+    if (!canSwitchDeploymentMode(activationState, Boolean(strategy.enabled))) {
+      toast.error("目前生命週期狀態不允許切換模式", {
+        description: "請先停止新曝險並在部署工作台完成排空／停用；系統不會自動平倉或變更交易所設定。",
+      });
+      return;
+    }
+    const expectedRevision = Number((strategy as any).deploymentRevision);
+    const strategyKey = String((strategy as any).strategyKey ?? "").trim();
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1 || !strategyKey || strategyKey === "none") {
+      toast.error("部署 revision 或 registry strategyKey 不完整，已保持 fail-closed。");
+      return;
+    }
+    const modeMeta = DEPLOYMENT_MODE_META[executionMode];
+    if (!confirm(
+      `將「${strategy.name}」切換為 ${modeMeta.code} · ${modeMeta.label}？\n\n系統會先執行 flat／能力／風險唯讀 Preflight；任一 Gate 不通過即拒絕切換。成功後仍保持停用，絕不自動送單。`,
+    )) return;
+
+    switchDeploymentModeMutation.mutate({
+      deploymentId: strategy.id,
+      expectedRevision,
+      transitionKey: buildDeploymentTransitionKey("strategy-card-mode", strategy.id),
+      executionMode,
+      executionPolicy: createDefaultStrategyExecutionPolicy(strategyKey, executionMode) as unknown as Record<string, unknown>,
+      reasonCode: "OPERATOR_STRATEGY_CARD_MODE_SWITCH",
+      reason: `Operator switched deployment mode from Strategies card to ${executionMode}.`,
+    });
+  };
 
   const openCreate = () => {
     setSnapshotImportSource(null);
@@ -1363,7 +1511,7 @@ function StrategiesContent() {
                         </Badge>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        {(s as any).executionMode !== "LEGACY" ? (
+                        {isCanonicalDeploymentRow(s) ? (
                           <Badge className="border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-[10px]" variant="outline">
                             {(s as any).executionMode} · {(s as any).activationState ?? "DRAFT"}
                           </Badge>
@@ -1380,7 +1528,7 @@ function StrategiesContent() {
                             已停止
                           </Badge>
                         )}
-                        {(s as any).executionMode !== "LEGACY" ? (
+                        {isCanonicalDeploymentRow(s) ? (
                           <Button asChild size="sm" variant="outline" className="h-7 border-cyan-500/30 text-cyan-300">
                             <Link href={`/deployments?deploymentId=${s.id}`}>部署工作台</Link>
                           </Button>
@@ -1400,6 +1548,98 @@ function StrategiesContent() {
 	                      strategy={{ apiKeyId: s.apiKeyId, exchange: s.exchange }}
 	                      apiKeys={apiKeys}
 	                    />
+
+                    <ExecutionProfileSummary
+                      compact
+                      strategyKey={(s as any).strategyKey}
+                      executionMode={strategyExecutionMode((s as any).executionMode)}
+                      executionPolicy={(s as any).executionPolicy as Record<string, unknown> | null}
+                      artifactScope={isCanonicalDeploymentRow(s) ? "EXECUTION_PROFILE" : "PARAMETERS_ONLY"}
+                      strategyVersion={Number((s as any).strategyVersion) || undefined}
+                    />
+
+                    <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.025] p-3" data-testid={`strategy-mode-controls-${s.id}`}>
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold text-cyan-200">Execution Mode</p>
+                          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                            {isCanonicalDeploymentRow(s)
+                              ? "直接切換會先執行 flat 與唯讀 Preflight；成功後仍保持停用。"
+                              : "舊策略只選擇新草稿模式，不改動目前策略，也不會自動啟用。"}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="border-slate-500/35 text-[10px] text-slate-300">
+                          {isCanonicalDeploymentRow(s)
+                            ? `revision ${(s as any).deploymentRevision ?? "—"}`
+                            : "LEGACY 相容"}
+                        </Badge>
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {EXECUTION_MODES.map((mode) => {
+                          const meta = DEPLOYMENT_MODE_META[mode];
+                          const currentMode = strategyExecutionMode((s as any).executionMode);
+                          const selectedDraftMode = draftModeByStrategyId[s.id] ?? currentMode;
+                          const isActive = isCanonicalDeploymentRow(s)
+                            ? currentMode === mode
+                            : selectedDraftMode === mode;
+                          const activationState = strategyActivationState((s as any).activationState);
+                          const switchAllowed = canSwitchDeploymentMode(activationState, Boolean(s.enabled));
+                          return (
+                            <Button
+                              key={mode}
+                              type="button"
+                              size="sm"
+                              variant={isActive ? "default" : "outline"}
+                              className={isActive ? "h-auto min-h-9 py-1.5" : `h-auto min-h-9 py-1.5 ${meta.accent}`}
+                              disabled={
+                                createDeploymentDraftMutation.isPending
+                                || switchDeploymentModeMutation.isPending
+                                || (isCanonicalDeploymentRow(s) && (isActive || !switchAllowed))
+                              }
+                              title={isCanonicalDeploymentRow(s) && !switchAllowed && !isActive
+                                ? "需先排空並停用部署才可切換模式"
+                                : `${meta.code} · ${meta.label}`}
+                              onClick={() => {
+                                if (isCanonicalDeploymentRow(s)) {
+                                  switchCanonicalDeploymentMode(s, mode);
+                                } else {
+                                  setDraftModeByStrategyId(current => ({ ...current, [s.id]: mode }));
+                                }
+                              }}
+                            >
+                              <span className="flex flex-col items-center leading-tight">
+                                <span>{meta.code}</span>
+                                <span className="text-[9px] font-normal opacity-80">{meta.label}</span>
+                              </span>
+                            </Button>
+                          );
+                        })}
+                      </div>
+                      {!isCanonicalDeploymentRow(s) ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="mt-3 w-full bg-cyan-600 text-white hover:bg-cyan-500"
+                          disabled={createDeploymentDraftMutation.isPending}
+                          onClick={() => createDisabledDraftFromStrategy(
+                            s,
+                            draftModeByStrategyId[s.id] ?? strategyExecutionMode((s as any).executionMode),
+                          )}
+                        >
+                          {createDeploymentDraftMutation.isPending
+                            ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            : <Plus className="mr-2 h-3.5 w-3.5" />}
+                          建立 {DEPLOYMENT_MODE_META[draftModeByStrategyId[s.id] ?? strategyExecutionMode((s as any).executionMode)].code} 停用部署草稿
+                        </Button>
+                      ) : (
+                        <Button asChild type="button" size="sm" variant="outline" className="mt-3 w-full border-cyan-500/30 text-cyan-300">
+                          <Link href={`/deployments?deploymentId=${s.id}`}>
+                            <Radio className="mr-2 h-3.5 w-3.5" />
+                            檢閱 Preflight 與生命週期
+                          </Link>
+                        </Button>
+                      )}
+                    </div>
 
 	                    {!s.enabled && s.disabledReason && (
                       <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-400">
@@ -1823,7 +2063,7 @@ function StrategiesContent() {
 
                     <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:items-center">
                       {/* T2：暫停 / 恢復 / 停止 控制按鈕 */}
-                      {(s as any).executionMode !== "LEGACY" ? (
+                      {isCanonicalDeploymentRow(s) ? (
                         <Button asChild variant="outline" size="sm" className="col-span-2 min-w-0 w-full border-cyan-500/40 text-cyan-300 sm:flex-1">
                           <Link href={`/deployments?deploymentId=${s.id}`}>
                             <Radio className="h-3.5 w-3.5 mr-1" />
@@ -1859,7 +2099,7 @@ function StrategiesContent() {
                           恢復
                         </Button>
                       )}
-                      {(s as any).executionMode === "LEGACY" && (
+                      {!isCanonicalDeploymentRow(s) && (
                         <Button
                           variant="outline"
                           size="sm"

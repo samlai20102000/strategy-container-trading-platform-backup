@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getStrategyById: vi.fn(),
   loadStrategyState: vi.fn(),
   saveStrategyState: vi.fn(),
+  loadCanonicalRuntimeDeployment: vi.fn(),
   getBoundStrategyConfig: vi.fn(),
   fetchClosedCandles: vi.fn(),
   fetchFreshQuote: vi.fn(),
@@ -27,6 +28,9 @@ vi.mock("./db", async () => {
 vi.mock("./services/strategyStateManager", () => ({
   loadStrategyState: mocks.loadStrategyState,
   saveStrategyState: mocks.saveStrategyState,
+}));
+vi.mock("./services/canonicalRuntimeDeployment", () => ({
+  loadCanonicalRuntimeDeployment: mocks.loadCanonicalRuntimeDeployment,
 }));
 vi.mock("./services/strategySnapshotConfig", () => ({ getBoundStrategyConfig: mocks.getBoundStrategyConfig }));
 vi.mock("./services/kamaRainbowMartinMarketData", () => ({
@@ -66,6 +70,7 @@ beforeEach(() => {
   mocks.getStrategy.mockReturnValue({});
   mocks.createAdapter.mockReturnValue({});
   mocks.getStrategyById.mockResolvedValue(strategy);
+  mocks.loadCanonicalRuntimeDeployment.mockResolvedValue({ strategy });
   mocks.getBoundStrategyConfig.mockReturnValue(DEFAULT_KAMA_RAINBOW_MARTIN_CONFIG);
   mocks.saveStrategyState.mockResolvedValue(undefined);
 });

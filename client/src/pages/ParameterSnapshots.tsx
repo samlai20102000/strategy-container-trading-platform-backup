@@ -5,6 +5,7 @@
 
 import { useState, useMemo } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
+import ExecutionProfileSummary, { ExecutionModeBadge } from "@/components/ExecutionProfileSummary";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,7 +35,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertTriangle, Star, Trash2, Play, Eye, Database, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, Star, Trash2, Play, Eye, Database, Plus, RefreshCw, GitCompareArrows, Rocket } from "lucide-react";
 import { toast } from "sonner";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
@@ -97,6 +98,18 @@ export default function ParameterSnapshots() {
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [targetStrategyId, setTargetStrategyId] = useState<string>("");
+  const [compareSnapshotIds, setCompareSnapshotIds] = useState<number[]>([]);
+  const [deploymentDialogOpen, setDeploymentDialogOpen] = useState(false);
+  const [deploymentSnapshotId, setDeploymentSnapshotId] = useState<number | null>(null);
+  const [deploymentForm, setDeploymentForm] = useState({
+    name: "",
+    apiKeyId: "",
+    symbol: "BTCUSDT",
+    positionSize: "1",
+    positionMode: "usdt" as "usdt" | "quantity",
+    leverage: "1",
+    direction: "both" as "long" | "short" | "both",
+  });
   // V4.3: 導入為新策略
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importForm, setImportForm] = useState({
@@ -135,6 +148,7 @@ export default function ParameterSnapshots() {
   const toggleFavMutation = trpc.backtest.toggleSnapshotFavorite.useMutation();
   const applyMutation = trpc.backtest.applySnapshot.useMutation();
   const importMutation = trpc.backtest.importSnapshotAsNew.useMutation();
+  const createDeploymentMutation = trpc.deployments.create.useMutation();
   // API Keys 查詢（導入對話框需要）
   const apiKeysQuery = trpc.apiKeys.list.useQuery();
 
@@ -172,6 +186,136 @@ export default function ParameterSnapshots() {
     () => snapshots.find((snapshot) => snapshot.id === viewSnapshotId) ?? null,
     [snapshots, viewSnapshotId],
   );
+  const deploymentSnapshot = useMemo(
+    () => snapshots.find((snapshot) => snapshot.id === deploymentSnapshotId) ?? null,
+    [deploymentSnapshotId, snapshots],
+  );
+  const compareSnapshots = useMemo(
+    () => compareSnapshotIds
+      .map((id) => snapshots.find((snapshot) => snapshot.id === id))
+      .filter((snapshot): snapshot is NonNullable<typeof snapshot> => Boolean(snapshot)),
+    [compareSnapshotIds, snapshots],
+  );
+
+  const getSnapshotDeploymentDefaults = (snapshot: (typeof snapshots)[number]) => {
+    const bs = snapshot.backtestSettings as Record<string, unknown> | null;
+    const cfg = snapshot.config as Record<string, unknown>;
+    const rawSymbol = bs?.symbol ?? cfg.symbol ?? cfg.Symbol ?? "BTCUSDT";
+    const rawPosition = bs?.baseLotSize ?? bs?.tradeAmount ?? cfg.Base_Lot_Size ?? 1;
+    const rawPositionMode = bs?.baseLotSizeMode;
+    return {
+      name: `${snapshot.snapshotName || snapshot.strategyName || snapshot.strategyKey} · 部署草稿`,
+      apiKeyId: "",
+      symbol: String(rawSymbol).replace(/-/g, "").toUpperCase(),
+      positionSize: String(typeof rawPosition === "object" && rawPosition !== null && "value" in rawPosition
+        ? (rawPosition as { value?: unknown }).value ?? 1
+        : rawPosition),
+      positionMode: rawPositionMode === "quantity" ? "quantity" as const : "usdt" as const,
+      leverage: String(cfg.leverage ?? 1),
+      direction: "both" as const,
+    };
+  };
+
+  const openDeploymentDraft = (snapshot: (typeof snapshots)[number]) => {
+    setDeploymentSnapshotId(snapshot.id);
+    setDeploymentForm(getSnapshotDeploymentDefaults(snapshot));
+    setDeploymentDialogOpen(true);
+  };
+
+  const openSnapshotView = (snapshot: (typeof snapshots)[number]) => {
+    setViewConfig(snapshot.config);
+    setViewStrategyKey(snapshot.strategyKey);
+    setViewSnapshotId(snapshot.id);
+  };
+
+  const openSnapshotApply = (snapshot: (typeof snapshots)[number]) => {
+    setSelectedSnapshotId(snapshot.id);
+    setApplyDialogOpen(true);
+  };
+
+  const openSnapshotImport = (snapshot: (typeof snapshots)[number]) => {
+    setSelectedSnapshotId(snapshot.id);
+    const backtestSettings = snapshot.backtestSettings as Record<string, unknown> | null;
+    const config = (snapshot.config as Record<string, unknown>) || {};
+    const rainbowConfig = snapshot.strategyKey === RAINBOW_20415_STRATEGY_KEY
+      ? normalizeRainbow20415Config(config)
+      : null;
+    const rainbowLadderConfig = snapshot.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
+      ? normalizeRainbowTrendLadderConfig(config)
+      : null;
+    const snapshotPositionValue = String(
+      backtestSettings?.baseLotSize
+        ?? backtestSettings?.tradeAmount
+        ?? rainbowConfig?.Base_Lot_Size.value
+        ?? rainbowLadderConfig?.Base_Lot_Size.value
+        ?? config.Base_Lot_Size
+        ?? 30,
+    );
+    const rawSnapshotPositionMode = backtestSettings?.baseLotSizeMode
+      ?? rainbowConfig?.Base_Lot_Size.mode
+      ?? rainbowLadderConfig?.Base_Lot_Size.mode
+      ?? "usdt";
+    const snapshotPositionMode: "usdt" | "quantity" = rawSnapshotPositionMode === "quantity"
+      ? "quantity"
+      : "usdt";
+    setImportSnapshotPosition({ value: snapshotPositionValue, mode: snapshotPositionMode });
+    setImportForm((previous) => ({
+      ...previous,
+      name: `${snapshot.snapshotName || "快照"}_副本`,
+      symbol: String(backtestSettings?.symbol || config.symbol || config.Symbol || previous.symbol)
+        .replace(/-/g, "")
+        .toUpperCase(),
+      positionSize: snapshotPositionValue,
+      positionMode: snapshotPositionMode,
+      leverage: String(config.leverage || previous.leverage),
+    }));
+    setImportDialogOpen(true);
+  };
+
+  const toggleSnapshotComparison = (snapshotId: number) => {
+    setCompareSnapshotIds((current) => {
+      if (current.includes(snapshotId)) return current.filter((id) => id !== snapshotId);
+      if (current.length >= 2) {
+        toast.info("Execution Profile 比較最多選擇兩個快照");
+        return [current[1], snapshotId];
+      }
+      return [...current, snapshotId];
+    });
+  };
+
+  const handleCreateDeploymentDraft = async () => {
+    if (!deploymentSnapshot) return;
+    if (!deploymentForm.name.trim()) return toast.error("請輸入部署名稱");
+    if (!deploymentForm.apiKeyId) return toast.error("請選擇 API 金鑰");
+    const positionSize = Number(deploymentForm.positionSize);
+    if (!Number.isFinite(positionSize) || positionSize <= 0) return toast.error("倉位大小需為正數");
+    try {
+      const deployment = await createDeploymentMutation.mutateAsync({
+        name: deploymentForm.name.trim(),
+        apiKeyId: Number(deploymentForm.apiKeyId),
+        symbol: deploymentForm.symbol.trim().toUpperCase(),
+        strategyKey: deploymentSnapshot.strategyKey,
+        sourceSnapshotId: deploymentSnapshot.id,
+        positionSize,
+        positionMode: deploymentForm.positionMode,
+        leverage: Number(deploymentForm.leverage) || 1,
+        direction: deploymentForm.direction,
+        executionMode: deploymentSnapshot.artifact?.artifactScope === "EXECUTION_PROFILE"
+          ? deploymentSnapshot.artifact.executionMode
+          : undefined,
+        executionPolicy: deploymentSnapshot.artifact?.artifactScope === "EXECUTION_PROFILE"
+          ? { ...deploymentSnapshot.artifact.executionPolicy }
+          : undefined,
+      });
+      toast.success("部署草稿已建立並保持停用", {
+        description: "來源快照與 Execution Profile 已由伺服器封印；請先執行唯讀 Preflight。",
+      });
+      setDeploymentDialogOpen(false);
+      window.location.assign(`/deployments?deploymentId=${deployment.id}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "建立部署草稿失敗");
+    }
+  };
 
   const handleDelete = async (id: number) => {
     if (!confirm("確定刪除此快照？")) return;
@@ -294,6 +438,67 @@ export default function ParameterSnapshots() {
           </CardContent>
         </Card>
 
+        {compareSnapshots.length > 0 && (
+          <Card className="border-violet-500/25 bg-violet-500/[0.03]">
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <GitCompareArrows className="h-4 w-4 text-violet-300" /> Execution Profile 比較
+                  </CardTitle>
+                  <p className="mt-1 text-xs text-muted-foreground">選擇兩個快照即可比較模式、policy、風險預算與 artifact 版本。</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setCompareSnapshotIds([])}>清除比較</Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {compareSnapshots.map((snapshot) => (
+                  <div key={snapshot.id} className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{snapshot.snapshotName || `快照 #${snapshot.id}`}</p>
+                        <p className="truncate font-mono text-[11px] text-muted-foreground">{snapshot.strategyKey}</p>
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => toggleSnapshotComparison(snapshot.id)}>移除</Button>
+                    </div>
+                    <ExecutionProfileSummary
+                      strategyKey={snapshot.strategyKey}
+                      executionMode={snapshot.artifact?.executionMode}
+                      executionPolicy={snapshot.artifact?.executionPolicy}
+                      artifactScope={snapshot.artifact?.artifactScope}
+                      strategyVersion={snapshot.artifact?.strategyVersion}
+                      integrityValid={snapshot.integrityValid}
+                      compatible={snapshot.compatibility.compatible}
+                    />
+                    <div className="grid gap-1 rounded-md border border-border/50 bg-background/40 p-2 font-mono text-[10px] text-muted-foreground">
+                      <span>Policy hash：{snapshot.artifact?.executionPolicyHash ?? "—"}</span>
+                      <span>Logic hash：{snapshot.artifact?.strategyLogicHash ?? "—"}</span>
+                      <span>Artifact hash：{snapshot.artifact?.artifactHash ?? snapshot.compatibility.artifactHash ?? "—"}</span>
+                    </div>
+                  </div>
+                ))}
+                {compareSnapshots.length === 1 && (
+                  <button
+                    type="button"
+                    className="min-h-40 rounded-lg border border-dashed border-violet-500/30 p-6 text-sm text-muted-foreground transition-colors hover:border-violet-400/50 hover:text-violet-200"
+                    onClick={() => toast.info("請在列表選擇另一個快照加入比較")}
+                  >
+                    再選擇一個快照以完成雙欄比較
+                  </button>
+                )}
+              </div>
+              {compareSnapshots.length === 2 && (
+                <div className="mt-3 rounded-md border border-border/50 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
+                  結論：模式{compareSnapshots[0].artifact?.executionMode === compareSnapshots[1].artifact?.executionMode ? "相同" : "不同"}；
+                  Policy hash {compareSnapshots[0].artifact?.executionPolicyHash === compareSnapshots[1].artifact?.executionPolicyHash ? "相同" : "不同"}；
+                  Strategy logic hash {compareSnapshots[0].artifact?.strategyLogicHash === compareSnapshots[1].artifact?.strategyLogicHash ? "相同" : "不同"}。
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* 快照列表 */}
         <Card>
           <CardHeader>
@@ -307,13 +512,123 @@ export default function ParameterSnapshots() {
                 尚無快照。在回測報告中點擊「儲存快照」即可建立。
               </p>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="space-y-3">
+                <div className="space-y-3 md:hidden">
+                  {sortedSnapshots.map((snapshot) => {
+                    const trusted = snapshot.integrityValid && snapshot.compatibility.compatible;
+                    return (
+                      <div key={snapshot.id} className="rounded-xl border border-border/60 bg-background/35 p-4 shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold">{snapshot.snapshotName || "未命名"}</p>
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              <Badge variant="outline" className="max-w-full truncate text-[10px]">
+                                {snapshot.strategyName || snapshot.strategyKey}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground">
+                                {snapshot.createdAt ? new Date(snapshot.createdAt).toLocaleDateString("zh-TW") : "—"}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleFav(snapshot.id)}
+                            className="shrink-0 rounded-md p-2 transition-transform active:scale-95"
+                            aria-label={snapshot.isFavorite ? "取消收藏" : "加入收藏"}
+                          >
+                            <Star className={`h-4 w-4 ${snapshot.isFavorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
+                          </button>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-border/50 bg-card/40 p-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <ExecutionModeBadge mode={snapshot.artifact?.executionMode} />
+                            <Badge
+                              variant="outline"
+                              className={snapshot.artifact?.artifactScope === "EXECUTION_PROFILE"
+                                ? "border-cyan-500/35 text-[10px] text-cyan-300"
+                                : "text-[10px] text-muted-foreground"}
+                            >
+                              {snapshot.artifact?.artifactScope ?? "LEGACY"}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className={trusted
+                                ? "border-emerald-500/35 text-[10px] text-emerald-300"
+                                : "border-amber-500/40 text-[10px] text-amber-300"}
+                            >
+                              {trusted ? "可信" : "Fail-closed"}
+                            </Badge>
+                          </div>
+                          <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                            Strategy v{snapshot.artifact?.strategyVersion ?? "—"}
+                          </p>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                          <div className="rounded-md bg-muted/35 p-2">
+                            <p className="text-[10px] text-muted-foreground">回報率</p>
+                            <p className={`mt-1 font-mono font-semibold ${(snapshot.totalReturn ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                              {fmtNum(snapshot.totalReturn)}%
+                            </p>
+                          </div>
+                          <div className="rounded-md bg-muted/35 p-2">
+                            <p className="text-[10px] text-muted-foreground">最大回撤</p>
+                            <p className="mt-1 font-mono font-semibold text-red-400">{fmtNum(snapshot.maxDrawdown)}%</p>
+                          </div>
+                          <div className="rounded-md bg-muted/35 p-2">
+                            <p className="text-[10px] text-muted-foreground">勝率</p>
+                            <p className="mt-1 font-mono font-semibold">{fmtNum(snapshot.winRate)}%</p>
+                          </div>
+                          <div className="rounded-md bg-muted/35 p-2">
+                            <p className="text-[10px] text-muted-foreground">夏普／盈虧比</p>
+                            <p className="mt-1 font-mono font-semibold">{fmtNum(snapshot.sharpeRatio, 3)} / {fmtNum(snapshot.profitFactor)}</p>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <Button
+                            variant={compareSnapshotIds.includes(snapshot.id) ? "secondary" : "outline"}
+                            size="sm"
+                            onClick={() => toggleSnapshotComparison(snapshot.id)}
+                          >
+                            <GitCompareArrows className="mr-1.5 h-3.5 w-3.5" />比較
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => openSnapshotView(snapshot)}>
+                            <Eye className="mr-1.5 h-3.5 w-3.5" />查看
+                          </Button>
+                          <Button variant="outline" size="sm" className="text-emerald-300" onClick={() => openSnapshotApply(snapshot)}>
+                            <Play className="mr-1.5 h-3.5 w-3.5" />更新策略
+                          </Button>
+                          <Button variant="outline" size="sm" className="text-blue-300" onClick={() => openSnapshotImport(snapshot)}>
+                            <Plus className="mr-1.5 h-3.5 w-3.5" />複製副本
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-cyan-300"
+                            onClick={() => openDeploymentDraft(snapshot)}
+                            disabled={!trusted}
+                          >
+                            <Rocket className="mr-1.5 h-3.5 w-3.5" />部署草稿
+                          </Button>
+                          <Button variant="outline" size="sm" className="text-red-300" onClick={() => handleDelete(snapshot.id)}>
+                            <Trash2 className="mr-1.5 h-3.5 w-3.5" />刪除
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-8"></TableHead>
                       <TableHead>快照名稱</TableHead>
                       <TableHead>策略</TableHead>
+                      <TableHead>Execution Profile</TableHead>
                       <TableHead className="text-right">回報率</TableHead>
                       <TableHead className="text-right">勝率</TableHead>
                       <TableHead className="text-right">夏普</TableHead>
@@ -384,6 +699,30 @@ export default function ParameterSnapshots() {
                             );
                           })()}
                         </TableCell>
+                        <TableCell className="min-w-44">
+                          <div className="space-y-1.5">
+                            <ExecutionModeBadge mode={s.artifact?.executionMode} />
+                            <div className="flex flex-wrap gap-1">
+                              <Badge
+                                variant="outline"
+                                className={s.artifact?.artifactScope === "EXECUTION_PROFILE"
+                                  ? "border-cyan-500/35 text-[10px] text-cyan-300"
+                                  : "text-[10px] text-muted-foreground"}
+                              >
+                                {s.artifact?.artifactScope ?? "LEGACY"}
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className={s.integrityValid && s.compatibility.compatible
+                                  ? "border-emerald-500/35 text-[10px] text-emerald-300"
+                                  : "border-amber-500/40 text-[10px] text-amber-300"}
+                              >
+                                {s.integrityValid && s.compatibility.compatible ? "可信" : "Fail-closed"}
+                              </Badge>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">Strategy v{s.artifact?.strategyVersion ?? "—"}</p>
+                          </div>
+                        </TableCell>
                         <TableCell className={`text-right font-mono ${(s.totalReturn ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                           {fmtNum(s.totalReturn)}%
                         </TableCell>
@@ -405,13 +744,17 @@ export default function ParameterSnapshots() {
                         <TableCell className="text-right">
                           <div className="flex gap-1 justify-end">
                             <Button
+                              variant={compareSnapshotIds.includes(s.id) ? "secondary" : "ghost"}
+                              size="sm"
+                              onClick={() => toggleSnapshotComparison(s.id)}
+                              title="加入 Execution Profile 比較"
+                            >
+                              <GitCompareArrows className="w-4 h-4" />
+                            </Button>
+                            <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => {
-                                setViewConfig(s.config);
-                                setViewStrategyKey(s.strategyKey);
-                                setViewSnapshotId(s.id);
-                              }}
+                              onClick={() => openSnapshotView(s)}
                               title="查看參數"
                             >
                               <Eye className="w-4 h-4" />
@@ -420,10 +763,7 @@ export default function ParameterSnapshots() {
                       variant="ghost"
                       size="sm"
                       className="text-emerald-400 hover:text-emerald-300"
-                      onClick={() => {
-                        setSelectedSnapshotId(s.id);
-                        setApplyDialogOpen(true);
-                      }}
+                      onClick={() => openSnapshotApply(s)}
                       title="將此快照參數覆蓋至選定的現有策略實例"
                     >
                       <Play className="w-4 h-4" />
@@ -433,50 +773,25 @@ export default function ParameterSnapshots() {
                       variant="ghost"
                       size="sm"
                       className="text-blue-400 hover:text-blue-300"
-                      onClick={() => {
-                        setSelectedSnapshotId(s.id);
-                        const bs = s.backtestSettings as any | null;
-                        const cfg = s.config as Record<string, any> || {};
-                        const rainbowConfig = s.strategyKey === RAINBOW_20415_STRATEGY_KEY
-                          ? normalizeRainbow20415Config(cfg)
-                          : null;
-                        const rainbowLadderConfig = s.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY
-                          ? normalizeRainbowTrendLadderConfig(cfg)
-                          : null;
-                        const snapshotPositionValue = String(
-                          bs?.baseLotSize
-                            ?? bs?.tradeAmount
-                            ?? rainbowConfig?.Base_Lot_Size.value
-                            ?? rainbowLadderConfig?.Base_Lot_Size.value
-                            ?? cfg.Base_Lot_Size
-                            ?? 30,
-                        );
-                        const rawSnapshotPositionMode = bs?.baseLotSizeMode
-                          ?? rainbowConfig?.Base_Lot_Size.mode
-                          ?? rainbowLadderConfig?.Base_Lot_Size.mode
-                          ?? "usdt";
-                        const snapshotPositionMode: "usdt" | "quantity" = rawSnapshotPositionMode === "quantity"
-                          ? "quantity"
-                          : "usdt";
-                        setImportSnapshotPosition({
-                          value: snapshotPositionValue,
-                          mode: snapshotPositionMode,
-                        });
-                        setImportForm(prev => ({
-                          ...prev,
-                          name: `${s.snapshotName || '快照'}_副本`,
-                          symbol: (bs?.symbol || cfg.symbol || cfg.Symbol || prev.symbol).replace(/-/g, '').toUpperCase(),
-                          positionSize: snapshotPositionValue,
-                          positionMode: snapshotPositionMode,
-                          leverage: String(cfg.leverage || prev.leverage),
-                        }));
-                        setImportDialogOpen(true);
-                      }}
+                      onClick={() => openSnapshotImport(s)}
                       title="以此快照參數建立一個全新的策略實例"
                     >
                       <Plus className="w-4 h-4" />
                       <span className="ml-1 text-xs hidden lg:inline">複製為副本</span>
                     </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-cyan-400 hover:text-cyan-300"
+                              onClick={() => openDeploymentDraft(s)}
+                              disabled={!s.integrityValid || !s.compatibility.compatible}
+                              title={s.integrityValid && s.compatibility.compatible
+                                ? "由可信快照建立停用部署草稿"
+                                : "Artifact 未通過可信與相容 Gate"}
+                            >
+                              <Rocket className="w-4 h-4" />
+                              <span className="ml-1 hidden text-xs 2xl:inline">部署草稿</span>
+                            </Button>
                             <Button
                               variant="ghost"
                               size="sm"
@@ -492,6 +807,7 @@ export default function ParameterSnapshots() {
                     ))}
                   </TableBody>
                 </Table>
+                </div>
               </div>
             )}
           </CardContent>
@@ -509,6 +825,17 @@ export default function ParameterSnapshots() {
             <DialogHeader>
               <DialogTitle>參數詳情</DialogTitle>
             </DialogHeader>
+            {viewSnapshot && (
+              <ExecutionProfileSummary
+                strategyKey={viewSnapshot.strategyKey}
+                executionMode={viewSnapshot.artifact?.executionMode}
+                executionPolicy={viewSnapshot.artifact?.executionPolicy}
+                artifactScope={viewSnapshot.artifact?.artifactScope}
+                strategyVersion={viewSnapshot.artifact?.strategyVersion}
+                integrityValid={viewSnapshot.integrityValid}
+                compatible={viewSnapshot.compatibility.compatible}
+              />
+            )}
             {viewConfig && viewKamaRainbowMartinDisplay ? (
               <div className="space-y-4">
                 <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-3">
@@ -611,6 +938,18 @@ export default function ParameterSnapshots() {
                 將快照參數套用至現有策略實例，系統會自動驗證策略類型是否匹配。
               </DialogDescription>
             </DialogHeader>
+            {selectedSnapshot && (
+              <ExecutionProfileSummary
+                strategyKey={selectedSnapshot.strategyKey}
+                executionMode={selectedSnapshot.artifact?.executionMode}
+                executionPolicy={selectedSnapshot.artifact?.executionPolicy}
+                artifactScope={selectedSnapshot.artifact?.artifactScope}
+                strategyVersion={selectedSnapshot.artifact?.strategyVersion}
+                integrityValid={selectedSnapshot.integrityValid}
+                compatible={selectedSnapshot.compatibility.compatible}
+                compact
+              />
+            )}
             {selectedV41Display && (
               <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -680,6 +1019,18 @@ export default function ParameterSnapshots() {
                 快照只提供策略邏輯與倉位預填；建立前可獨立指定最終實盤部署倉位。
               </DialogDescription>
             </DialogHeader>
+            {selectedSnapshot && (
+              <ExecutionProfileSummary
+                strategyKey={selectedSnapshot.strategyKey}
+                executionMode={selectedSnapshot.artifact?.executionMode}
+                executionPolicy={selectedSnapshot.artifact?.executionPolicy}
+                artifactScope={selectedSnapshot.artifact?.artifactScope}
+                strategyVersion={selectedSnapshot.artifact?.strategyVersion}
+                integrityValid={selectedSnapshot.integrityValid}
+                compatible={selectedSnapshot.compatibility.compatible}
+                compact
+              />
+            )}
             {selectedV41Display && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed">
                 <div className="flex flex-wrap items-center gap-2">
@@ -811,6 +1162,128 @@ export default function ParameterSnapshots() {
                 disabled={importMutation.isPending}
               >
                 {importMutation.isPending ? "導入中..." : "確認導入"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={deploymentDialogOpen} onOpenChange={setDeploymentDialogOpen}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>由快照建立部署草稿</DialogTitle>
+              <DialogDescription>
+                伺服器會以 sourceSnapshotId 讀取並封印可信策略配置與 Execution Profile；建立後一律停用，不會送單。
+              </DialogDescription>
+            </DialogHeader>
+            {deploymentSnapshot && (
+              <ExecutionProfileSummary
+                strategyKey={deploymentSnapshot.strategyKey}
+                executionMode={deploymentSnapshot.artifact?.executionMode}
+                executionPolicy={deploymentSnapshot.artifact?.executionPolicy}
+                artifactScope={deploymentSnapshot.artifact?.artifactScope}
+                strategyVersion={deploymentSnapshot.artifact?.strategyVersion}
+                integrityValid={deploymentSnapshot.integrityValid}
+                compatible={deploymentSnapshot.compatibility.compatible}
+                compact
+              />
+            )}
+            <div className="grid gap-4 py-2 sm:grid-cols-2">
+              <div className="space-y-2 sm:col-span-2">
+                <Label>部署名稱</Label>
+                <Input
+                  value={deploymentForm.name}
+                  onChange={(event) => setDeploymentForm((current) => ({ ...current, name: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>API 金鑰</Label>
+                <Select
+                  value={deploymentForm.apiKeyId}
+                  onValueChange={(value) => setDeploymentForm((current) => ({ ...current, apiKeyId: value }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="選擇 API 金鑰" /></SelectTrigger>
+                  <SelectContent>
+                    {(apiKeysQuery.data ?? []).map((key: any) => (
+                      <SelectItem key={key.id} value={String(key.id)}>{key.label || key.name} ({key.exchange})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>交易對</Label>
+                <Input
+                  value={deploymentForm.symbol}
+                  onChange={(event) => setDeploymentForm((current) => ({ ...current, symbol: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>最終實盤部署倉位</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  value={deploymentForm.positionSize}
+                  onChange={(event) => setDeploymentForm((current) => ({ ...current, positionSize: event.target.value }))}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>倉位模式</Label>
+                  <Select
+                    value={deploymentForm.positionMode}
+                    onValueChange={(value) => setDeploymentForm((current) => ({
+                      ...current,
+                      positionMode: value === "quantity" ? "quantity" : "usdt",
+                    }))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="usdt">USDT</SelectItem>
+                      <SelectItem value="quantity">數量</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>槓桿</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="125"
+                    value={deploymentForm.leverage}
+                    onChange={(event) => setDeploymentForm((current) => ({ ...current, leverage: event.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label>允許方向</Label>
+                <Select
+                  value={deploymentForm.direction}
+                  onValueChange={(value) => setDeploymentForm((current) => ({
+                    ...current,
+                    direction: value as "long" | "short" | "both",
+                  }))}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="both">雙向</SelectItem>
+                    <SelectItem value="long">只做多</SelectItem>
+                    <SelectItem value="short">只做空</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+              安全預設：DRAFT／disabled。建立後請在部署工作台執行唯讀 Preflight，檢閱全部必要 Gate，再另行明確啟用。
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeploymentDialogOpen(false)}>取消</Button>
+              <Button
+                onClick={handleCreateDeploymentDraft}
+                disabled={createDeploymentMutation.isPending || !deploymentSnapshot?.integrityValid || !deploymentSnapshot?.compatibility.compatible}
+              >
+                {createDeploymentMutation.isPending
+                  ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  : <Rocket className="mr-2 h-4 w-4" />}
+                建立停用草稿
               </Button>
             </DialogFooter>
           </DialogContent>

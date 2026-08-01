@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   createCanonicalDeployment: vi.fn(),
   updateDeploymentPolicy: vi.fn(),
   requireStrategyCapabilityManifest: vi.fn(),
+  resolveDeploymentSource: vi.fn(),
   listRecentModeDecisions: vi.fn(),
 }));
 
@@ -32,6 +33,10 @@ vi.mock("./services/deploymentLifecycleRepository", async importOriginal => ({
 vi.mock("./services/strategyCapabilityRegistry", async importOriginal => ({
   ...(await importOriginal<typeof import("./services/strategyCapabilityRegistry")>()),
   requireStrategyCapabilityManifest: mocks.requireStrategyCapabilityManifest,
+}));
+
+vi.mock("./services/deploymentSourceResolver", () => ({
+  resolveDeploymentSource: mocks.resolveDeploymentSource,
 }));
 
 vi.mock("./services/threeModeLedger", async importOriginal => ({
@@ -90,7 +95,35 @@ describe("deployments protected router", () => {
       strategyLogicHash: "logic-hash",
       manifestHash: "manifest-hash",
       certification: "CERTIFIED",
-      capabilities: { supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"] },
+      capabilities: {
+        supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+        martingaleLayers: true,
+        independentLegState: true,
+        hedgeGuard: true,
+        preciseLegClose: true,
+        reason: "Certified test manifest",
+      },
+    });
+    mocks.resolveDeploymentSource.mockReset().mockResolvedValue({
+      strategyKey: "PHASE8_TEST",
+      config: {},
+      manifest: {
+        strategyKey: "PHASE8_TEST",
+        strategyVersion: 1,
+        strategyLogicHash: "logic-hash",
+        manifestHash: "manifest-hash",
+        certification: "CERTIFIED",
+        capabilities: {
+          supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+          martingaleLayers: true,
+          independentLegState: true,
+          hedgeGuard: true,
+          preciseLegClose: true,
+          reason: "Certified test manifest",
+        },
+      },
+      artifactSource: { origin: "MANUAL" },
+      attachMetadata: { sourceKind: "STRATEGY_DEFINITION", snapshotName: "Phase 8 Test" },
     });
     mocks.applyLifecycleTransition.mockReset().mockResolvedValue({
       deployment: strategy(),

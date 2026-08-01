@@ -41,6 +41,25 @@ import {
   KAMA_RAINBOW_MARTIN_CONFIG_VERSION,
   validateKamaRainbowMartinConfig,
 } from "@shared/strategies/kamaRainbowMartin";
+import type { ExecutionMode, ExecutionPolicy } from "@shared/executionModes";
+
+const EXECUTION_MODE_META: Record<ExecutionMode, { code: string; label: string; className: string }> = {
+  SINGLE_EXCLUSIVE: {
+    code: "S1",
+    label: "單倉互斥",
+    className: "border-cyan-500/45 bg-cyan-500/10 text-cyan-200",
+  },
+  MULTI_POSITION: {
+    code: "M2",
+    label: "雙向獨立",
+    className: "border-violet-500/45 bg-violet-500/10 text-violet-200",
+  },
+  HEDGE_GUARDED: {
+    code: "H3",
+    label: "保護對沖",
+    className: "border-amber-500/45 bg-amber-500/10 text-amber-200",
+  },
+};
 
 export interface ReportTrade {
   id: number;
@@ -150,6 +169,8 @@ interface Props {
   trades: ReportTrade[];
   equityCurve: Array<{ timestamp: number; equity: number; price: number }>;
   config: Record<string, unknown>;
+  executionMode: ExecutionMode;
+  executionPolicy: ExecutionPolicy;
   endPositionPolicy?: string;
   candleCount?: number;
   accounting?: ReportAccounting | null;
@@ -173,6 +194,8 @@ export default function BacktestReport({
   trades,
   equityCurve,
   config,
+  executionMode,
+  executionPolicy,
   endPositionPolicy = "mark_to_market",
   candleCount,
   accounting,
@@ -286,6 +309,9 @@ export default function BacktestReport({
         profitFactor: metrics.profitFactor,
         maxDrawdown: metrics.maxDrawdown,
       },
+      executionMode,
+      executionPolicy,
+      sourceBacktestRunId: runId,
     }));
   };
 
@@ -312,7 +338,9 @@ export default function BacktestReport({
           maxLoss: metrics.maxLoss,
         },
         backtestSettings,
-        artifactScope: "PARAMETERS_ONLY",
+        artifactScope: "EXECUTION_PROFILE",
+        executionMode,
+        executionPolicy: { ...executionPolicy },
         sourceRunId: runId,
         environment: environment
           ? {
@@ -345,6 +373,9 @@ export default function BacktestReport({
             {strategyKey}
           </Badge>
         )}
+        <Badge variant="outline" className={`text-xs font-semibold ${EXECUTION_MODE_META[executionMode].className}`}>
+          {EXECUTION_MODE_META[executionMode].code} · {EXECUTION_MODE_META[executionMode].label}
+        </Badge>
         <Badge variant="secondary" className="text-xs font-mono" title={runId}>
           {runId.length > 40 ? runId.slice(0, 40) + "..." : runId}
         </Badge>
@@ -372,7 +403,7 @@ export default function BacktestReport({
                   <span>Config version：<strong className="font-mono">{KAMA_RAINBOW_MARTIN_CONFIG_VERSION}</strong></span>
                   <span className="sm:col-span-2">Logic revision：<strong className="font-mono">{saveSnapshotMutation.data?.artifact.strategyLogicHash ?? KAMA_RAINBOW_MARTIN_LOGIC_REVISION}</strong></span>
                   <span className="break-all sm:col-span-2">Artifact checksum：<strong className="font-mono">{saveSnapshotMutation.data?.artifact.artifactHash ?? "儲存快照後由伺服器產生"}</strong></span>
-                  <span>Artifact scope：<strong>{saveSnapshotMutation.data?.artifact.artifactScope ?? "PARAMETERS_ONLY"}</strong></span>
+                  <span>Artifact scope：<strong>{saveSnapshotMutation.data?.artifact.artifactScope ?? "EXECUTION_PROFILE"}</strong></span>
                   <span>Compatibility：<strong className={saveSnapshotMutation.data?.compatibility.compatible ? "text-emerald-300" : "text-muted-foreground"}>{saveSnapshotMutation.data ? (saveSnapshotMutation.data.compatibility.compatible ? "相容" : "封鎖") : "待儲存驗證"}</strong></span>
                 </div>
                 {!kamaRainbowMartinDisplay.valid && (

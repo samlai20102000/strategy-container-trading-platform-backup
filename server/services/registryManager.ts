@@ -16,10 +16,12 @@ import { attachSnapshotConfig } from "./strategySnapshotConfig";
 import {
   assessStrategyArtifactCompatibility,
   assertStrategyArtifactCompatible,
+  buildStrategyArtifactEnvelope,
   hydrateStrategyArtifactFromSnapshotRow,
   type VersionedStrategyCapabilityManifest,
 } from "./strategyArtifacts";
 import { requireStrategyCapabilityManifest } from "./strategyCapabilityRegistry";
+import { createDefaultStrategyExecutionPolicy } from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
 import {
   assertValidV25Config,
   deriveV25MaxMartinLayer,
@@ -320,23 +322,38 @@ export class RegistryManager {
       instance.martinState && typeof instance.martinState === "object"
         ? (instance.martinState as Record<string, unknown>)
         : { lossCount: 0, currentLot: Number(instance.positionSize), lastEntryPrice: 0 };
+    const runtimeArtifact = hydrated.artifact.artifactScope === "EXECUTION_PROFILE"
+      ? hydrated.artifact
+      : buildStrategyArtifactEnvelope({
+          artifactScope: "EXECUTION_PROFILE",
+          strategyKey: snapshotKey,
+          strategyVersion: targetManifest.strategyVersion,
+          strategyLogicHash: targetManifest.strategyLogicHash,
+          config,
+          executionMode: "SINGLE_EXCLUSIVE",
+          executionPolicy: createDefaultStrategyExecutionPolicy(snapshotKey, "SINGLE_EXCLUSIVE"),
+          capabilityManifest: targetManifest,
+          source: {
+            origin: "PARAMETER_SNAPSHOT",
+            sourceSnapshotId: snapshot.id,
+            parentArtifactHash: hydrated.artifact.artifactHash,
+          },
+        });
 
     await db.updateStrategy(targetInstanceId, userId, {
       martinState: attachSnapshotConfig(prevState, snapshotKey, config, {
         snapshotId: snapshot.id,
         snapshotName: snapshot.snapshotName,
-        artifact: hydrated.artifact,
+        artifact: runtimeArtifact,
       }),
       enabled: false,
       activationState: "DISABLED",
       disabledReason: "快照配置已更新；必須重新通過部署 preflight 後才可啟用",
-      capabilitySnapshot: hydrated.artifact.capabilityManifest as unknown as Record<string, unknown>,
-      strategyVersion: hydrated.artifact.strategyVersion,
-      ...(hydrated.artifact.artifactScope === "EXECUTION_PROFILE" ? {
-        executionMode: hydrated.artifact.executionMode,
-        executionPolicy: hydrated.artifact.executionPolicy,
-        executionPolicyVersion: hydrated.artifact.executionPolicyVersion,
-      } : {}),
+      capabilitySnapshot: runtimeArtifact.capabilityManifest as unknown as Record<string, unknown>,
+      strategyVersion: runtimeArtifact.strategyVersion,
+      executionMode: runtimeArtifact.executionMode,
+      executionPolicy: runtimeArtifact.executionPolicy,
+      executionPolicyVersion: runtimeArtifact.executionPolicyVersion,
       ...(v25Config ? {
         stopLossPct: String(v25Config.Hard_Stop_Loss_Pct),
         takeProfitPct: String(v25Config.Take_Profit_Pct),

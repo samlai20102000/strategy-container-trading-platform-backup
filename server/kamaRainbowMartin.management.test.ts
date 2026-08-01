@@ -122,6 +122,71 @@ describe("Kama 彩虹馬丁腿級 management", () => {
     expect(shortDecision.action).toBe("close");
   });
 
+  it("實際加倉後使用該層硬止損覆蓋，底倉與空白欄位仍回退全域值", () => {
+    const config = createKamaRainbowMartinDefaultConfig();
+    config.layerConfigs = [
+      { layerStart: 1, layerEnd: 1, multiplier: 1.5, gapPct: 2, hardStopLossPct: 8 },
+      { layerStart: 2, layerEnd: 2, multiplier: 1.1, gapPct: 3 },
+    ];
+    config.maxLayers = 2;
+    const base = openLong(100, 1, config);
+    expect(evaluateKamaRainbowMartinManagement(
+      { currentPrice: 94, now: 2, riskEventKey: "base-global-stop" },
+      base,
+    ).reasonCode).toBe("KRM_HARD_STOP");
+
+    const layerOne = applyKamaRainbowMartinFillToState(base, {
+      action: "ADD_LONG",
+      fillId: "fill-layer-protection",
+      fillPrice: 98,
+      fillQuantity: 1,
+      timestamp: 3,
+      targetLayer: 2,
+    });
+    const protectedDecision = evaluateKamaRainbowMartinManagement(
+      { currentPrice: layerOne.avgPrice * 0.94, now: 4, riskEventKey: "layer-override-stop" },
+      layerOne,
+    );
+    expect(protectedDecision.reasonCode).not.toBe("KRM_HARD_STOP");
+    expect(protectedDecision.metrics.hardStopLossPct).toBe(8);
+  });
+
+  it("實際加倉後使用該層 trailing 覆蓋並保留 hard-stop 優先級", () => {
+    const config = createKamaRainbowMartinDefaultConfig();
+    config.layerConfigs = [{
+      layerStart: 1,
+      layerEnd: 1,
+      multiplier: 1.5,
+      gapPct: 2,
+      hardStopLossPct: 8,
+      trailingEnabled: true,
+      trailingActivationPct: 2,
+      trailingCallbackPct: 0.5,
+      trailingStepPct: 0.25,
+    }];
+    config.maxLayers = 1;
+    const base = openLong(100, 1, config);
+    const layerOne = applyKamaRainbowMartinFillToState(base, {
+      action: "ADD_LONG",
+      fillId: "fill-layer-trailing",
+      fillPrice: 98,
+      fillQuantity: 1,
+      timestamp: 2,
+      targetLayer: 2,
+    });
+    const peak = evaluateKamaRainbowMartinManagement(
+      { currentPrice: layerOne.avgPrice * 1.03, now: 3, riskEventKey: "layer-trailing-peak" },
+      layerOne,
+    );
+    expect(peak.metrics.trailingActive).toBe(true);
+    expect(peak.metrics.triggerProfitPct).toBe(2.5);
+    const exit = evaluateKamaRainbowMartinManagement(
+      { currentPrice: layerOne.avgPrice * 1.022, now: 4, riskEventKey: "layer-trailing-exit" },
+      peak.nextState,
+    );
+    expect(exit.reasonCode).toBe("KRM_TRAILING_EXIT");
+  });
+
   it("階梯 trailing 使用唯一公式並於實際加倉成交後重置", () => {
     const config = createKamaRainbowMartinDefaultConfig();
     expect(calculateKamaRainbowMartinTrailing(4.2, { trailingActive: false, peakProfitPct: 0 }, config)).toEqual({

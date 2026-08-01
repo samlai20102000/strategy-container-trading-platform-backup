@@ -33,6 +33,7 @@ const strategy = {
 
 function dependencies(overrides: Partial<RuntimeModeGuardDependencies> = {}): RuntimeModeGuardDependencies {
   return {
+    loadCanonicalStrategy: vi.fn(async strategy => strategy),
     loadRuntimeContext: vi.fn(async () => ({
       runtimeReady: true,
       openLegs: [],
@@ -115,5 +116,25 @@ describe("runtime mode guard", () => {
     expect(result.allowed).toBe(false);
     expect(result.envelope.decision.reasonCode).toBe("DUPLICATE_RUNTIME_EVENT");
     expect(result.envelope.decision.contextSnapshot.deduplicated).toBe(true);
+  });
+
+  it("canonical runtime hydration 失敗時先記錄拒絕且不載入交易所 runtime context", async () => {
+    const deps = dependencies({
+      loadCanonicalStrategy: vi.fn(async () => {
+        throw new Error("RUNTIME_ARTIFACT_HASH_MISMATCH");
+      }),
+    });
+    const result = await authorizeRuntimeModeAction({
+      strategy,
+      adapter,
+      signal: { action: "buy", source: "AUTO", eventKey: "tampered-artifact" },
+      signalId: 0,
+    }, deps);
+
+    expect(result.allowed).toBe(false);
+    expect(result.envelope.decision.reasonCode).toBe("CANONICAL_RUNTIME_CONTEXT_INVALID");
+    expect(result.envelope.decision.contextSnapshot.failClosed).toBe(true);
+    expect(deps.loadRuntimeContext).not.toHaveBeenCalled();
+    expect(deps.recordDecision).toHaveBeenCalledOnce();
   });
 });

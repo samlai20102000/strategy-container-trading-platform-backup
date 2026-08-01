@@ -360,7 +360,7 @@ export function KamaRainbowMartinConfigPanel({
             </div>
           </Sector>
 
-          <Sector index="03" title="階梯式馬丁分層參數" subtitle="底倉獨立於分層表；L1 是第一次加倉。每一段可設定逐層乘數與專屬間距，空白間距會回退全域值。" icon={Layers3} tone="violet">
+          <Sector index="03" title="階梯式馬丁分層參數" subtitle="底倉獨立於分層表；L1 是第一次加倉。每段可設定乘數、間距、硬止損與 trailing，空白欄位安全回退全域值。" icon={Layers3} tone="violet">
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <NumberControl id="krm-fixed-multiplier" label="固定模式乘數" value={config.multiplier} onChange={(multiplier) => updateConfig({ multiplier })} min={1} max={10} step={0.1} unit={config.layerConfigs.length > 0 ? "已由分層覆蓋" : "×"} disabled={disabled || config.layerConfigs.length > 0} description={config.layerConfigs.length > 0 ? "分層模式已啟用；實際乘數以各列設定為準。" : "沒有分層列時，所有加倉層使用此值。"} />
               <NumberControl id="krm-gap" label="全域加倉間距" value={config.gapPct} onChange={(gapPct) => updateConfig({ gapPct })} min={0.01} max={100} step={0.1} unit="百分點" disabled={disabled} description="分層列的間距留空時使用此值；LONG 向下、SHORT 向上。" />
@@ -374,17 +374,17 @@ export function KamaRainbowMartinConfigPanel({
             <div className="mt-4 overflow-hidden rounded-xl border border-violet-400/15 bg-violet-400/[0.03]">
               <div className="flex flex-col gap-3 border-b border-slate-800 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="font-mono text-xs font-semibold text-violet-100">分層規則（範圍 × 乘數 × 間距）</p>
-                  <p className="mt-1 text-[10px] leading-4 text-slate-500">範圍必須由 L1 起連續且不可重疊；可自行新增至 L{KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS}。</p>
+                  <p className="font-mono text-xs font-semibold text-violet-100">分層規則（觸發 × 倉位 × 間距 × 腿級保護）</p>
+                  <p className="mt-1 text-[10px] leading-4 text-slate-500">範圍必須由 L1 起連續且不可重疊；保護欄留空即繼承全域值，可新增至 L{KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS}。</p>
                 </div>
                 <Button type="button" variant="outline" size="sm" disabled={disabled || config.maxLayers >= KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} onClick={appendLayerConfig} className="border-violet-400/30 bg-violet-400/10 text-violet-100 hover:bg-violet-400/20">
                   <Plus className="mr-1.5 h-3.5 w-3.5" />新增分層
                 </Button>
               </div>
               <div role="region" aria-label="Kama 彩虹馬丁分層設定表，可水平捲動" tabIndex={0} className="w-full min-w-0 overflow-x-auto overscroll-x-contain">
-                <table className="w-full min-w-[860px] text-left text-xs">
+                <table className="w-full min-w-[1580px] text-left text-xs">
                   <thead className="bg-slate-950/80 text-[9px] uppercase tracking-[0.16em] text-slate-500">
-                    <tr><th className="px-3 py-3">起始層</th><th className="px-3 py-3">結束層</th><th className="px-3 py-3">逐層乘數</th><th className="px-3 py-3">間距 %</th><th className="px-3 py-3">段末累積</th><th className="px-3 py-3">操作</th></tr>
+                    <tr><th className="px-3 py-3">起始層</th><th className="px-3 py-3">結束層</th><th className="px-3 py-3">逐層乘數</th><th className="px-3 py-3">間距 %</th><th className="px-3 py-3">硬止損 %</th><th className="px-3 py-3">Trailing</th><th className="px-3 py-3">啟動 %</th><th className="px-3 py-3">回調 %</th><th className="px-3 py-3">步長 %</th><th className="px-3 py-3">段末累積</th><th className="px-3 py-3">操作</th></tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800 bg-[#050b11]/70">
                     {config.layerConfigs.map((layer, index) => (
@@ -393,11 +393,16 @@ export function KamaRainbowMartinConfigPanel({
                         <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 結束層`} type="number" min={1} max={KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS} step={1} value={layer.layerEnd} disabled={disabled} onChange={(event) => updateLayerConfig(index, { layerEnd: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
                         <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 乘數`} type="number" min={1} max={10} step={0.1} value={layer.multiplier} disabled={disabled} onChange={(event) => updateLayerConfig(index, { multiplier: Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs" /></td>
                         <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 間距`} type="number" min={0.01} max={100} step={0.1} value={layer.gapPct ?? ""} placeholder={`全域 ${config.gapPct}`} disabled={disabled} onChange={(event) => updateLayerConfig(index, { gapPct: event.target.value === "" ? undefined : Number(event.target.value) })} className="h-9 w-32 border-slate-700 bg-slate-950/70 font-mono text-xs placeholder:text-slate-600" /></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} 硬止損`} type="number" min={0.01} max={100} step={0.1} value={layer.hardStopLossPct ?? ""} placeholder={`全域 ${config.hardStopLossPct}`} disabled={disabled} onChange={(event) => updateLayerConfig(index, { hardStopLossPct: event.target.value === "" ? undefined : Number(event.target.value) })} className="h-9 w-32 border-slate-700 bg-slate-950/70 font-mono text-xs placeholder:text-slate-600" /></td>
+                        <td className="px-3 py-3"><Select value={layer.trailingEnabled === undefined ? "inherit" : layer.trailingEnabled ? "enabled" : "disabled"} onValueChange={(value) => updateLayerConfig(index, { trailingEnabled: value === "inherit" ? undefined : value === "enabled" })} disabled={disabled}><SelectTrigger aria-label={`分層 ${index + 1} Trailing`} className="h-9 w-32 border-slate-700 bg-slate-950/70 font-mono text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="inherit">繼承全域</SelectItem><SelectItem value="enabled">啟用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} Trailing 啟動`} type="number" min={0.01} max={100} step={0.1} value={layer.trailingActivationPct ?? ""} placeholder={`全域 ${config.trailing.activationPct}`} disabled={disabled || layer.trailingEnabled === false} onChange={(event) => updateLayerConfig(index, { trailingActivationPct: event.target.value === "" ? undefined : Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs placeholder:text-slate-600" /></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} Trailing 回調`} type="number" min={0.01} max={100} step={0.1} value={layer.trailingCallbackPct ?? ""} placeholder={`全域 ${config.trailing.callbackPct}`} disabled={disabled || layer.trailingEnabled === false} onChange={(event) => updateLayerConfig(index, { trailingCallbackPct: event.target.value === "" ? undefined : Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs placeholder:text-slate-600" /></td>
+                        <td className="px-3 py-3"><Input aria-label={`分層 ${index + 1} Trailing 步長`} type="number" min={0.01} max={100} step={0.1} value={layer.trailingStepPct ?? ""} placeholder={`全域 ${config.trailing.stepPct}`} disabled={disabled || layer.trailingEnabled === false} onChange={(event) => updateLayerConfig(index, { trailingStepPct: event.target.value === "" ? undefined : Number(event.target.value) })} className="h-9 w-28 border-slate-700 bg-slate-950/70 font-mono text-xs placeholder:text-slate-600" /></td>
                         <td className="px-3 py-3"><div className="font-mono text-sm font-black text-violet-100">{formatEstimate(getKamaRainbowMartinCumulativeMultiplier(layer.layerEnd, config.layerConfigs, config.multiplier))}×</div><div className="mt-1 text-[10px] text-slate-500">L{layer.layerStart}–L{layer.layerEnd} · 間距 {formatEstimate(getLayerGapPct(layer.layerStart, config.layerConfigs, config.gapPct))}%</div></td>
                         <td className="px-3 py-3"><Button type="button" variant="outline" size="sm" aria-label={`刪除分層 ${index + 1}`} disabled={disabled} onClick={() => removeLayerConfig(index)} className="border-slate-700 bg-slate-950/60 text-slate-300 hover:border-rose-400/40 hover:bg-rose-400/10 hover:text-rose-200"><Trash2 className="h-3.5 w-3.5" /></Button></td>
                       </tr>
                     ))}
-                    {config.layerConfigs.length === 0 ? <tr><td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-500">尚未設定分層；目前回退固定乘數模式。按「新增分層」由 L1 開始。</td></tr> : null}
+                    {config.layerConfigs.length === 0 ? <tr><td colSpan={11} className="px-4 py-8 text-center text-xs text-slate-500">尚未設定分層；目前回退固定乘數與全域腿級保護。按「新增分層」由 L1 開始。</td></tr> : null}
                   </tbody>
                 </table>
               </div>

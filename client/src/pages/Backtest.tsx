@@ -90,6 +90,12 @@ import {
   validateKamaRainbowMartinConfig,
   type KamaRainbowMartinTimeframe,
 } from "@shared/strategies/kamaRainbowMartin";
+import ExecutionModeConfigurator from "@/components/ExecutionModeConfigurator";
+import type { ExecutionMode, ExecutionPolicy, StrategyModeCapabilities } from "@shared/executionModes";
+import {
+  createDefaultStrategyExecutionPolicy,
+  normalizeStrategyExecutionPolicy,
+} from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
 
 type JobPhase = "idle" | "running" | "done" | "failed";
 
@@ -125,6 +131,9 @@ export default function Backtest() {
   const [positionMode, setPositionMode] = useState<"quantity" | "usdt">("usdt");
   const [endPositionPolicy, setEndPositionPolicy] = useState<"mark_to_market" | "force_close">("mark_to_market");
   const [configJson, setConfigJson] = useState<Record<string, unknown>>({});
+  const [executionPolicy, setExecutionPolicy] = useState<ExecutionPolicy>(() =>
+    createDefaultStrategyExecutionPolicy("20415_KAMA_MARTIN_V35", "SINGLE_EXCLUSIVE"),
+  );
 
   // ===== 任務狀態 =====
   const [jobId, setJobId] = useState<string | null>(null);
@@ -147,10 +156,24 @@ export default function Backtest() {
   // ❗ 穩定化引用：避免每次渲染都產生新陣列導致 useEffect/useMemo 無限觸發
   const strategiesData = useMemo(() => {
     if (registryQuery.data && registryQuery.data.length > 0) {
-      return registryQuery.data.map(s => ({ key: s.key, name: s.name, defaultConfig: s.defaultConfig as Record<string, unknown>, schemaConfig: s.schemaConfig as SchemaConfig | null }));
+      return registryQuery.data.map(s => ({
+        key: s.key,
+        name: s.name,
+        defaultConfig: s.defaultConfig as Record<string, unknown>,
+        schemaConfig: s.schemaConfig as SchemaConfig | null,
+        modeCapabilities: s.modeCapabilities as StrategyModeCapabilities,
+        strategyVersion: String(s.capabilityManifest.strategyVersion),
+        strategyLogicHash: s.capabilityManifest.strategyLogicHash,
+      }));
     }
     if (backtestStrategiesQuery.data) {
-      return backtestStrategiesQuery.data.map(s => ({ ...s, schemaConfig: null as SchemaConfig | null }));
+      return backtestStrategiesQuery.data.map(s => ({
+        ...s,
+        schemaConfig: null as SchemaConfig | null,
+        modeCapabilities: null as StrategyModeCapabilities | null,
+        strategyVersion: undefined as string | undefined,
+        strategyLogicHash: undefined as string | undefined,
+      }));
     }
     return undefined;
   }, [registryQuery.data, backtestStrategiesQuery.data]);
@@ -186,6 +209,7 @@ export default function Backtest() {
     () => strategiesQuery.data?.find((s) => s.key === strategyKey),
     [strategiesQuery.data, strategyKey],
   );
+  const selectedModeCapabilities = selectedStrategy?.modeCapabilities ?? null;
   // V4.3: 獲取選中策略的 schemaConfig 用於 DynamicForm fallback
   const selectedSchemaConfig = useMemo(
     () => selectedStrategy && 'schemaConfig' in selectedStrategy ? (selectedStrategy as any).schemaConfig as SchemaConfig | null : null,
@@ -258,6 +282,18 @@ export default function Backtest() {
       }
     }
   }, [selectedStrategy, strategyKey]);
+
+  useEffect(() => {
+    const supportedModes: readonly ExecutionMode[] = selectedModeCapabilities?.supportedModes?.length
+      ? selectedModeCapabilities.supportedModes
+      : ["SINGLE_EXCLUSIVE"];
+    setExecutionPolicy((previous) => {
+      const nextMode = supportedModes.includes(previous.mode)
+        ? previous.mode
+        : supportedModes[0] ?? "SINGLE_EXCLUSIVE";
+      return createDefaultStrategyExecutionPolicy(strategyKey, nextMode);
+    });
+  }, [strategyKey, selectedModeCapabilities]);
 
   // 輪詢進度更新（作為 fallback）
   useEffect(() => {
@@ -378,6 +414,11 @@ export default function Backtest() {
                   ? { ...configJson, ...normalizeV40EntryGateValue(configJson) }
                   : configJson,
         exchange,
+        executionMode: executionPolicy.mode,
+        executionPolicy: executionPolicy as unknown as Record<string, unknown>,
+        strategyVersion: selectedStrategy?.strategyVersion,
+        strategyLogicHash: selectedStrategy?.strategyLogicHash,
+        strategyModeCapabilities: selectedModeCapabilities ?? undefined,
         strategyName: selectedStrategy?.name,
         tradeAmount: strategyKey === V25_STRATEGY_KEY
           ? v25Validation?.config.Base_Lot_Size
@@ -734,6 +775,17 @@ export default function Backtest() {
       }
     }
 
+    if (snapshotData?.artifact?.artifactScope === "EXECUTION_PROFILE") {
+      const artifactMode = snapshotData.artifact.executionMode;
+      const artifactPolicy = snapshotData.artifact.executionPolicy;
+      if (artifactMode && artifactPolicy) {
+        setExecutionPolicy(normalizeStrategyExecutionPolicy(
+          snapshotData.strategyKey,
+          { ...artifactPolicy, mode: artifactMode },
+        ));
+      }
+    }
+
     setShowSnapshotModal(false);
     setSelectedSnapshotId(null);
     setImportMessage("");
@@ -835,6 +887,10 @@ export default function Backtest() {
       snapshotName: snapshotName.trim() || undefined,
       config: cfg,
       metrics: metricsPayload,
+      artifactScope: "EXECUTION_PROFILE",
+      executionMode: executionPolicy.mode,
+      executionPolicy: { ...executionPolicy },
+      sourceRunId: jobId ?? loadedRunId ?? undefined,
       // ✅ 傳遞完整回測設定（交易所、交易對、時間框架、日期、資金、交易金額）
       backtestSettings: {
         exchange,
@@ -1052,6 +1108,14 @@ export default function Backtest() {
                 </div>
               )}
             </div>
+
+            <ExecutionModeConfigurator
+              strategyKey={strategyKey}
+              value={executionPolicy}
+              onChange={setExecutionPolicy}
+              capabilities={selectedModeCapabilities}
+              context="backtest"
+            />
 
             <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/[0.04] p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1633,6 +1697,8 @@ export default function Backtest() {
             trades={result.trades as ReportTrade[]}
             equityCurve={result.equityCurve}
             config={(result as any).config ?? configJson}
+            executionMode={(result as any).executionMode ?? executionPolicy.mode}
+            executionPolicy={(result as any).executionPolicy ?? executionPolicy}
             endPositionPolicy={(result as any).endPositionPolicy ?? endPositionPolicy}
             candleCount={(result as any).candleCount}
             accounting={(result as any).accounting ?? null}
@@ -1709,6 +1775,11 @@ export default function Backtest() {
                       trades={loadedRun.trades as ReportTrade[]}
                       equityCurve={(loadedRun.equityCurve ?? []) as Array<{ timestamp: number; equity: number; price: number }>}
                       config={loadedRun.run.config}
+                      executionMode={(loadedRun.run as any).executionMode ?? "SINGLE_EXCLUSIVE"}
+                      executionPolicy={(loadedRun.run as any).executionPolicy ?? createDefaultStrategyExecutionPolicy(
+                        loadedRun.run.strategyKey,
+                        (loadedRun.run as any).executionMode ?? "SINGLE_EXCLUSIVE",
+                      )}
                       endPositionPolicy={(loadedRun.run as any).endPositionPolicy}
                       candleCount={(loadedRun.run as any).candleCount}
                       accounting={(loadedRun.run as any).accounting ?? null}

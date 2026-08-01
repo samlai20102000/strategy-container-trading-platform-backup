@@ -52,6 +52,7 @@ function leg(input: {
   role: "PRIMARY" | "HEDGE";
   avgEntryPrice?: number;
   quantity?: number;
+  openedAt?: Date;
 }) {
   const quantity = input.quantity ?? 0.01;
   const avgPrice = input.avgEntryPrice ?? 100;
@@ -63,6 +64,7 @@ function leg(input: {
     status: "OPEN",
     quantity: quantity.toFixed(8),
     avgEntryPrice: avgPrice.toFixed(8),
+    openedAt: input.openedAt ?? new Date(1_899_999_000_000),
     martinState: createKamaRainbowMartinRuntimeState({
       isLong: input.side === "LONG",
       currentLayer: 1,
@@ -92,6 +94,7 @@ beforeEach(() => {
     ask: 96.1,
     capturedAt: 1_900_000_000_000,
   });
+  mocks.fetchClosedCandles.mockResolvedValue({ candles: [], lastClosedBarIdentity: null });
 });
 
 describe("KamaRainbowMartin advanced signal", () => {
@@ -151,5 +154,75 @@ describe("KamaRainbowMartin advanced signal", () => {
     expect(mocks.fetchFreshQuote).not.toHaveBeenCalled();
     expect(mocks.fetchClosedCandles).not.toHaveBeenCalled();
     expect(mocks.updatePositionLegRuntime).not.toHaveBeenCalled();
+  });
+
+  it("closes an H3 hedge on primary recovery only after the canonical minimum hold", async () => {
+    const advancedInput = input();
+    advancedInput.strategy.executionPolicy = {
+      ...advancedInput.strategy.executionPolicy,
+      unwindPolicy: "CLOSE_HEDGE_ON_RECOVERY",
+      minimumHedgeHoldSeconds: 60,
+    };
+    mocks.fetchFreshQuote.mockResolvedValue({
+      exchange: "bybit",
+      symbol: "BTCUSDT",
+      bid: 99,
+      ask: 99.1,
+      capturedAt: 1_900_000_000_000,
+    });
+    mocks.listActivePositionLegs.mockResolvedValue([
+      leg({ legId: "primary-long", side: "LONG", role: "PRIMARY" }),
+      leg({
+        legId: "hedge-short",
+        side: "SHORT",
+        role: "HEDGE",
+        avgEntryPrice: 96,
+        quantity: 0.005,
+        openedAt: new Date(1_899_999_900_000),
+      }),
+    ]);
+
+    const result = await generateKamaRainbowMartinAdvancedSignal(advancedInput);
+
+    expect(result.signal).toEqual(expect.objectContaining({
+      action: "close",
+      kamaRainbowMartinAction: "CLOSE",
+      kamaRainbowMartinReasonCode: "KRM_H3_RECOVERY_UNWIND",
+      kamaRainbowMartinLegId: "hedge-short",
+    }));
+    expect(mocks.fetchClosedCandles).not.toHaveBeenCalled();
+  });
+
+  it("does not unwind a recovering H3 hedge before the canonical minimum hold", async () => {
+    const advancedInput = input();
+    advancedInput.strategy.executionPolicy = {
+      ...advancedInput.strategy.executionPolicy,
+      unwindPolicy: "CLOSE_HEDGE_ON_RECOVERY",
+      minimumHedgeHoldSeconds: 60,
+    };
+    mocks.fetchFreshQuote.mockResolvedValue({
+      exchange: "bybit",
+      symbol: "BTCUSDT",
+      bid: 99,
+      ask: 99.1,
+      capturedAt: 1_900_000_000_000,
+    });
+    mocks.listActivePositionLegs.mockResolvedValue([
+      leg({ legId: "primary-long", side: "LONG", role: "PRIMARY" }),
+      leg({
+        legId: "hedge-short",
+        side: "SHORT",
+        role: "HEDGE",
+        avgEntryPrice: 96,
+        quantity: 0.005,
+        openedAt: new Date(1_899_999_970_000),
+      }),
+    ]);
+
+    const result = await generateKamaRainbowMartinAdvancedSignal(advancedInput);
+
+    expect(result.signal).toBeNull();
+    expect(result.holdReason?.type).toBe("no_data");
+    expect(mocks.fetchClosedCandles).toHaveBeenCalledTimes(1);
   });
 });

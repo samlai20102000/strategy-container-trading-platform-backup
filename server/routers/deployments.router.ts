@@ -37,7 +37,11 @@ import {
   updateDeploymentPolicy,
 } from "../services/deploymentLifecycleRepository";
 import { requireStrategyCapabilityManifest } from "../services/strategyCapabilityRegistry";
-import { buildExecutionPolicyHash } from "../services/strategyArtifacts";
+import {
+  buildExecutionPolicyHash,
+  buildStrategyArtifactEnvelope,
+} from "../services/strategyArtifacts";
+import { resolveDeploymentSource } from "../services/deploymentSourceResolver";
 import { listRecentModeDecisions } from "../services/threeModeLedger";
 
 const executionModeSchema = z.enum(EXECUTION_MODES);
@@ -278,8 +282,10 @@ export const deploymentsRouter = router({
       apiKeyId: z.number().int().positive(),
       symbol: z.string().trim().min(1).max(32),
       strategyKey: z.string().trim().min(1).max(100),
-      executionMode: executionModeSchema.default("SINGLE_EXCLUSIVE"),
+      executionMode: executionModeSchema.optional(),
       executionPolicy: policySchema.optional(),
+      sourceStrategyId: deploymentIdSchema.optional(),
+      sourceSnapshotId: deploymentIdSchema.optional(),
       positionSize: z.number().positive().max(1_000_000_000).default(1),
       positionMode: z.enum(["quantity", "usdt"]).default("usdt"),
       leverage: z.number().int().min(1).max(125).default(1),
@@ -299,15 +305,37 @@ export const deploymentsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       try {
-        const manifest = await requireStrategyCapabilityManifest(input.strategyKey);
+        const source = await resolveDeploymentSource(ctx.user.id, {
+          strategyKey: input.strategyKey,
+          sourceStrategyId: input.sourceStrategyId,
+          sourceSnapshotId: input.sourceSnapshotId,
+        });
+        const executionMode = input.executionMode ?? source.suggestedMode ?? "SINGLE_EXCLUSIVE";
         const executionPolicy = input.executionPolicy
           ? normalizeStrategyExecutionPolicy(input.strategyKey, input.executionPolicy)
-          : createDefaultStrategyExecutionPolicy(input.strategyKey, input.executionMode);
+          : source.suggestedMode === executionMode && source.suggestedPolicy
+            ? normalizeStrategyExecutionPolicy(input.strategyKey, source.suggestedPolicy)
+            : createDefaultStrategyExecutionPolicy(input.strategyKey, executionMode);
+        const strategyArtifact = buildStrategyArtifactEnvelope({
+          artifactScope: "EXECUTION_PROFILE",
+          strategyKey: source.strategyKey,
+          strategyVersion: source.manifest.strategyVersion,
+          strategyLogicHash: source.manifest.strategyLogicHash,
+          config: source.config,
+          executionMode,
+          executionPolicy,
+          capabilityManifest: source.manifest,
+          source: source.artifactSource,
+        });
         return safeDeployment(await createCanonicalDeployment({
           ...input,
           userId: ctx.user.id,
+          executionMode,
           executionPolicy,
-          capabilityManifest: manifest,
+          capabilityManifest: source.manifest,
+          strategyConfig: source.config,
+          sourceMetadata: source.attachMetadata,
+          strategyArtifact,
         }));
       } catch (error) {
         return lifecycleError(error);

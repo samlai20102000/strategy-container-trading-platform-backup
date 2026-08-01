@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   saveStrategyState: vi.fn(),
   acquireBarLock: vi.fn(),
   checkBarLock: vi.fn(),
+  loadCanonicalRuntimeDeployment: vi.fn(),
 }));
 
 vi.mock("./db", () => ({
@@ -62,6 +63,10 @@ vi.mock("./services/barLock", () => ({
   checkBarLock: mocks.checkBarLock,
 }));
 
+vi.mock("./services/canonicalRuntimeDeployment", () => ({
+  loadCanonicalRuntimeDeployment: mocks.loadCanonicalRuntimeDeployment,
+}));
+
 import {
   createV41DefaultConfig,
   V41_STRATEGY_KEY,
@@ -91,11 +96,13 @@ const initialState = {
   lastBarTimestamp: 0,
 };
 
+let currentCanonicalStrategy: any;
+
 function strategyWithConfig(config?: Record<string, unknown>) {
   const martinState = config
     ? attachSnapshotConfig(initialState, V41_STRATEGY_KEY, config, { snapshotName: "zero-order-test" })
     : { ...initialState };
-  return {
+  currentCanonicalStrategy = {
     id: 41,
     userId: 1,
     apiKeyId: 1,
@@ -117,6 +124,7 @@ function strategyWithConfig(config?: Record<string, unknown>) {
     reentryCooldownBars: 0,
     martinState,
   } as any;
+  return currentCanonicalStrategy;
 }
 
 function rawSignal(overrides: Partial<ParsedSignal> = {}): ParsedSignal {
@@ -150,6 +158,9 @@ describe("V4.1 fail-closed 零下單證據", () => {
     mocks.saveStrategyState.mockResolvedValue(undefined);
     mocks.checkBarLock.mockResolvedValue(false);
     mocks.acquireBarLock.mockResolvedValue({ acquired: true });
+    mocks.loadCanonicalRuntimeDeployment.mockImplementation(async () => ({
+      strategy: currentCanonicalStrategy,
+    }));
   });
 
   it("缺少 canonical __v41Config 時在下單前拒絕", async () => {

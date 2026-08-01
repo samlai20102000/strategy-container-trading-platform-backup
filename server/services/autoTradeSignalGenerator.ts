@@ -57,6 +57,7 @@ import {
   fetchKamaRainbowMartinFreshQuote,
 } from "./kamaRainbowMartinMarketData";
 import { generateKamaRainbowMartinAdvancedSignal } from "./kamaRainbowMartinAdvancedSignal";
+import { loadCanonicalRuntimeDeployment } from "./canonicalRuntimeDeployment";
 import {
   evaluateV40EntryGates,
   V40_STRATEGY_KEY,
@@ -189,6 +190,7 @@ export async function generateTradingSignal(
   const withReason = options?.withReason === true;
   try {
     await initStrategyStudio(); // Ensure strategies are loaded
+    strategy = (await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)).strategy;
 
     const engine = getStrategy(strategy.strategyKey || "");
     if (!engine) {
@@ -210,9 +212,9 @@ export async function generateTradingSignal(
     const adapter = createAdapter(apiKeyRecord);
 
     if (strategy.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
-      const { getStrategyById } = await import("../db");
-      const freshStrategy = await getStrategyById(strategy.id);
-      const effectiveStrategy = freshStrategy || strategy;
+      const effectiveStrategy = (
+        await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
+      ).strategy;
       const state = loadStrategyState(effectiveStrategy);
       const effectiveMartinState = effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
         ? effectiveStrategy.martinState as Record<string, unknown>
@@ -356,9 +358,9 @@ export async function generateTradingSignal(
     }
 
     if (strategy.strategyKey === RAINBOW_TREND_LADDER_STRATEGY_KEY) {
-      const { getStrategyById } = await import("../db");
-      const freshStrategy = await getStrategyById(strategy.id);
-      const effectiveStrategy = freshStrategy || strategy;
+      const effectiveStrategy = (
+        await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
+      ).strategy;
       const state = loadStrategyState(effectiveStrategy);
       const effectiveMartinState = effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
         ? effectiveStrategy.martinState as Record<string, unknown>
@@ -505,9 +507,9 @@ export async function generateTradingSignal(
         console.warn(`[AutoTradeSignalGenerator][20415] 持倉同步失敗，維持本地狀態且不認領外部倉位：${error.message}`);
       }
 
-      const { getStrategyById } = await import("../db");
-      const freshStrategy = await getStrategyById(strategy.id);
-      const effectiveStrategy = freshStrategy || strategy;
+      const effectiveStrategy = (
+        await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
+      ).strategy;
       const strategyState = loadStrategyState(effectiveStrategy);
       const effectiveMartinState =
         effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
@@ -682,10 +684,10 @@ export async function generateTradingSignal(
     }
     
     // 重新載入策略（可能已被 reconcile 修正）
-    const { getStrategyById } = await import("../db");
-    const freshStrategy = await getStrategyById(strategy.id);
-    const strategyState = loadStrategyState(freshStrategy || strategy);
-    const effectiveStrategy = freshStrategy || strategy;
+    const effectiveStrategy = (
+      await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
+    ).strategy;
+    const strategyState = loadStrategyState(effectiveStrategy);
     const effectiveMartinState =
       effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
         ? (effectiveStrategy.martinState as Record<string, unknown>)
@@ -1210,7 +1212,7 @@ export async function generateTradingSignal(
           }
         } as StrategyInstanceConfig,
         marketData,
-        (freshStrategy || strategy).martinState as any,
+        effectiveStrategy.martinState as any,
       );
 
       console.log(`[AutoTradeSignalGenerator] Generic engine result: action=${genericSignal?.action || 'null'} reason=${genericSignal?.reason || 'none'}`);

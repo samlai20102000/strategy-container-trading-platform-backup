@@ -41,14 +41,19 @@ import {
   type DeploymentPreflightReport,
 } from "./deploymentLifecycle";
 import {
+  buildStrategyArtifactEnvelope,
   buildExecutionPolicyHash,
   capabilityManifestSupportsMode,
+  type StrategyArtifactEnvelope,
   type VersionedStrategyCapabilityManifest,
 } from "./strategyArtifacts";
 import {
   attachSnapshotConfig,
+  getBoundStrategyArtifact,
   getBoundStrategyConfig,
   pickStrategyConfigState,
+  replaceBoundStrategyArtifact,
+  type SnapshotAttachMetadata,
 } from "./strategySnapshotConfig";
 
 type DeploymentDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -143,6 +148,9 @@ export interface CreateDeploymentInput {
   executionMode: ExecutionMode;
   executionPolicy: unknown;
   capabilityManifest: VersionedStrategyCapabilityManifest;
+  strategyConfig?: Record<string, unknown>;
+  sourceMetadata?: Omit<SnapshotAttachMetadata, "artifact">;
+  strategyArtifact?: StrategyArtifactEnvelope;
   positionSize?: number;
   positionMode?: "quantity" | "usdt";
   leverage?: number;
@@ -461,6 +469,59 @@ function resetCopiedMartinState(source: unknown, initialLot: unknown): Record<st
   };
 }
 
+function resealExecutionProfileState(input: {
+  strategy: Pick<Strategy, "strategyKey" | "martinState" | "capabilitySnapshot">;
+  state?: Record<string, unknown>;
+  executionPolicy: ExecutionPolicy;
+  capabilityManifest?: VersionedStrategyCapabilityManifest;
+  sourceOrigin: "COPY" | "IMPORT";
+}): Record<string, unknown> {
+  const strategyKey = input.strategy.strategyKey?.trim();
+  if (!strategyKey) throw new Error("STRATEGY_KEY_MISSING");
+  const state = input.state ?? (
+    input.strategy.martinState && typeof input.strategy.martinState === "object"
+      ? input.strategy.martinState as Record<string, unknown>
+      : {}
+  );
+  const legacyConfigCandidates = Object.entries(state)
+    .filter(([key, value]) => (
+      /^__.+Config$/.test(key)
+      && typeof value === "object"
+      && value !== null
+      && !Array.isArray(value)
+    ))
+    .map(([, value]) => value as Record<string, unknown>);
+  const config = getBoundStrategyConfig(state, strategyKey)
+    ?? (legacyConfigCandidates.length === 1 ? legacyConfigCandidates[0] : {});
+  const previousArtifact = getBoundStrategyArtifact(state, strategyKey)
+    ?? getBoundStrategyArtifact(input.strategy.martinState, strategyKey);
+  const manifest = input.capabilityManifest
+    ?? previousArtifact?.capabilityManifest
+    ?? input.strategy.capabilitySnapshot as VersionedStrategyCapabilityManifest | null;
+  if (!manifest) throw new Error("CAPABILITY_MANIFEST_MISSING");
+  const artifact = buildStrategyArtifactEnvelope({
+    artifactScope: "EXECUTION_PROFILE",
+    strategyKey,
+    strategyVersion: manifest.strategyVersion,
+    strategyLogicHash: manifest.strategyLogicHash,
+    config,
+    executionMode: input.executionPolicy.mode,
+    executionPolicy: input.executionPolicy,
+    capabilityManifest: manifest,
+    source: {
+      origin: input.sourceOrigin,
+      parentArtifactHash: previousArtifact?.artifactHash,
+    },
+  });
+  const canonicalState = getBoundStrategyConfig(state, strategyKey)
+    ? state
+    : attachSnapshotConfig(state, strategyKey, config, {
+      sourceKind: "STRATEGY_INSTANCE",
+      artifact,
+    });
+  return replaceBoundStrategyArtifact(canonicalState, strategyKey, artifact);
+}
+
 async function requireOwnedApiKeyRecord(
   db: DeploymentDb,
   apiKeyId: number,
@@ -515,11 +576,19 @@ export async function createCanonicalDeployment(
   const positionSize = input.positionSize ?? 0;
   const positionMode = input.positionMode ?? "quantity";
   const resetState = resetCopiedMartinState(null, positionSize);
-  const martinState = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+  const strategyConfig = input.strategyConfig
+    ?? (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+      ? createKamaRainbowMartinDefaultConfig() as unknown as Record<string, unknown>
+      : undefined);
+  const martinState = strategyConfig
     ? attachSnapshotConfig(
       resetState,
       strategyKey,
-      createKamaRainbowMartinDefaultConfig() as unknown as Record<string, unknown>,
+      strategyConfig,
+      {
+        ...input.sourceMetadata,
+        artifact: input.strategyArtifact,
+      },
     )
     : resetState;
   const insert: InsertStrategy = {
@@ -612,6 +681,7 @@ export async function copyCanonicalDeployment(
     disabledReason: _disabledReason,
     ...copyable
   } = source;
+  const copiedState = resetCopiedMartinState(source.martinState, source.positionSize);
   const insert: InsertStrategy = {
     ...copyable,
     userId: input.userId,
@@ -622,7 +692,13 @@ export async function copyCanonicalDeployment(
     deploymentKey: canonicalDeploymentKey(input.userId),
     webhookSecret: generateWebhookSecret(),
     heartbeatTaskUid: null,
-    martinState: resetCopiedMartinState(source.martinState, source.positionSize),
+    martinState: resealExecutionProfileState({
+      strategy: source,
+      state: copiedState,
+      executionPolicy,
+      capabilityManifest: input.capabilityManifest,
+      sourceOrigin: "COPY",
+    }),
     executionMode,
     executionPolicy,
     executionPolicyVersion: EXECUTION_POLICY_VERSION,
@@ -703,11 +779,17 @@ export async function updateDeploymentPolicy(
       blockerCodes: [],
       requestedAt: now,
     });
+    const martinState = resealExecutionProfileState({
+      strategy: current,
+      executionPolicy: policy,
+      sourceOrigin: "IMPORT",
+    });
     const result = await tx
       .update(strategies)
       .set({
         executionPolicy: policy,
         executionPolicyVersion: EXECUTION_POLICY_VERSION,
+        martinState,
         activationState: "DISABLED",
         enabled: false,
         deploymentRevision: sql`${strategies.deploymentRevision} + 1` as unknown as number,
@@ -1222,12 +1304,18 @@ export async function switchDeploymentMode(
       requestedAt: now,
     });
 
+    const martinState = resealExecutionProfileState({
+      strategy: current,
+      executionPolicy: targetPolicy,
+      sourceOrigin: "IMPORT",
+    });
     const updateResult = await tx
       .update(strategies)
       .set({
         executionMode: input.executionMode,
         executionPolicy: targetPolicy,
         executionPolicyVersion: EXECUTION_POLICY_VERSION,
+        martinState,
         activationState: "READY_DISABLED",
         enabled: false,
         deploymentRevision: sql`${strategies.deploymentRevision} + 1`,
