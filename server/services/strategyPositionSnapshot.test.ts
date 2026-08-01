@@ -103,6 +103,57 @@ describe("strategyPositionSnapshot", () => {
     });
   });
 
+  it("本地 long 與 OKX long/short 並存時只歸屬 long，並把無本地擁有者的 short 標為未歸屬", () => {
+    const [snapshot] = buildStrategyPositionSnapshots(
+      [strategy(120011, { martinState: { totalSize: 0.0079, avgPrice: 113_000, isLong: true } })],
+      accounts({
+        positions: [
+          position({ side: "long", size: 0.0079, entryPrice: 113_000 }),
+          position({ side: "short", size: 0.1159, entryPrice: 115_000, unrealizedPnl: 347.7 }),
+        ],
+        capturedAt: 1_005_000,
+      }),
+      1_006_000,
+    );
+
+    expect(snapshot).toMatchObject({
+      strategyId: 120011,
+      side: "long",
+      size: 0.0079,
+      accountOppositeSide: "short",
+      accountOppositePositionSize: 0.1159,
+      accountOppositePositionAttribution: "unassigned",
+    });
+  });
+
+  it("同帳戶反向倉有另一策略本地所有權時標為 other_strategy，而非孤兒倉", () => {
+    const snapshots = buildStrategyPositionSnapshots(
+      [
+        strategy(1, { martinState: { totalSize: 0.0079, avgPrice: 113_000, isLong: true } }),
+        strategy(2, { martinState: { totalSize: 0.1159, avgPrice: 115_000, isLong: false } }),
+      ],
+      accounts({
+        positions: [
+          position({ side: "long", size: 0.0079, entryPrice: 113_000 }),
+          position({ side: "short", size: 0.1159, entryPrice: 115_000, unrealizedPnl: 347.7 }),
+        ],
+        capturedAt: 1_005_000,
+      }),
+      1_006_000,
+    );
+
+    expect(snapshots[0]).toMatchObject({
+      accountOppositeSide: "short",
+      accountOppositePositionSize: 0.1159,
+      accountOppositePositionAttribution: "other_strategy",
+    });
+    expect(snapshots[1]).toMatchObject({
+      accountOppositeSide: "long",
+      accountOppositePositionSize: 0.0079,
+      accountOppositePositionAttribution: "other_strategy",
+    });
+  });
+
   it("同帳戶、交易對與方向被多策略共享時不重複歸入帳戶總盈虧", () => {
     const snapshots = buildStrategyPositionSnapshots(
       [

@@ -16,6 +16,7 @@ export type PositionSnapshotStatus =
   | "exchange_unavailable"
   | "incomplete_exchange_position";
 export type PositionPnlKind = "exchange_unrealized" | "strategy_gross_estimate" | "unavailable";
+export type AccountOppositePositionAttribution = "none" | "other_strategy" | "unassigned";
 
 export interface StrategyPositionSnapshot {
   contractVersion: typeof STRATEGY_POSITION_SNAPSHOT_CONTRACT_VERSION;
@@ -40,6 +41,9 @@ export interface StrategyPositionSnapshot {
   positionMargin: number | null;
   accountPositionSize: number | null;
   accountUnrealizedPnl: number | null;
+  accountOppositeSide: "long" | "short" | null;
+  accountOppositePositionSize: number | null;
+  accountOppositePositionAttribution: AccountOppositePositionAttribution;
   message: string;
 }
 
@@ -356,6 +360,9 @@ function baseSnapshot(local: LocalPositionState): StrategyPositionSnapshot {
     positionMargin: null,
     accountPositionSize: null,
     accountUnrealizedPnl: null,
+    accountOppositeSide: null,
+    accountOppositePositionSize: null,
+    accountOppositePositionAttribution: "none",
     message: "交易所持倉資料不可用",
   };
 }
@@ -376,8 +383,35 @@ export function buildStrategyPositionSnapshots(
   }
 
   return locals.map((local) => {
-    const snapshot = baseSnapshot(local);
     const account = accountResults.get(local.strategy.apiKeyId);
+    const normalizedSymbol = normalizePositionSymbol(local.strategy.symbol);
+    const oppositeSide = local.side === "long" ? "short" : local.side === "short" ? "long" : null;
+    const oppositeAccountPositions = account && !account.error && oppositeSide
+      ? account.positions.filter((position) =>
+        normalizePositionSymbol(position.symbol) === normalizedSymbol
+          && position.side === oppositeSide
+          && position.size > 0,
+      )
+      : [];
+    const oppositeAccountSize = oppositeAccountPositions.reduce((sum, position) => sum + position.size, 0);
+    const oppositeLocalOwnerCount = oppositeSide
+      ? locals.filter((candidate) =>
+        candidate.hasPosition
+          && candidate.strategy.apiKeyId === local.strategy.apiKeyId
+          && normalizePositionSymbol(candidate.strategy.symbol) === normalizedSymbol
+          && candidate.side === oppositeSide,
+      ).length
+      : 0;
+    const snapshot: StrategyPositionSnapshot = {
+      ...baseSnapshot(local),
+      accountOppositeSide: oppositeAccountSize > 0 ? oppositeSide : null,
+      accountOppositePositionSize: oppositeAccountSize > 0 ? oppositeAccountSize : null,
+      accountOppositePositionAttribution: oppositeAccountSize <= 0
+        ? "none"
+        : oppositeLocalOwnerCount > 0
+          ? "other_strategy"
+          : "unassigned",
+    };
 
     if (!local.hasPosition) {
       return {
@@ -397,7 +431,6 @@ export function buildStrategyPositionSnapshots(
       };
     }
 
-    const normalizedSymbol = normalizePositionSymbol(local.strategy.symbol);
     const matchingPositions = account.positions.filter((position) =>
       normalizePositionSymbol(position.symbol) === normalizedSymbol && position.side === local.side && position.size > 0,
     );

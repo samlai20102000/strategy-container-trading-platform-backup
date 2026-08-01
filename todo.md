@@ -2557,3 +2557,14 @@
 - [x] 以 KRM、V4.1、至少一個無進階能力策略及一個未來／自訂策略 fixture 驗證桌面與行動 UI、背景 job、歷史記錄及錯誤路徑
 - [x] 更新架構與新增策略接入文件，說明 descriptor／adapter／認證測試為新增策略的強制完成條件
 - [x] 核對 todo 全部完成後建立 checkpoint，自動發布並交付版本與驗收摘要
+
+- [x] 依使用者圖片建立策略 #120011 事故證據矩陣：本地卡片 long 0.0079 BTC、OKX long 0.0079 BTC、OKX short 0.1159 BTC、重複移動止盈平倉失敗
+- [x] 查明策略 #120011 的 signals、position／martin layers、API 帳戶、symbol、position mode 與最近平倉錯誤原文，區分策略單、孤兒倉與其他策略倉
+- [x] 追查所有自動平倉入口到 OKX adapter 的 side／posSide／reduceOnly／ordType／size 映射，確認 long 與 short 在 hedge mode 下不會傳反或漏傳
+- [x] 修復共用平倉執行器：以交易所實際腿與策略歸屬為準、精確平指定方向、禁止把平倉變成反向開倉，並對 OKX 錯誤碼分類
+- [x] 修復策略卡與交易所持倉對帳：同時呈現屬於該策略的多／空腿；未能證明歸屬的交易所倉位標示為未歸屬，不可靜默合併或誤平
+- [x] 加入平倉單一飛行／冪等與退避機制，避免監控器每個輪詢週期重複送出同一平倉命令及刷出大量失敗訊號
+- [x] 平倉成功僅在交易所確認該方向倉位歸零後更新本地狀態；失敗保留持倉並保存 request identity、錯誤碼、posSide、size 與修復提示
+- [x] 補齊 one-way／hedge、long／short、部分成交、重複平倉、孤兒倉、不同策略同 symbol 及 V4.0 移動止盈的 Vitest 防回歸測試
+- [x] 執行 TypeScript、受影響及完整 Vitest、production build；確認測試不會連到 OKX 或送出任何真實／模擬訂單
+- [x] 驗證策略卡、訊號日誌及異常倉位提示的桌面／行動版 UI，複核 todo 後建立 checkpoint 並自動發布

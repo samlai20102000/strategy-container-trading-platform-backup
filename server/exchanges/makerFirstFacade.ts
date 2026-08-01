@@ -1,7 +1,20 @@
 import { randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+
+const MAX_POLICY_RUN_ID_LENGTH = 40;
+
+function normalizePolicyRunId(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= MAX_POLICY_RUN_ID_LENGTH) return normalized;
+  const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 12);
+  return `${normalized.slice(0, MAX_POLICY_RUN_ID_LENGTH - digest.length - 1)}-${digest}`;
+}
 
 function normalizeSymbol(symbol: string): string {
-  return symbol.replace(/[-_/]/g, "").toUpperCase();
+  return symbol
+    .toUpperCase()
+    .replace(/(?:[-_/]?SWAP)$/i, "")
+    .replace(/[^A-Z0-9]/g, "");
 }
 import type { InsertOrderPolicyEvent } from "../../drizzle/schema";
 import { recordOrderPolicyEvent } from "../db";
@@ -29,6 +42,8 @@ export interface MakerFirstOrderIntent {
   symbol: string;
   side: "buy" | "sell";
   size: number;
+  /** 調用端提供的穩定 intent 識別；只用於政策稽核／冪等，不直接冒充交易所子單 ID。 */
+  clientOrderId?: string;
   /** 策略可接受的價格界線；買單為最高價，賣單為最低價。 */
   targetPrice?: number;
   reduceOnly?: boolean;
@@ -203,6 +218,29 @@ function aggregateCloseResults(results: OrderResult[]): OrderResult {
       childResults: [],
     };
   }
+  const childAudits = results
+    .map(result => result.policyAudit)
+    .filter((audit): audit is NonNullable<OrderResult["policyAudit"]> => Boolean(audit));
+  const policyAudit: OrderResult["policyAudit"] | undefined = childAudits.length > 0
+    ? {
+      policyVersion: MAKER_FIRST_POLICY_VERSION,
+      executionClass: childAudits.some(audit => audit.executionClass === "EMERGENCY_EXIT")
+        ? "EMERGENCY_EXIT"
+        : "MAKER_ONLY",
+      emergencyReason: childAudits.find(audit => audit.emergencyReason)?.emergencyReason,
+      attempts: childAudits.reduce((sum, audit) => sum + audit.attempts, 0),
+      fallbackUsed: childAudits.some(audit => audit.fallbackUsed),
+      requestedSize: childAudits.reduce((sum, audit) => sum + audit.requestedSize, 0),
+      filledSize: childAudits.reduce((sum, audit) => sum + audit.filledSize, 0),
+      remainingSize: childAudits.reduce((sum, audit) => sum + audit.remainingSize, 0),
+      finalOrderType: childAudits.some(audit => audit.finalOrderType === "market")
+        ? "market"
+        : childAudits.some(audit => audit.finalOrderType === "post_only")
+          ? "post_only"
+          : "none",
+      clientOrderIds: childAudits.flatMap(audit => audit.clientOrderIds),
+    }
+    : undefined;
   return {
     success: results.every(result => result.success),
     orderId: results.map(result => result.orderId).filter(Boolean).join(",") || undefined,
@@ -212,6 +250,7 @@ function aggregateCloseResults(results: OrderResult[]): OrderResult {
     childResults: results,
     executionStatus: results.every(result => result.executionStatus === "filled") ? "filled" : "unknown",
     executedReduceOnly: true,
+    policyAudit,
   };
 }
 
@@ -237,7 +276,9 @@ export async function executeMakerFirst(
   const emergencyReason = intent.emergencyReason;
   const requestedSize = intent.size;
   const resumeState = dependencies.resumeState;
-  const policyRunId = resumeState?.policyRunId ?? createClientOrderId(0, false);
+  const policyRunId = normalizePolicyRunId(
+    resumeState?.policyRunId ?? intent.clientOrderId ?? createClientOrderId(0, false),
+  );
 
   // Intent Idempotency Lock: Check if this policyRunId is already active
   if (dependencies.checkActivePolicyRun && (await dependencies.checkActivePolicyRun(policyRunId))) {
@@ -776,6 +817,7 @@ async function executeClosePositions(
   identity: MakerFirstAuditIdentity,
   symbol: string,
   posSide: "long" | "short" | undefined,
+  clientOrderId: string | undefined,
   options: CloseExecutionOptions | undefined,
   config: Readonly<MakerFirstPolicyConfig>,
   dependencies: MakerFirstDependencies,
@@ -785,11 +827,15 @@ async function executeClosePositions(
     return !posSide || position.side === posSide;
   });
   const results: OrderResult[] = [];
-  for (const position of positions) {
+  for (const [positionIndex, position] of positions.entries()) {
+    const legClientOrderId = clientOrderId && positions.length > 1
+      ? `${clientOrderId}:${position.side}:${positionIndex + 1}`
+      : clientOrderId;
     results.push(await executeMakerFirst(adapter, identity, {
       symbol,
       side: position.side === "long" ? "sell" : "buy",
       size: position.size,
+      clientOrderId: legClientOrderId,
       reduceOnly: true,
       posSide: position.side,
       executionClass: options?.executionClass,
@@ -881,6 +927,7 @@ export function createMakerFirstAdapter(
           identity,
           symbol,
           posSide,
+          undefined,
           options,
           await resolvePolicyConfig(config),
           dependencies,
@@ -892,12 +939,14 @@ export function createMakerFirstAdapter(
           posSide?: "long" | "short",
           _timeoutMs?: number,
           _priceOffsetPct?: number,
+          clientOrderId?: string,
           options?: CloseExecutionOptions,
         ): Promise<OrderResult> => executeClosePositions(
           target,
           identity,
           symbol,
           posSide,
+          clientOrderId,
           options,
           await resolvePolicyConfig(config),
           dependencies,

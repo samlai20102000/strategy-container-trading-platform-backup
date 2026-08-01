@@ -8,6 +8,14 @@ import { RiskManager } from "./services/riskManager";
 import { updateTrailingStop } from "./services/trailingStopManager";
 import { createInitialStrategyState, StrategyState } from "./strategies/base";
 import { StrategyKama3kV35 } from "./strategies/v35/strategy_kama_3k_v35";
+import {
+  buildV35CloseIntentId,
+  classifyV35CloseFailure,
+  computeV35CloseRetryDelayMs,
+  readV35CloseRetryState,
+  resolveV35PositionTruth,
+  selectV35ExpectedPosition,
+} from "./services/v35Monitor";
 
 const MARTIN_CFG = { baseLot: 0.01, multiplier: 1.5, stepPct: 1.5, maxLayers: 5 };
 
@@ -202,6 +210,74 @@ describe("TrailingStop 移動止盈", () => {
     // 反彈 0.25% → 49323
     const result = updateTrailingStop(state, 49325, cfg);
     expect(result.shouldClose).toBe(true);
+  });
+});
+
+describe("V35／V4.0 成交後持倉方向真相", () => {
+  it("舊資料 entryTrendBull 與 isLong 不一致時，多單仍只加多、賣出平多", () => {
+    const legacyImportedState = { isLong: true, entryTrendBull: false };
+
+    expect(resolveV35PositionTruth(legacyImportedState.isLong)).toEqual({
+      posSide: "long",
+      increaseSide: "buy",
+      closeSide: "sell",
+      pnlMultiplier: 1,
+    });
+  });
+
+  it("舊資料 entryTrendBull 與 isLong 不一致時，空單仍只加空、買入平空", () => {
+    const legacyImportedState = { isLong: false, entryTrendBull: true };
+
+    expect(resolveV35PositionTruth(legacyImportedState.isLong)).toEqual({
+      posSide: "short",
+      increaseSide: "sell",
+      closeSide: "buy",
+      pnlMultiplier: -1,
+    });
+  });
+
+  it("本地 long 只能匹配交易所 long；只有 short 時禁止反向腿 fallback", () => {
+    const long = { symbol: "BTC-USDT-SWAP", side: "long", size: 0.0079 };
+    const short = { symbol: "BTC-USDT-SWAP", side: "short", size: 0.1159 };
+
+    expect(selectV35ExpectedPosition([long, short], true)).toBe(long);
+    expect(selectV35ExpectedPosition([short], true)).toBeUndefined();
+    expect(selectV35ExpectedPosition([long], false)).toBeUndefined();
+  });
+
+  it("同一持倉循環產生穩定關閉意圖，失敗以 1/2/4/8/15 分鐘退避並可持久化還原", () => {
+    const state = {
+      ...createInitialStrategyState(),
+      totalSize: 0.0079,
+      avgPrice: 63_000,
+      isLong: true,
+    };
+    const intent = buildV35CloseIntentId(120011, state);
+
+    expect(intent).toBe(buildV35CloseIntentId(120011, { ...state }));
+    expect(intent.length).toBeLessThanOrEqual(32);
+    expect([1, 2, 3, 4, 5, 6].map(computeV35CloseRetryDelayMs)).toEqual([
+      60_000,
+      120_000,
+      240_000,
+      480_000,
+      900_000,
+      900_000,
+    ]);
+
+    const persisted = {
+      ...state,
+      closeRetry: { closeIntentId: intent, failureCount: 2, nextRetryAt: 123_456, lastError: "timeout" },
+    };
+    expect(readV35CloseRetryState(persisted)).toEqual(persisted.closeRetry);
+  });
+
+  it("平倉失敗會分類為可查詢 reasonCode，而不是只留下泛化訊息", () => {
+    expect(classifyV35CloseFailure("INTENT_ALREADY_ACTIVE")).toBe("V35_CLOSE_INTENT_ACTIVE");
+    expect(classifyV35CloseFailure("NO_MATCHING_POSITION")).toBe("V35_CLOSE_NO_MATCHING_LEG");
+    expect(classifyV35CloseFailure("交易所後驗：持倉仍存在")).toBe("V35_CLOSE_POSITION_STILL_OPEN");
+    expect(classifyV35CloseFailure("訂單政策稽核不可用")).toBe("V35_CLOSE_AUDIT_UNAVAILABLE");
+    expect(classifyV35CloseFailure("timeout")).toBe("V35_CLOSE_TIMEOUT");
   });
 });
 

@@ -146,6 +146,55 @@ describe("runtime guarded exchange adapter", () => {
     }));
   });
 
+  it("single-exclusive closePositionSmart 完整轉送六參數與結構化政策上下文", async () => {
+    const raw = adapter();
+    const decision: ModeDecision = {
+      ...baseDecision,
+      executionMode: "SINGLE_EXCLUSIVE",
+      outcome: "CLOSE_ONLY",
+      reasonCode: "M1_CLOSE_EXISTING_POSITION",
+      reduceOnly: true,
+      targetSide: "LONG",
+    };
+    const singleContext = {
+      ...context,
+      strategy: { ...context.strategy, executionMode: "SINGLE_EXCLUSIVE" as const },
+    };
+    const guarded = createRuntimeGuardedAdapter(raw, singleContext, authorizer(decision));
+    const callerId = "clOrdId_V35_FULL_CLOSE_120011_1775031500000";
+
+    const result = await guarded.closePositionSmart(
+      "BTCUSDT",
+      "long",
+      3_000,
+      0.02,
+      callerId,
+      {
+        executionClass: "MAKER_ONLY",
+        policyContext: { signalId: 88, reasonCode: "v35_trailing_take_profit" },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(raw.closePositionSmart).toHaveBeenCalledTimes(1);
+    expect(raw.closePositionSmart).toHaveBeenCalledWith(
+      "BTCUSDT",
+      "long",
+      3_000,
+      0.02,
+      callerId,
+      expect.objectContaining({
+        executionClass: "MAKER_ONLY",
+        policyContext: expect.objectContaining({
+          strategyId: 1,
+          signalId: 88,
+          source: "AUTO",
+          reasonCode: "v35_trailing_take_profit",
+        }),
+      }),
+    );
+  });
+
   it("advanced reduce-only order 使用 decision 核准腿與數量，不採信超額 caller quantity", async () => {
     const raw = adapter();
     const decision: ModeDecision = {

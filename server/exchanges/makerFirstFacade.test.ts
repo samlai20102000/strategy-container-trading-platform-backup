@@ -269,6 +269,195 @@ describe("GLOBAL_MAKER_FIRST_B_V1", () => {
     expect(events.at(-1)).toMatchObject({ eventType: "FAILED", reasonCode: "CANCEL_NOT_CONFIRMED" });
   });
 
+  it("closePositionSmart 相容 OKX BTC-USDT-SWAP，且指定 long 時只送 reduce-only 賣單並保留 short", async () => {
+    const longPosition = {
+      symbol: "BTC-USDT-SWAP",
+      side: "long" as const,
+      size: 0.0079,
+      entryPrice: 113_000,
+      markPrice: 112_000,
+      unrealizedPnl: -7.9,
+      leverage: 10,
+    };
+    const shortPosition = {
+      symbol: "BTC-USDT-SWAP",
+      side: "short" as const,
+      size: 0.1159,
+      entryPrice: 115_000,
+      markPrice: 112_000,
+      unrealizedPnl: 347.7,
+      leverage: 10,
+    };
+    const getPositions = vi.fn()
+      .mockResolvedValueOnce([longPosition, shortPosition])
+      .mockResolvedValueOnce([shortPosition]);
+    const rawPlaceOrder = vi.fn(async (params: OrderParams) => ok("close-long", {
+      executionStatus: "filled",
+      filledSize: params.size,
+    }));
+    const raw = makeAdapter({ getPositions, placeOrder: rawPlaceOrder });
+    const { dependencies } = harness();
+    const guarded = createMakerFirstAdapter(raw, { userId: 7, apiKeyId: 9 }, FAST_POLICY, dependencies);
+
+    const result = await guarded.closePositionSmart(
+      "BTCUSDT",
+      "long",
+      3_000,
+      0.02,
+      "clOrdId_V35_FULL_CLOSE_120011_1775031500000",
+      { executionClass: "MAKER_ONLY", policyContext: { strategyId: 120011, reasonCode: "v35_trailing_take_profit" } },
+    );
+
+    expect(result.success).toBe(true);
+    expect(getPositions).toHaveBeenCalledTimes(2);
+    expect(rawPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(rawPlaceOrder.mock.calls[0][0]).toMatchObject({
+      symbol: "BTCUSDT",
+      side: "sell",
+      size: 0.0079,
+      reduceOnly: true,
+      posSide: "long",
+      orderType: "limit",
+      postOnly: true,
+    });
+  });
+
+  it("closePositionSmart 第五與第六參數不再錯位，長 caller ID 穩定壓縮且完整保留緊急政策上下文", async () => {
+    const longPosition = {
+      symbol: "BTC-USDT-SWAP",
+      side: "long" as const,
+      size: 0.01,
+      entryPrice: 100,
+      markPrice: 100,
+      unrealizedPnl: 0,
+      leverage: 10,
+    };
+    const getPositions = vi.fn()
+      .mockResolvedValueOnce([longPosition])
+      .mockResolvedValueOnce([]);
+    const rawPlaceOrder = vi.fn(async (params: OrderParams) => ok("close-emergency", {
+      executionStatus: "filled",
+      filledSize: params.size,
+    }));
+    const { dependencies, events } = harness();
+    const guarded = createMakerFirstAdapter(
+      makeAdapter({ getPositions, placeOrder: rawPlaceOrder }),
+      { userId: 7, apiKeyId: 9 },
+      FAST_POLICY,
+      dependencies,
+    );
+    const callerId = "clOrdId_V35_FULL_CLOSE_120011_1775031500000";
+
+    const result = await guarded.closePositionSmart(
+      "BTCUSDT",
+      "long",
+      3_000,
+      0.02,
+      callerId,
+      {
+        executionClass: "EMERGENCY_EXIT",
+        emergencyReason: "STOP_LOSS",
+        policyContext: { strategyId: 120011, signalId: 88, source: "V35_MONITOR", reasonCode: "v35_stop_loss" },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.policyAudit).toMatchObject({ executionClass: "EMERGENCY_EXIT", emergencyReason: "STOP_LOSS" });
+    expect(events.length).toBeGreaterThan(0);
+    expect(new Set(events.map(event => event.policyRunId)).size).toBe(1);
+    expect(events[0].policyRunId.length).toBeLessThanOrEqual(40);
+    expect(events[0]).toMatchObject({
+      executionClass: "EMERGENCY_EXIT",
+      emergencyReason: "STOP_LOSS",
+      strategyId: 120011,
+      signalId: 88,
+    });
+    expect(rawPlaceOrder.mock.calls[0][0]).toMatchObject({
+      reduceOnly: true,
+      posSide: "long",
+      executionClass: "EMERGENCY_EXIT",
+      emergencyReason: "STOP_LOSS",
+      policyContext: { strategyId: 120011, signalId: 88, reasonCode: "v35_stop_loss" },
+    });
+  });
+
+  it("相同 policyRunId 已在執行時由冪等鎖零 mutation 拒絕", async () => {
+    const rawPlaceOrder = vi.fn(async () => ok("must-not-run"));
+    const raw = makeAdapter({ placeOrder: rawPlaceOrder });
+    const { dependencies } = harness();
+    dependencies.checkActivePolicyRun = vi.fn(async () => true);
+
+    const result = await executeMakerFirst(raw, { userId: 7, apiKeyId: 9 }, {
+      symbol: "BTCUSDT",
+      side: "sell",
+      size: 0.0079,
+      reduceOnly: true,
+      posSide: "long",
+      clientOrderId: "clOrdId_V35_FULL_CLOSE_120011_1775031500000",
+      policyContext: { strategyId: 120011, reasonCode: "v35_trailing_take_profit" },
+    }, FAST_POLICY, dependencies);
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toBe("INTENT_ALREADY_ACTIVE");
+    expect(dependencies.checkActivePolicyRun).toHaveBeenCalledTimes(1);
+    expect(rawPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it("Maker 聲稱成交但指定 long 腿仍存在時 fail-closed，不把策略本地狀態誤重置", async () => {
+    const longPosition = {
+      symbol: "BTC-USDT-SWAP",
+      side: "long" as const,
+      size: 0.0079,
+      entryPrice: 113_000,
+      markPrice: 112_000,
+      unrealizedPnl: -7.9,
+      leverage: 10,
+    };
+    const shortPosition = {
+      symbol: "BTC-USDT-SWAP",
+      side: "short" as const,
+      size: 0.1159,
+      entryPrice: 115_000,
+      markPrice: 112_000,
+      unrealizedPnl: 347.7,
+      leverage: 10,
+    };
+    const getPositions = vi.fn()
+      .mockResolvedValueOnce([longPosition, shortPosition])
+      .mockResolvedValueOnce([longPosition, shortPosition]);
+    const rawPlaceOrder = vi.fn(async (params: OrderParams) => ok("close-not-confirmed", {
+      executionStatus: "filled",
+      filledSize: params.size,
+    }));
+    const { dependencies } = harness();
+    const guarded = createMakerFirstAdapter(
+      makeAdapter({ getPositions, placeOrder: rawPlaceOrder }),
+      { userId: 7, apiKeyId: 9 },
+      FAST_POLICY,
+      dependencies,
+    );
+
+    const result = await guarded.closePositionSmart(
+      "BTCUSDT",
+      "long",
+      3_000,
+      0.02,
+      "v35-close-not-confirmed",
+      { policyContext: { strategyId: 120011, reasonCode: "v35_trailing_take_profit" } },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain("持倉仍存在");
+    expect(result.policyAudit).toMatchObject({ requestedSize: 0.0079, filledSize: 0.0079 });
+    expect(getPositions).toHaveBeenCalledTimes(2);
+    expect(rawPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(rawPlaceOrder.mock.calls[0][0]).toMatchObject({
+      side: "sell",
+      posSide: "long",
+      reduceOnly: true,
+    });
+  });
+
   it("ledger 依 policyAudit 記錄實際 post-only，而非 legacy market 標籤", () => {
     const makerResult: OrderResult = {
       success: true,

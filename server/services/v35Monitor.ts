@@ -62,6 +62,77 @@ export function decideV35PostCloseAction(
 ): V35PostCloseAction {
   return positionClosed ? requestedAction : "retry_close";
 }
+
+/**
+ * 成交後的持倉方向唯一以 isLong 為真相；entryTrendBull 只保留為入場訊號／重入判斷背景。
+ * 所有會觸達交易所或寫入成交帳本的方向都必須經由此函式。
+ */
+export function resolveV35PositionTruth(isLong: boolean): {
+  posSide: "long" | "short";
+  increaseSide: "buy" | "sell";
+  closeSide: "buy" | "sell";
+  pnlMultiplier: 1 | -1;
+} {
+  return isLong
+    ? { posSide: "long", increaseSide: "buy", closeSide: "sell", pnlMultiplier: 1 }
+    : { posSide: "short", increaseSide: "sell", closeSide: "buy", pnlMultiplier: -1 };
+}
+
+/** 只能選取策略狀態指定的交易所腿；找不到時禁止退而使用同商品反向腿。 */
+export function selectV35ExpectedPosition<T extends { side: string; size: number }>(
+  positions: readonly T[],
+  isLong: boolean,
+): T | undefined {
+  const expectedSide = resolveV35PositionTruth(isLong).posSide;
+  return positions.find(position => position.size > 0 && position.side === expectedSide);
+}
+
+export interface V35CloseRetryState {
+  closeIntentId: string;
+  failureCount: number;
+  nextRetryAt: number;
+  lastError?: string;
+}
+
+const V35_CLOSE_RETRY_BASE_MS = 60_000;
+const V35_CLOSE_RETRY_MAX_MS = 15 * 60_000;
+const closeInFlightStrategies = new Set<number>();
+
+export function computeV35CloseRetryDelayMs(failureCount: number): number {
+  const safeCount = Math.max(1, Math.floor(failureCount));
+  return Math.min(V35_CLOSE_RETRY_BASE_MS * (2 ** (safeCount - 1)), V35_CLOSE_RETRY_MAX_MS);
+}
+
+export function readV35CloseRetryState(state: StrategyState): V35CloseRetryState | undefined {
+  const candidate = (state as StrategyState & { closeRetry?: Partial<V35CloseRetryState> }).closeRetry;
+  if (!candidate || typeof candidate.closeIntentId !== "string") return undefined;
+  const failureCount = Number(candidate.failureCount);
+  const nextRetryAt = Number(candidate.nextRetryAt);
+  if (!Number.isFinite(failureCount) || failureCount < 1 || !Number.isFinite(nextRetryAt)) return undefined;
+  return {
+    closeIntentId: candidate.closeIntentId,
+    failureCount,
+    nextRetryAt,
+    lastError: typeof candidate.lastError === "string" ? candidate.lastError : undefined,
+  };
+}
+
+export function buildV35CloseIntentId(strategyId: number, state: StrategyState): string {
+  const side = resolveV35PositionTruth(state.isLong).posSide;
+  const averagePriceKey = Math.round(Math.max(0, state.avgPrice) * 100);
+  const sizeKey = Math.round(Math.max(0, state.totalSize) * 100_000_000);
+  return `v35c${strategyId}${side === "long" ? "l" : "s"}${averagePriceKey}q${sizeKey}`;
+}
+
+export function classifyV35CloseFailure(errorMessage?: string): string {
+  const normalized = (errorMessage ?? "").toUpperCase();
+  if (normalized.includes("INTENT_ALREADY_ACTIVE")) return "V35_CLOSE_INTENT_ACTIVE";
+  if (normalized.includes("NO_MATCHING_POSITION")) return "V35_CLOSE_NO_MATCHING_LEG";
+  if (normalized.includes("持倉仍存在") || normalized.includes("POSITION_STILL_OPEN")) return "V35_CLOSE_POSITION_STILL_OPEN";
+  if (normalized.includes("稽核不可用") || normalized.includes("AUDIT")) return "V35_CLOSE_AUDIT_UNAVAILABLE";
+  if (normalized.includes("TIMEOUT") || normalized.includes("逾時")) return "V35_CLOSE_TIMEOUT";
+  return "V35_CLOSE_EXECUTION_FAILED";
+}
 const CHECK_INTERVAL_MS = 20_000;
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
@@ -113,6 +184,13 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     return false; // 無持倉
   }
 
+  const closeRetry = readV35CloseRetryState(state);
+  if (closeRetry && closeRetry.nextRetryAt > Date.now()) {
+    const remainingSeconds = Math.ceil((closeRetry.nextRetryAt - Date.now()) / 1000);
+    console.log(`[V35Monitor] 策略 #${strategy.id} 平倉退避中，${remainingSeconds}s 後重試 (intent=${closeRetry.closeIntentId}, failures=${closeRetry.failureCount})`);
+    return true;
+  }
+
   const apiKeyRecord = await getApiKeyById(strategy.apiKeyId);
   if (!apiKeyRecord) return false;
 
@@ -127,13 +205,11 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
   let currentPrice = 0;
   try {
     const positions = await adapter.getPositions(strategy.symbol);
-    const expectedSide = state.isLong ? "long" : "short";
-    let pos = positions.find((p) => p.size > 0 && p.side === expectedSide);
-    if (!pos) {
-      pos = positions.find((p) => p.size > 0);
-    }
+    const expectedSide = resolveV35PositionTruth(state.isLong).posSide;
+    const pos = selectV35ExpectedPosition(positions, state.isLong);
     if (!pos || pos.markPrice <= 0) {
-      console.log(`[V35Monitor] 策略 #${strategy.id} 交易所無持倉或無標記價 (pos=${!!pos}, positions=${positions.length}, expectedSide=${expectedSide})`);
+      const observedSides = positions.filter(position => position.size > 0).map(position => position.side).join(",") || "none";
+      console.warn(`[V35Monitor] 策略 #${strategy.id} 找不到指定 ${expectedSide} 腿，禁止使用反向腿 (observedSides=${observedSides})`);
       return false;
     }
     currentPrice = pos.markPrice;
@@ -291,10 +367,11 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
   if (allowExpansion && shouldAddLayer(state, currentPrice, cfg, leverage).shouldAdd) {
     const nextLayer = state.currentLayer + 1;
     const lotSize = getLayerSize(nextLayer, currentPrice, cfg);
+    const positionTruth = resolveV35PositionTruth(state.isLong);
 
     const orderResult = await adapter.placeOrder({
       symbol: strategy.symbol,
-      side: state.entryTrendBull ? "buy" : "sell", // 使用 entryTrendBull 判斷方向
+      side: positionTruth.increaseSide,
       orderType: "market",
       size: lotSize,
       leverage: strategy.leverage,
@@ -311,7 +388,7 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
       userId: strategy.userId,
       exchange: strategy.exchange,
       symbol: strategy.symbol,
-      side: state.entryTrendBull ? "buy" : "sell",
+      side: positionTruth.increaseSide,
       orderType: "market",
       orderId: orderResult.orderId,
       ...tradeFillRecordFields(orderResult, currentPrice, lotSize),
@@ -665,20 +742,29 @@ async function executeFullClose(
   reason: string,
   opts: { disable: boolean; cooldownMinutes: number },
 ): Promise<{ positionClosed: boolean; strategyDisabled: boolean }> {
+  if (closeInFlightStrategies.has(strategy.id)) {
+    console.log(`[V35Monitor] 策略 #${strategy.id} 已有平倉執行中，本輪略過重複命令`);
+    return { positionClosed: false, strategyDisabled: false };
+  }
+  closeInFlightStrategies.add(strategy.id);
+  try {
   let positionClosed = false;
   let exitPrice = 0;
   let pnl: number | undefined;
   let orderId: string | undefined;
   let exchangeCloseResult: OrderResult | undefined;
+  const positionTruth = resolveV35PositionTruth(state.isLong);
+  const closeIntentId = buildV35CloseIntentId(strategy.id, state);
   try {
-    const closeDir = state.entryTrendBull ? "long" : "short";
+    // 持倉方向必須以成交後保存的 isLong 為真相；entryTrendBull 只是入場訊號背景，
+    // 在狀態遷移、匯入或舊資料下可能不同步，不能用來決定 OKX posSide。
     const emergencyReason = triggerSource === "hard_stop_loss" ? "STOP_LOSS" as const : undefined;
     const result = await adapter.closePositionSmart(
       strategy.symbol,
-      closeDir,
+      positionTruth.posSide,
       undefined,
       undefined,
-      `clOrdId_V35_FULL_CLOSE_${strategy.id}_${Date.now()}`,
+      closeIntentId,
       closePolicyOptions({
         strategyId: strategy.id,
         source: "RISK",
@@ -690,13 +776,32 @@ async function executeFullClose(
     orderId = result.orderId;
     if (result.success) {
       exitPrice = result.filledPrice || 0;
-      const dirMult = state.entryTrendBull ? 1 : -1;
       pnl = (exitPrice > 0 && state.avgPrice > 0 && state.totalSize > 0)
-        ? (exitPrice - state.avgPrice) * state.totalSize * dirMult
+        ? (exitPrice - state.avgPrice) * state.totalSize * positionTruth.pnlMultiplier
         : undefined;
     }
   } catch (e: unknown) {
     console.error(`[V35Monitor] 全平失敗:`, e instanceof Error ? e.message : e);
+  }
+
+  let retryState: V35CloseRetryState | undefined;
+  if (!positionClosed) {
+    const previousRetry = readV35CloseRetryState(state);
+    const failureCount = previousRetry?.closeIntentId === closeIntentId
+      ? previousRetry.failureCount + 1
+      : 1;
+    retryState = {
+      closeIntentId,
+      failureCount,
+      nextRetryAt: Date.now() + computeV35CloseRetryDelayMs(failureCount),
+      lastError: exchangeCloseResult?.errorMessage || "未取得交易所／政策層錯誤",
+    };
+    (state as StrategyState & { closeRetry?: V35CloseRetryState }).closeRetry = retryState;
+    try {
+      await saveStrategyState(strategy.id, state);
+    } catch (error) {
+      console.error(`[V35Monitor] 保存策略 #${strategy.id} 平倉退避狀態失敗`, error);
+    }
   }
 
   // 寫入訊號日誌（先建立 signal 取得 signalId）
@@ -709,19 +814,32 @@ async function executeFullClose(
       rawPayload: JSON.stringify({
         action: "close",
         symbol: strategy.symbol,
+        posSide: positionTruth.posSide,
         reason,
         triggerSource,
         totalSize: state.totalSize,
         source: "v35_monitor",
+        closeIntentId,
+        retry: retryState,
+        closeError: positionClosed ? undefined : exchangeCloseResult?.errorMessage,
       }),
       parsedAction: "close",
       parsedSymbol: strategy.symbol,
       parsedPrice: exitPrice > 0 ? String(exitPrice) : undefined,
       status: positionClosed ? "executed" : "failed",
+      reasonCode: positionClosed ? triggerSource : classifyV35CloseFailure(exchangeCloseResult?.errorMessage),
       orderId,
+      exchangeResponse: JSON.stringify({
+        closeIntentId,
+        posSide: positionTruth.posSide,
+        requestedSize: state.totalSize,
+        errorMessage: exchangeCloseResult?.errorMessage,
+        rawResponse: exchangeCloseResult?.rawResponse,
+        retry: retryState,
+      }),
       message: positionClosed
         ? `[V3.5 Monitor] ${strategy.symbol} ${reason}，平倉成功${pnlStr}`
-        : `[V3.5 Monitor] ${strategy.symbol} ${reason}，平倉失敗`,
+        : `[V3.5 Monitor] ${strategy.symbol} ${reason}，平倉失敗：${exchangeCloseResult?.errorMessage || "未取得交易所／政策層錯誤"}；intent=${closeIntentId}；posSide=${positionTruth.posSide}；size=${state.totalSize}；${retryState ? `${Math.ceil((retryState.nextRetryAt - Date.now()) / 1000)}s 後重試` : "等待下一輪重試"}`,
       source: "auto",
     });
   } catch (e) {
@@ -737,7 +855,7 @@ async function executeFullClose(
         signalId,
         exchange: strategy.exchange,
         symbol: strategy.symbol,
-        side: state.entryTrendBull ? "sell" : "buy",
+        side: positionTruth.closeSide,
         orderType: "market",
         orderId,
         ...tradeFillRecordFields(exchangeCloseResult, undefined, state.totalSize),
@@ -770,9 +888,12 @@ async function executeFullClose(
     strategyId: strategy.id,
     userId: strategy.userId,
     eventType: triggerSource.includes("stop") ? "stop_loss" : "take_profit",
-    detail: `[V4.0] ${reason}`,
+    detail: `[V4.0] ${reason}${retryState ? `｜平倉失敗，intent=${closeIntentId}，第 ${retryState.failureCount} 次，${Math.ceil((retryState.nextRetryAt - Date.now()) / 1000)}s 後重試` : ""}`,
     positionClosed,
     strategyDisabled,
   });
   return { positionClosed, strategyDisabled };
+  } finally {
+    closeInFlightStrategies.delete(strategy.id);
+  }
 }

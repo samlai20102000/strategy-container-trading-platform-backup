@@ -1805,6 +1805,16 @@ function StrategiesContent() {
                                       同方向帳戶合併持倉：{snapshot.accountPositionSize ?? "—"} {baseCurrency}，OKX／Bybit 帳戶未實現盈虧 {snapshot.accountUnrealizedPnl >= 0 ? "+" : ""}{snapshot.accountUnrealizedPnl.toFixed(4)} U；不可重複歸入單一策略。
                                     </p>
                                   )}
+                                  {snapshot.accountOppositePositionSize !== null && snapshot.accountOppositeSide && (
+                                    <div className={`mt-1.5 flex items-start gap-1.5 rounded border px-2 py-1.5 text-[10px] ${snapshot.accountOppositePositionAttribution === "unassigned" ? "border-rose-500/35 bg-rose-500/10 text-rose-200" : "border-amber-500/35 bg-amber-500/10 text-amber-200"}`}>
+                                      <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                                      <span>
+                                        同一 API 帳戶另有 {snapshot.accountOppositePositionAttribution === "unassigned" ? "未歸屬" : "其他策略"}的
+                                        {snapshot.accountOppositeSide === "long" ? "多" : "空"}單 {snapshot.accountOppositePositionSize} {baseCurrency}；
+                                        此倉位不屬本策略，未併入此卡，也不會由本策略平倉。
+                                      </span>
+                                    </div>
+                                  )}
                                   <p className="mt-1 text-[10px] text-muted-foreground">
                                     費用／資金費未由持倉端點逐策略提供，未納入上述毛浮盈虧；最終淨盈虧以交易所帳單與平倉成交為準。
                                   </p>
