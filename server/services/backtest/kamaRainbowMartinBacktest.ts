@@ -5,6 +5,7 @@ import {
   type KamaRainbowMartinManagementDecision,
 } from "../../strategies/kamaRainbowMartin/management";
 import {
+  calculateKamaRainbowMartinSnapshotSeries,
   createKamaRainbowMartinRuntimeState,
   evaluateKamaRainbowMartinEntry,
   type KamaRainbowMartinEntryDecision,
@@ -25,6 +26,7 @@ import {
   type TradeRecord,
 } from "./performanceCalculator";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
+import type { BacktestJobControl } from "./backtestJobControl";
 import { parseTimeframe } from "./timeframeParser";
 import {
   V25_END_OF_DATA_EXIT_REASON,
@@ -62,6 +64,8 @@ export interface KamaRainbowMartinBacktestRunOptions {
   session?: KamaRainbowMartinBacktestSession;
   /** 只有整段資料最後一片可執行終點政策與持久化。 */
   finalize?: boolean;
+  /** Durable worker 控制面；省略時維持測試與同步呼叫的純計算語意。 */
+  jobControl?: BacktestJobControl;
 }
 
 export interface KamaRainbowMartinBacktestRunResult extends BacktestResult {
@@ -156,7 +160,7 @@ function hasPosition(state: KamaRainbowMartinRuntimeState): boolean {
  * 並由 management 核心保證 exit-first。此 runner 故意不實作來源策略的跨日強平與
  * Max_Hold_Hours，避免把已刪除的來源語義帶入 KRM。
  */
-export function runKamaRainbowMartinBacktest(
+export async function runKamaRainbowMartinBacktest(
   request: BacktestRequest,
   strategyName: string,
   rawConfig: Record<string, unknown>,
@@ -167,7 +171,7 @@ export function runKamaRainbowMartinBacktest(
   slippage: number,
   onProgress?: (pct: number, message: string) => void,
   options: KamaRainbowMartinBacktestRunOptions = {},
-): KamaRainbowMartinBacktestRunResult {
+): Promise<KamaRainbowMartinBacktestRunResult> {
   const config: KamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(rawConfig);
   const expectedMinutes = getKamaRainbowMartinTimeframeMinutes(config.timeframe);
   const expectedTimeframe = `${expectedMinutes}m`;
@@ -182,6 +186,9 @@ export function runKamaRainbowMartinBacktest(
   const trades = priorSession?.trades ?? [];
   const equityCurve = priorSession?.equityCurve ?? [];
   const closedCandles = priorSession?.closedCandles ?? [];
+  const historyOffset = closedCandles.length;
+  const precomputedCandles = [...closedCandles, ...candles.map(toKLine)];
+  const precomputedSnapshots = calculateKamaRainbowMartinSnapshotSeries(precomputedCandles, config);
   let equity = priorSession?.equity ?? request.initialCapital;
   let tradeId = priorSession?.tradeId ?? 0;
   let state = priorSession?.state ?? createKamaRainbowMartinRuntimeState({
@@ -312,6 +319,14 @@ export function runKamaRainbowMartinBacktest(
     35,
     `數據就緒（${candles.length} 根 ${request.timeframe}），啟動 KRM ${expectedTimeframe} 同源回測...`,
   );
+  await options.jobControl?.checkpoint({
+    phase: "RUNNING",
+    processedBars: 0,
+    totalBars: candles.length,
+    progress: 35,
+    message: `KRM runner 已就緒（${candles.length} 根）`,
+    force: true,
+  });
   const first = candles[0] ?? priorSession?.firstCandle;
   if (!first) throw new Error("Kama 彩虹馬丁回測沒有可處理的 K 線");
   if (equityCurve.length === 0) {
@@ -331,12 +346,12 @@ export function runKamaRainbowMartinBacktest(
       }, state, config);
     } else {
       decision = evaluateKamaRainbowMartinEntry({
-        candles: closedCandles,
         state,
         rawConfig: config,
         configRevision: config.version,
         lastBarClosed: true,
         allowedDirection,
+        precomputedSnapshot: precomputedSnapshots[historyOffset + index],
       });
     }
 
@@ -354,10 +369,30 @@ export function runKamaRainbowMartinBacktest(
       equity: roundBacktestMoney(equity + unrealizedPnl),
       price: candle.close,
     });
-    if (index > 0 && index % 2000 === 0) {
+    if (index > 0 && index % 250 === 0) {
       const progress = 35 + Math.floor((index / candles.length) * 60);
-      onProgress?.(progress, `KRM 同源回測 ${index}/${candles.length}（${closedCandles.length} 根已收盤 K 線）...`);
+      const message = `KRM 同源回測 ${index}/${candles.length}（${closedCandles.length} 根已收盤 K 線）...`;
+      onProgress?.(progress, message);
+      await options.jobControl?.checkpoint({
+        phase: "RUNNING",
+        processedBars: index,
+        totalBars: candles.length,
+        progress,
+        message,
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
+  }
+
+  if (isFinalSegment) {
+    await options.jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "KRM 計算完成，正在保存結果...",
+      force: true,
+    });
   }
 
   if (isFinalSegment && config.backtestEndPositionPolicy === "force_close" && positionMeta) {

@@ -127,6 +127,14 @@ export interface V70PositionState {
   maxProfitRate: number;  // 追蹤止盈用
 }
 
+export interface V70PrecomputedBar {
+  availableBars: number;
+  currentPrice: number;
+  ma200Value: number | null;
+  ma200Slope: number;
+  cross: number;
+}
+
 // ============================================================
 // 工具函數：KAMA 計算（完整遞迴，與文件第三部分一致）
 // ============================================================
@@ -294,6 +302,34 @@ export class StrategyKama3kV70 extends BaseStrategyV35 {
     const prev = ma200Series[idx - 20];
     if (!current || !prev || prev === 0) return 0;
     return ((current - prev) / prev) * 100;
+  }
+
+  calculatePrecomputedBarSeries(
+    candles: ReadonlyArray<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>,
+    rawConfig: Record<string, any>,
+  ): V70PrecomputedBar[] {
+    const cfg = this.parseConfig(rawConfig);
+    const closes = candles.map(candle => candle.close);
+    const ma200Series = this.calculateMA200(closes, cfg.ma200_period, cfg.ma200_type);
+    const kamaFast = calculateKAMA(
+      closes,
+      cfg.kama_fast_er_period,
+      cfg.kama_fast_fast_const,
+      cfg.kama_fast_slow_const,
+    );
+    const kamaSlow = calculateKAMA(
+      closes,
+      cfg.kama_slow_er_period,
+      cfg.kama_slow_fast_const,
+      cfg.kama_slow_slow_const,
+    );
+    return candles.map((candle, index) => ({
+      availableBars: index + 1,
+      currentPrice: candle.close,
+      ma200Value: ma200Series[index] ?? null,
+      ma200Slope: this.calculateMA200Slope(ma200Series, index),
+      cross: this.detectKAMACross(kamaFast, kamaSlow, index),
+    }));
   }
 
   /**
@@ -623,24 +659,31 @@ export class StrategyKama3kV70 extends BaseStrategyV35 {
     candles: Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }>,
     state: StrategyState,
     rawConfig: Record<string, any>,
+    precomputed?: V70PrecomputedBar,
   ): { action: 'buy' | 'sell' | 'close' | 'add_long' | 'add_short' | 'hold'; reason: string; price: number; lotUsdt?: number; layerNum?: number } {
     const cfg = this.parseConfig(rawConfig);
-    if (candles.length < Math.max(cfg.ma200_period + 20, cfg.kama_fast_er_period + 1, cfg.kama_slow_er_period + 1)) {
+    const availableBars = precomputed?.availableBars ?? candles.length;
+    if (availableBars < Math.max(cfg.ma200_period + 20, cfg.kama_fast_er_period + 1, cfg.kama_slow_er_period + 1)) {
       return { action: 'hold', reason: 'K線數據不足', price: 0 };
     }
 
-    const closes = candles.map(c => c.close);
-    const currentPrice = closes[closes.length - 1];
-    const idx = closes.length - 1;
-
-    // 計算指標
-    const ma200Series = this.calculateMA200(closes, cfg.ma200_period, cfg.ma200_type);
-    const ma200Value = ma200Series[idx];
-    const ma200Slope = this.calculateMA200Slope(ma200Series, idx);
-
-    const kamaFast = calculateKAMA(closes, cfg.kama_fast_er_period, cfg.kama_fast_fast_const, cfg.kama_fast_slow_const);
-    const kamaSlow = calculateKAMA(closes, cfg.kama_slow_er_period, cfg.kama_slow_fast_const, cfg.kama_slow_slow_const);
-    const cross = this.detectKAMACross(kamaFast, kamaSlow, idx);
+    let currentPrice: number;
+    let ma200Value: number | null;
+    let ma200Slope: number;
+    let cross: number;
+    if (precomputed) {
+      ({ currentPrice, ma200Value, ma200Slope, cross } = precomputed);
+    } else {
+      const closes = candles.map(c => c.close);
+      const idx = closes.length - 1;
+      currentPrice = closes[idx];
+      const ma200Series = this.calculateMA200(closes, cfg.ma200_period, cfg.ma200_type);
+      ma200Value = ma200Series[idx] ?? null;
+      ma200Slope = this.calculateMA200Slope(ma200Series, idx);
+      const kamaFast = calculateKAMA(closes, cfg.kama_fast_er_period, cfg.kama_fast_fast_const, cfg.kama_fast_slow_const);
+      const kamaSlow = calculateKAMA(closes, cfg.kama_slow_er_period, cfg.kama_slow_fast_const, cfg.kama_slow_slow_const);
+      cross = this.detectKAMACross(kamaFast, kamaSlow, idx);
+    }
 
     // 構建持倉狀態
     const position: V70PositionState = {

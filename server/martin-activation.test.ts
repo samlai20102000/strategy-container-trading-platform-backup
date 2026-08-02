@@ -107,7 +107,8 @@ describe("馬丁基礎設施與 20415 七彩虹核心修正驗證", () => {
       "./server/services/backtest/backtestEngine.ts",
       "utf-8"
     );
-    const genericStart = engineCode.indexOf("private runGenericBacktest");
+    const genericStart = engineCode.search(/private\s+(?:async\s+)?runGenericBacktest\s*\(/);
+    expect(genericStart).toBeGreaterThan(0);
     const mainLoopCode = engineCode.slice(genericStart);
 
     // 確認有加倉邏輯

@@ -119,6 +119,7 @@ import {
   runAdvancedKamaPortfolioBacktest,
 } from "./advancedKamaPortfolioBacktest";
 import { preflightBacktestRunner } from "./backtestRunnerPreflight";
+import type { BacktestJobControl } from "./backtestJobControl";
 
 export interface BacktestRequest {
   strategyKey: string;
@@ -295,6 +296,7 @@ export class BacktestEngine {
   async runBacktest(
     request: BacktestRequest,
     onProgress?: (pct: number, message: string) => void,
+    jobControl?: BacktestJobControl,
   ): Promise<BacktestResult> {
     // 統一交易對驗證和標準化（應用於所有回測）
     try {
@@ -435,6 +437,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
+        jobControl,
         resolvedAdapter: resolvedPortfolioAdapter,
       }), effectiveRequest, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
@@ -444,7 +447,7 @@ export class BacktestEngine {
       if (!(strategy instanceof Strategy20415)) {
         throw new Error("20415 七彩虹回測引擎類型不一致");
       }
-      return this.finalizeV25Result(this.runRainbow20415Backtest(
+      return this.finalizeV25Result(await this.runRainbow20415Backtest(
         request,
         strategy,
         config,
@@ -454,6 +457,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
+        jobControl,
       ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
@@ -472,6 +476,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
+        { jobControl },
       ), effectiveRequest, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
@@ -480,7 +485,7 @@ export class BacktestEngine {
       if (!(strategy instanceof StrategyKamaRainbowMartin)) {
         throw new Error("Kama 彩虹馬丁回測引擎類型不一致");
       }
-      return this.finalizeV25Result(runKamaRainbowMartinBacktest(
+      return this.finalizeV25Result(await runKamaRainbowMartinBacktest(
         effectiveRequest,
         strategy.name,
         config,
@@ -490,6 +495,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
+        { jobControl },
       ), effectiveRequest, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
@@ -498,7 +504,7 @@ export class BacktestEngine {
       if (!(strategy instanceof StrategyKama3kBreakoutV25)) {
         throw new Error("V2.5 回測引擎類型不一致");
       }
-      return this.finalizeV25Result(this.runV25Backtest(
+      return this.finalizeV25Result(await this.runV25Backtest(
         request,
         strategy,
         config,
@@ -508,6 +514,7 @@ export class BacktestEngine {
         commission,
         slippage,
         onProgress,
+        jobControl,
       ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
@@ -515,18 +522,26 @@ export class BacktestEngine {
     // V5.0 和 V3.5 共享相同的 KAMA+3K 回測核心，差異僅在參數預設值和 F1-F6 模組（在實盤中生效）
     if (!isV35 && !isV41 && !isV50 && !isV61 && !isV70) {
       return this.finalizeV25Result(await this.runGenericBacktest(
-        request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
+        request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress, jobControl,
       ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     // V7.0 龍捲風雙渦輪：使用專屬回測路徑
     if (isV70) {
       return this.finalizeV25Result(await this.runV70Backtest(
-        request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress,
+        request, strategy, config, candles, startMs, endMs, commission, slippage, onProgress, jobControl,
       ), request, startMs, endMs, continuousData.quality, runnerPreflight.runner);
     }
 
     onProgress?.(35, `數據就緒（${candles.length} 根），計算 KAMA 指標...`);
+    await jobControl?.checkpoint({
+      phase: "RUNNING",
+      processedBars: 0,
+      totalBars: candles.length,
+      progress: 35,
+      message: `KAMA 主 runner 已就緒（${candles.length} 根）`,
+      force: true,
+    });
 
     // === KAMA 雙線（完整遞迴計算，與實盤定義一致）===
     // V6.1 使用小寫 key（kama_fast_length），V3.5/V5.0 使用大寫 key（KAMA_Fast_Length）
@@ -735,10 +750,17 @@ export class BacktestEngine {
       const price = k3.close;
       const now = k3.timestamp;
 
-      if (i % 2000 === 0) {
+      if (i % 250 === 0) {
         const pct = 35 + Math.floor(((i - startIdx) / (candles.length - startIdx)) * 60);
-        onProgress?.(pct, `回測計算中 ${i}/${candles.length}（${Math.round(pct)}%）...`);
-        // 🔥 性能優化：定期 yield event loop，讓 WebSocket/HTTP 進度推送有機會執行
+        const message = `回測計算中 ${i}/${candles.length}（${Math.round(pct)}%）...`;
+        onProgress?.(pct, message);
+        await jobControl?.checkpoint({
+          phase: "RUNNING",
+          processedBars: i,
+          totalBars: candles.length,
+          progress: pct,
+          message,
+        });
         await new Promise(resolve => setTimeout(resolve, 0));
       }
 
@@ -1110,6 +1132,14 @@ export class BacktestEngine {
     });
     assertSingleEquityLedger(accounting, `${request.strategyKey} 主 KAMA`);
 
+    await jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "KAMA 主 runner 計算完成，正在保存結果...",
+      force: true,
+    });
     onProgress?.(95, "計算績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
 
@@ -1474,7 +1504,7 @@ export class BacktestEngine {
    * 輸入資料必須是管理週期（預設 M1）；引擎只在 M30 完整收盤後把聚合 Bar
    * 交給七線核心，持倉期間則每根 M1 以模擬權益與已用保證金執行盲人管理。
    */
-  private runRainbow20415Backtest(
+  private async runRainbow20415Backtest(
     request: BacktestRequest,
     strategy: Strategy20415,
     rawConfig: Record<string, unknown>,
@@ -1484,7 +1514,8 @@ export class BacktestEngine {
     commission: number,
     slippage: number,
     onProgress?: (pct: number, message: string) => void,
-  ): BacktestResult {
+    jobControl?: BacktestJobControl,
+  ): Promise<BacktestResult> {
     const config = assertValidRainbow20415Config(rawConfig);
     const expectedTimeframe = config.Management_Interval_Minutes % 60 === 0
       ? `${config.Management_Interval_Minutes / 60}h`
@@ -1680,6 +1711,14 @@ export class BacktestEngine {
       35,
       `數據就緒（${candles.length} 根 ${expectedTimeframe}），啟動 20415 七彩虹 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
     );
+    await jobControl?.checkpoint({
+      phase: "RUNNING",
+      processedBars: 0,
+      totalBars: candles.length,
+      progress: 35,
+      message: `20415 七彩虹 runner 已就緒（${candles.length} 根）`,
+      force: true,
+    });
     const first = candles[0];
     equityCurve.push({ timestamp: first.timestamp, equity, price: first.close });
 
@@ -1748,16 +1787,30 @@ export class BacktestEngine {
         price: candle.close,
       });
 
-      if (index > 0 && index % 2000 === 0) {
+      if (index > 0 && index % 250 === 0) {
         const progress = 35 + Math.floor((index / candles.length) * 60);
-        onProgress?.(
+        const message = `20415 七彩虹同源回測 ${index}/${candles.length}（${entryTimeframeLabel} 已收盤 ${closedEntryCandles.length} 根）...`;
+        onProgress?.(progress, message);
+        await jobControl?.checkpoint({
+          phase: "RUNNING",
+          processedBars: index,
+          totalBars: candles.length,
           progress,
-          `20415 七彩虹同源回測 ${index}/${candles.length}（${entryTimeframeLabel} 已收盤 ${closedEntryCandles.length} 根）...`,
-        );
+          message,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
 
     const last = candles[candles.length - 1];
+    await jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "20415 七彩虹計算完成，正在保存結果...",
+      force: true,
+    });
     if (positionMeta && endPositionPolicy === "force_close") {
       const forcedDecision = evaluateRainbow20415Management(
         { currentPrice: last.close, now: last.timestamp, account: simulatedAccount(last.close) },
@@ -1868,7 +1921,7 @@ export class BacktestEngine {
    * KAMA 三K突破 V2.5 專用回測。
    * 使用 100 根滾動 K 線視窗，與實盤自主信號產生器一致；所有決策均由 V2.5 核心輸出。
    */
-  private runV25Backtest(
+  private async runV25Backtest(
     request: BacktestRequest,
     strategy: StrategyKama3kBreakoutV25,
     rawConfig: Record<string, unknown>,
@@ -1878,7 +1931,8 @@ export class BacktestEngine {
     commission: number,
     slippage: number,
     onProgress?: (pct: number, message: string) => void,
-  ): BacktestResult {
+    jobControl?: BacktestJobControl,
+  ): Promise<BacktestResult> {
     const config = strategy.parseConfig(rawConfig);
     const trades: TradeRecord[] = [];
     const equityCurve: EquityPoint[] = [];
@@ -1907,6 +1961,14 @@ export class BacktestEngine {
       35,
       `數據就緒（${candles.length} 根），啟動 V2.5 同源核心逐 K 回測...`,
     );
+    await jobControl?.checkpoint({
+      phase: "RUNNING",
+      processedBars: startIndex,
+      totalBars: candles.length,
+      progress: 35,
+      message: `V2.5 runner 已就緒（${candles.length} 根）`,
+      force: true,
+    });
 
     const getWindow = (index: number) =>
       candles.slice(Math.max(0, index - 99), index + 1).map((candle) => ({
@@ -2068,17 +2130,31 @@ export class BacktestEngine {
         price: candle.close,
       });
 
-      if (index % 2000 === 0) {
+      if (index % 250 === 0) {
         const progress =
           35 + Math.floor(((index - startIndex) / (candles.length - startIndex)) * 60);
-        onProgress?.(
+        const message = `V2.5 同源核心回測 ${index}/${candles.length}（${progress}%）...`;
+        onProgress?.(progress, message);
+        await jobControl?.checkpoint({
+          phase: "RUNNING",
+          processedBars: index,
+          totalBars: candles.length,
           progress,
-          `V2.5 同源核心回測 ${index}/${candles.length}（${progress}%）...`,
-        );
+          message,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
 
     const last = candles[candles.length - 1];
+    await jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "V2.5 計算完成，正在保存結果...",
+      force: true,
+    });
     if (positionMeta && endPositionPolicy === "force_close") {
       applyClose(
         {
@@ -2209,7 +2285,7 @@ export class BacktestEngine {
    * - 硬止損（Dollar_Loss 金額）
    * - 新聞禁開倉（News_Blackout_Minutes）
    */
-  private runGenericBacktest(
+  private async runGenericBacktest(
     request: BacktestRequest,
     strategy: BaseStrategy,
     config: Record<string, unknown>,
@@ -2219,8 +2295,17 @@ export class BacktestEngine {
     commission: number,
     slippage: number,
     onProgress?: (pct: number, message: string) => void,
-  ): BacktestResult {
+    jobControl?: BacktestJobControl,
+  ): Promise<BacktestResult> {
     onProgress?.(35, `數據就緒（${candles.length} 根），計算 EMA 指標...`);
+    await jobControl?.checkpoint({
+      phase: "RUNNING",
+      processedBars: 0,
+      totalBars: candles.length,
+      progress: 35,
+      message: `通用策略 runner 已就緒（${candles.length} 根）`,
+      force: true,
+    });
 
     const closes = candles.map((c) => c.close);
 
@@ -2552,8 +2637,18 @@ export class BacktestEngine {
       const k = candles[i];
       const price = k.close;
       const now = k.timestamp;
-      if (i % 500 === 0) {
-        onProgress?.(35 + Math.floor(((i - startIdx) / (candles.length - startIdx)) * 60), `回測中 ${i}/${candles.length}...`);
+      if (i % 250 === 0) {
+        const progress = 35 + Math.floor(((i - startIdx) / (candles.length - startIdx)) * 60);
+        const message = `回測中 ${i}/${candles.length}...`;
+        onProgress?.(progress, message);
+        await jobControl?.checkpoint({
+          phase: "RUNNING",
+          processedBars: i,
+          totalBars: candles.length,
+          progress,
+          message,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
 
       // --- 有持倉 ---
@@ -2648,6 +2743,14 @@ export class BacktestEngine {
     }
 
     const last = candles[candles.length - 1];
+    await jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "通用策略計算完成，正在保存結果...",
+      force: true,
+    });
     if (position && endPositionPolicy === "force_close") {
       closePos(
         last.close,
@@ -2746,7 +2849,7 @@ export class BacktestEngine {
    * V7.0 龍捲風雙渦輪專屬回測路徑
    * KAMA 雙線 + MA200 宏觀趨勢錨 + S 曲線階梯馬丁
    */
-  private runV70Backtest(
+  private async runV70Backtest(
     request: BacktestRequest,
     strategy: BaseStrategy,
     config: Record<string, unknown>,
@@ -2756,8 +2859,17 @@ export class BacktestEngine {
     commission: number,
     slippage: number,
     onProgress?: (pct: number, message: string) => void,
-  ): BacktestResult {
+    jobControl?: BacktestJobControl,
+  ): Promise<BacktestResult> {
     onProgress?.(35, `數據就緒（${candles.length} 根），計算 V7.0 指標...`);
+    await jobControl?.checkpoint({
+      phase: "RUNNING",
+      processedBars: 0,
+      totalBars: candles.length,
+      progress: 35,
+      message: `V7.0 runner 已就緒（${candles.length} 根）`,
+      force: true,
+    });
 
     const closes = candles.map((c) => c.close);
 
@@ -2833,6 +2945,14 @@ export class BacktestEngine {
     const kamaSlow = calculateKAMASeries(closes, kamaSlowErPeriod, kamaSlowFastConst, kamaSlowSlowConst);
 
     onProgress?.(50, `指標計算完成，開始回測循環...`);
+    await jobControl?.checkpoint({
+      phase: "RUNNING",
+      processedBars: 0,
+      totalBars: candles.length,
+      progress: 50,
+      message: "V7.0 指標計算完成，開始逐棒執行",
+      force: true,
+    });
 
     // === 回測狀態 ===
     const trades: TradeRecord[] = [];
@@ -2859,6 +2979,19 @@ export class BacktestEngine {
     const warmup = Math.max(ma200Period, kamaFastErPeriod, kamaSlowErPeriod) + 5;
 
     for (let i = warmup; i < candles.length; i++) {
+      if (i % 250 === 0) {
+        const progress = 50 + Math.round(((i - warmup) / Math.max(1, candles.length - warmup)) * 40);
+        const message = `V7.0 回測 ${i}/${candles.length}（${progress}%）...`;
+        onProgress?.(progress, message);
+        await jobControl?.checkpoint({
+          phase: "RUNNING",
+          processedBars: i,
+          totalBars: candles.length,
+          progress,
+          message,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
       const price = closes[i];
       const time = candles[i].timestamp;
 
@@ -3046,6 +3179,14 @@ export class BacktestEngine {
     }
 
     const lastCandle = candles[candles.length - 1];
+    await jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "V7.0 計算完成，正在保存結果...",
+      force: true,
+    });
     if (position && endPositionPolicy === "force_close") {
       const side = position.side;
       const effectiveExitPrice = side === "long"

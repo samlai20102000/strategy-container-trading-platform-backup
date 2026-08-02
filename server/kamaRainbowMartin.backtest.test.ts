@@ -68,12 +68,12 @@ describe("Kama 彩虹馬丁同源回測", () => {
     savePerformanceMetrics.mockClear();
   });
 
-  it("只使用已收盤 canonical timeframe，mark-to-market 保留終點持倉並完成單一帳本對帳", () => {
+  it("只使用已收盤 canonical timeframe，mark-to-market 保留終點持倉並完成單一帳本對帳", async () => {
     const candles = makeTrendingCandles();
     const request = makeRequest(candles, "mark_to_market");
     const progress: Array<{ pct: number; message: string }> = [];
 
-    const result = runKamaRainbowMartinBacktest(
+    const result = await runKamaRainbowMartinBacktest(
       request,
       "Kama彩虹馬丁策略",
       request.config,
@@ -100,11 +100,11 @@ describe("Kama 彩虹馬丁同源回測", () => {
     expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
   });
 
-  it("force-close 只在全域資料終點產生一筆合成平倉，且不保留未平倉部位", () => {
+  it("force-close 只在全域資料終點產生一筆合成平倉，且不保留未平倉部位", async () => {
     const candles = makeTrendingCandles();
     const request = makeRequest(candles, "force_close");
 
-    const result = runKamaRainbowMartinBacktest(
+    const result = await runKamaRainbowMartinBacktest(
       request,
       "Kama彩虹馬丁策略",
       request.config,
@@ -125,10 +125,10 @@ describe("Kama 彩虹馬丁同源回測", () => {
     expect(result.session.positionMeta).toBeNull();
   });
 
-  it("跨分片續跑與單次回測完全等價，中間片不結算也不持久化", () => {
+  it("跨分片續跑與單次回測完全等價，中間片不結算也不持久化", async () => {
     const candles = makeTrendingCandles();
     const request = makeRequest(candles, "force_close");
-    const oneShot = runKamaRainbowMartinBacktest(
+    const oneShot = await runKamaRainbowMartinBacktest(
       request,
       "Kama彩虹馬丁策略",
       request.config,
@@ -144,7 +144,7 @@ describe("Kama 彩虹馬丁同源回測", () => {
     const splitIndex = 21;
     const firstSlice = candles.slice(0, splitIndex);
     const secondSlice = candles.slice(splitIndex);
-    const partial = runKamaRainbowMartinBacktest(
+    const partial = await runKamaRainbowMartinBacktest(
       request,
       "Kama彩虹馬丁策略",
       request.config,
@@ -161,7 +161,7 @@ describe("Kama 彩虹馬丁同源回測", () => {
     expect(saveBacktestResult).not.toHaveBeenCalled();
     expect(savePerformanceMetrics).not.toHaveBeenCalled();
 
-    const segmented = runKamaRainbowMartinBacktest(
+    const segmented = await runKamaRainbowMartinBacktest(
       request,
       "Kama彩虹馬丁策略",
       request.config,

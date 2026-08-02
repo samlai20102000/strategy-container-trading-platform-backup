@@ -1263,10 +1263,38 @@ export const backtestJobs = mysqlTable("backtest_jobs", {
   status: mysqlEnum("status", ["pending", "running", "completed", "failed", "timeout", "cancelled"])
     .default("pending")
     .notNull(),
+  /** Durable worker 細階段；UI 與 watchdog 不再僅依百分比猜測狀態。 */
+  phase: mysqlEnum("phase", [
+    "QUEUED",
+    "PREPARING",
+    "RUNNING",
+    "FINALIZING",
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+  ]).default("QUEUED").notNull(),
   /** 進度 0-100 */
   progress: int("progress").default(0).notNull(),
+  /** 已完成／總 K 棒數；皆為單調、可診斷進度。 */
+  processedBars: int("processedBars").default(0).notNull(),
+  totalBars: int("totalBars").default(0).notNull(),
   /** 進度訊息 */
   message: text("message"),
+  /** 完整且不可變的 BacktestRequest，供任何容器接管後重建執行。 */
+  requestSnapshot: json("requestSnapshot"),
+  /** runner／策略邏輯身份 hash，供重試與稽核。 */
+  logicHash: varchar("logicHash", { length: 128 }),
+  /** 使用者設定的工作上限（秒）；0 代表平台預設。 */
+  timeoutSeconds: int("timeoutSeconds").default(0).notNull(),
+  /** DB lease 與 worker 心跳；所有更新皆須比對 leaseToken。 */
+  heartbeatAt: timestamp("heartbeatAt"),
+  leaseToken: varchar("leaseToken", { length: 64 }),
+  leaseExpiresAt: timestamp("leaseExpiresAt"),
+  /** 跨容器持久化取消意圖，一旦為 true 不得重設。 */
+  cancelRequested: boolean("cancelRequested").default(false).notNull(),
+  /** stale 接管次數；超過上限明確失敗，禁止永久 running。 */
+  attemptCount: int("attemptCount").default(0).notNull(),
+  errorCode: varchar("errorCode", { length: 100 }),
   /** 績效摘要 JSON（完成後填入） */
   metrics: json("metrics"),
   /** 交易明細 JSON（完成後填入，壓縮格式） */
@@ -1293,9 +1321,34 @@ export const backtestJobs = mysqlTable("backtest_jobs", {
   startedAt: timestamp("startedAt"),
   /** 完成時間 */
   completedAt: timestamp("completedAt"),
-});
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  statusLeaseIdx: index("backtest_jobs_status_lease_idx").on(table.status, table.leaseExpiresAt),
+  cancellationIdx: index("backtest_jobs_cancel_idx").on(table.cancelRequested, table.status),
+  heartbeatIdx: index("backtest_jobs_heartbeat_idx").on(table.heartbeatAt),
+}));
 export type BacktestJob = typeof backtestJobs.$inferSelect;
 export type InsertBacktestJob = typeof backtestJobs.$inferInsert;
+
+/**
+ * Project-level durable 回測 worker 的唯一 Heartbeat 身份。
+ * Callback 只依 authenticateRequest 產生的 taskUid 查此表，不信任 request body。
+ */
+export const backtestWorkerRegistry = mysqlTable("backtest_worker_registry", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 80 }).notNull().unique(),
+  scheduleCronTaskUid: varchar("schedule_cron_task_uid", { length: 65 }).notNull().unique(),
+  enabled: boolean("enabled").default(true).notNull(),
+  lastHeartbeatAt: timestamp("lastHeartbeatAt"),
+  lastResult: varchar("lastResult", { length: 40 }),
+  lastSummary: json("lastSummary"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  taskUidIdx: index("backtest_worker_task_uid_idx").on(table.scheduleCronTaskUid),
+}));
+export type BacktestWorkerRegistry = typeof backtestWorkerRegistry.$inferSelect;
+export type InsertBacktestWorkerRegistry = typeof backtestWorkerRegistry.$inferInsert;
 
 
 /**

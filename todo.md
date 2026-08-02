@@ -2581,3 +2581,37 @@
 - [x] 唯讀後驗確認修復後不再新增同類失敗，複核 todo 後建立 checkpoint 並自動發布事故修復
 - [x] P0 修復同帳戶同商品同向共享腿：`closePositionSmart` 不得把策略數量塞入 timeout 或默認平整個交易所聚合腿；所有策略須經 `CloseExecutionOptions.requestedSize` 精確 reduce-only 平倉，缺少可證明本地數量時 fail-closed
 - [x] P0 移除 V3.5／V5.0／V6.1 對交易所聚合腿的策略自動認領：不得把 exchangeSize／聚合均價覆寫單一策略 `totalSize`／`avgPrice`，只允許唯讀漂移告警並持續使用本地 ownership 數據
+
+## 2026-08-02 M2 三模式回測固定卡於 56% 的 P0 修復
+
+- [x] 依五張圖片建立 Kama 彩虹馬丁、M2、27,744 根 K 線、10,000/27,744（56%）及兩次嘗試的事故時序
+- [x] 唯讀核對 09:48–09:49 失敗、取消與執行中回測的資料庫工作記錄、錯誤、心跳、進度與結果狀態
+- [x] 核對 dev server、browser console、network request 與 session replay 日誌，找出 56% 後是否逾時、斷線、OOM、事件循環阻塞或工作遺失
+- [x] 重建 Backtest 前端輪詢／取消、tRPC procedure、工作協調器、portfolio runner、Kama evaluator 與三模式 M2 的完整呼叫鏈
+- [x] 精確定位固定 10,000 根邊界的來源，驗證是否為分批上限、資料分頁、yield 間隔、進度公式或 evaluator 複雜度爆炸
+- [x] 判斷 M2 雙向獨立模式是否存在狀態交叉、無限迴圈、巨大持倉／交易陣列、終點強平或未完成 Promise
+- [x] 設計所有現有與未來策略共用的 BacktestJob 契約：持久化狀態、單調進度、階段、心跳、取消、逾時、錯誤與結果原子化
+- [x] 實作可中斷分段執行與事件循環讓渡，避免單一請求／單一 CPU 長時間阻塞造成假性卡死
+- [x] 讓三模式 S1／M2／H3 與所有策略 runner 使用同一工作生命週期，不得由個別策略自行管理進度或背景工作
+- [x] 修正前端 56% 假性卡住呈現：顯示目前階段、已處理／總 K 線、最後心跳、耗時、可診斷錯誤及可靠取消結果
+- [x] 加入 stale-job watchdog 與啟動恢復／明確失敗語意，禁止工作永遠停留在 running
+- [x] 補齊 27,744+ K 線、M2、Kama 彩虹馬丁、取消、逾時、重啟、錯誤持久化及未來策略架構守門測試
+- [x] 執行受影響測試、完整 Vitest、TypeScript／production build、桌面／手機 UI 與零交易 mutation 驗證
+- [x] 發布修復並交付根因、架構缺口、驗證數字與後續容量邊界報告
+- [x] 將 Kama 彩虹馬丁、Rainbow 20415、Rainbow Trend Ladder、V2.5、V6.1、V7.0 指標改為 factory 一次性 causal series，消除逐棒全歷史複製與重算
+- [x] 將 PortfolioAdapterBarContext 的完整 candles 改為 O(1) previousCandle accessor，從型別契約阻止現有與未來 adapter 無界掃描歷史
+- [x] 以逐棒舊演算法對預計算演算法測試鎖定六個策略的 snapshot、action、reason、price 與 metrics 等價
+- [x] 擴充 backtest_jobs durable 欄位與 worker registry migration，套用非破壞性資料庫遷移
+- [x] 以條件更新實作 DB lease、單調 checkpoint、持久化取消、attempt 上限、stale 接管與結果單次終態保存
+- [x] 掛載 cron-only project Heartbeat worker，使用 taskUid registry 驗證並在冷啟動清理不可恢復舊孤兒工作
+- [x] 讓 20415、Rainbow Trend Ladder、KRM、V2.5、V3.5／V4.1／V5.0／V6.1、V7.0 及 portfolio runner 每 250 棒 await 同一 JobControl
+- [x] 回測中心顯示 durable phase、bars、heartbeat、開始／經過時間、attempt、errorCode 與 120 秒 stale 接管提示
+- [x] 取消按鈕保留 jobId 與停止位置；後端確認 cancel 已持久化後才顯示 cancelled，不再立即清空工作狀態
+- [x] durable repository 測試覆蓋多 worker lease 競爭、單調 checkpoint、跨 pod 取消、lease 遺失、retry 上限、結果單次完成與 taskUid 驗證
+- [x] project-level Heartbeat 單例 create／update／unchanged 測試及 production bootstrap 靜態守門通過
+- [x] 27,744 根 Kama 彩虹馬丁 M2 正式 runner 驗收完成全部 K 棒、跨越 10,000 根、最終 FINALIZING 且進度單調
+- [x] 完整 Vitest 回歸通過：127 個測試檔、1,031 項通過；僅 1 檔／4 項既有 skip
+- [x] 加入零交易 mutation 永久守門：回測 submit／cancel／progress／result 與所有 production runner 禁止 placeOrder、cancelOrder、closePositionSmart、createOrderIntent 及實盤 executor 依賴
+- [x] 最終完整 Vitest 回歸通過：127 個測試檔、1,032 項通過；僅 1 檔／4 項既有 skip
+- [x] TypeScript 無錯誤，vite＋esbuild production build 成功；dist/index.js 1.8 MB
+- [x] `/backtest` 桌面 1440×1000 與手機 390×844 視覺驗收通過；本輪 03:40Z 後無 console error／warning 或 4xx／5xx 請求

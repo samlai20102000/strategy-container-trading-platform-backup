@@ -125,7 +125,7 @@ describe("strategy runner descriptors", () => {
           index: candles.length - 1,
           timestamp: candles.at(-1)!.timestamp,
           candle: candles.at(-1)!,
-          candles,
+          previousCandle: (offset) => candles[candles.length - 1 - offset],
           config: strategy!.defaultConfig,
           strategy: strategy!,
           executionMode: mode,

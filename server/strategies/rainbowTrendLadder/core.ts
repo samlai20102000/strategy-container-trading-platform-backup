@@ -72,10 +72,13 @@ export interface RainbowTrendLadderRuntimeState extends StrategyState {
 }
 
 export interface RainbowTrendLadderEntryInput {
-  candles: readonly KLineData[];
+  candles?: readonly KLineData[];
   state: StrategyState;
   rawConfig?: unknown;
   allowedDirection?: RainbowTrendLadderAllowedDirection;
+  /** Causal snapshot for exactly the current bar, prepared once by the portfolio factory. */
+  precomputedSnapshot?: RainbowTrendLadderLineSnapshot;
+  precomputedCurrentPrice?: number;
   /** 交易所實際 bid/ask 點差換算後的點數；缺失時實盤應 fail-closed。 */
   spreadPoints?: number | null;
 }
@@ -285,6 +288,90 @@ export function calculateRainbowTrendLadderLineSnapshot(
   };
 }
 
+export function calculateRainbowTrendLadderLineSnapshotSeries(
+  candles: readonly KLineData[],
+  rawConfig: unknown = createRainbowTrendLadderDefaultConfig(),
+): RainbowTrendLadderLineSnapshot[] {
+  const config = assertValidRainbowTrendLadderConfig(rawConfig);
+  const requiredBars = Math.max(...config.Lines.map(line => line.period)) + 1;
+  const emptyAt = (index: number): RainbowTrendLadderLineSnapshot => ({
+    ...EMPTY_LINE_SNAPSHOT,
+    current: {},
+    previous: {},
+    slopes: {},
+    requiredBars,
+    availableBars: index + 1,
+    barTimestamp: candles[index]?.timestamp ?? 0,
+  });
+  const snapshots = candles.map((_candle, index) => emptyAt(index));
+  const firstInvalidIndex = candles.findIndex(candle => (
+    !Number.isFinite(candle.close)
+    || candle.close <= 0
+    || config.Lines.some(line => {
+      const value = getLineSourceValue(candle, line.source);
+      return !Number.isFinite(value) || value <= 0;
+    })
+  ));
+  const validLength = firstInvalidIndex < 0 ? candles.length : firstInvalidIndex;
+  if (validLength < requiredBars) return snapshots;
+
+  const validCandles = candles.slice(0, validLength);
+  const lineSeries = config.Lines.map(line => ({
+    line,
+    series: calculateRainbowTrendLadderSmaSeries(validCandles, line),
+  }));
+  const allLineIds: RainbowTrendLadderLineId[] = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
+  for (let index = requiredBars - 1; index < validLength; index += 1) {
+    const current = {} as Record<RainbowTrendLadderLineId, number>;
+    const previous = {} as Record<RainbowTrendLadderLineId, number>;
+    const slopes = {} as Record<RainbowTrendLadderLineId, number>;
+    let ready = true;
+    for (const { line, series } of lineSeries) {
+      const currentValue = series[index];
+      const previousValue = series[index - 1];
+      if (currentValue == null || previousValue == null) {
+        ready = false;
+        break;
+      }
+      current[line.id] = currentValue;
+      previous[line.id] = previousValue;
+      slopes[line.id] = currentValue - previousValue;
+    }
+    if (!ready) continue;
+    const currentRankArray = [...allLineIds].sort((a, b) => current[b] - current[a]);
+    const previousRankArray = [...allLineIds].sort((a, b) => previous[b] - previous[a]);
+    const rankSequenceUnchanged = currentRankArray.every((line, rankIndex) => line === previousRankArray[rankIndex]);
+    const allSlopes = allLineIds.map(lineId => slopes[lineId]);
+    const trendDirection: RainbowTrendLadderTrendDirection = allSlopes.every(value => value > 0)
+      ? "UP"
+      : allSlopes.every(value => value < 0)
+        ? "DOWN"
+        : "MIXED";
+    const priceDirectionConfirmed = (trendDirection === "UP" && candles[index].close > candles[index - 1].close)
+      || (trendDirection === "DOWN" && candles[index].close < candles[index - 1].close);
+    const longArrangement = rankSequenceUnchanged && trendDirection === "UP" && priceDirectionConfirmed;
+    const shortArrangement = rankSequenceUnchanged && trendDirection === "DOWN" && priceDirectionConfirmed;
+    snapshots[index] = {
+      current,
+      previous,
+      slopes,
+      trendDirection,
+      longArrangement,
+      shortArrangement,
+      longTriggerCross: longArrangement,
+      shortTriggerCross: shortArrangement,
+      longPriceRelativeToL1: longArrangement,
+      shortPriceRelativeToL1: shortArrangement,
+      triggerInsideVolatilityBand: rankSequenceUnchanged && (trendDirection === "UP" || trendDirection === "DOWN"),
+      ready: true,
+      requiredBars,
+      availableBars: index + 1,
+      barTimestamp: candles[index]?.timestamp ?? 0,
+    };
+  }
+  return snapshots;
+}
+
 export function createRainbowTrendLadderRuntimeMeta(
   seed?: Partial<RainbowTrendLadderRuntimeMeta>,
 ): RainbowTrendLadderRuntimeMeta {
@@ -422,8 +509,9 @@ export function evaluateRainbowTrendLadderEntry(
 ): RainbowTrendLadderCoreDecision {
   const config = assertValidRainbowTrendLadderConfig(input.rawConfig ?? createRainbowTrendLadderDefaultConfig());
   const nextState = cloneRainbowTrendLadderState(input.state);
-  const currentPrice = input.candles.at(-1)?.close ?? 0;
-  const snapshot = calculateRainbowTrendLadderLineSnapshot(input.candles, config);
+  const candles = input.candles ?? [];
+  const currentPrice = input.precomputedCurrentPrice ?? candles.at(-1)?.close ?? 0;
+  const snapshot = input.precomputedSnapshot ?? calculateRainbowTrendLadderLineSnapshot(candles, config);
   const spreadPoints = typeof input.spreadPoints === "number" && Number.isFinite(input.spreadPoints)
     ? input.spreadPoints
     : null;

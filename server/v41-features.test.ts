@@ -7,6 +7,7 @@
 
 import { beforeAll, describe, it, expect, vi } from "vitest";
 import { backtestJobManager } from "./services/backtest/backtestJobManager";
+import { backtestEngine } from "./services/backtest/backtestEngine";
 import { initStrategyStudio } from "./services/strategyStudio";
 
 const JOB_TEST_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
@@ -46,6 +47,12 @@ describe("V4.1 - BacktestJobManager 升級", () => {
   });
 
   it("cancel 可取消 queued/running 任務", async () => {
+    vi.mocked(backtestEngine.runBacktest).mockImplementationOnce(async (_request, _onProgress, control) => {
+      await new Promise<void>((_resolve, reject) => {
+        control?.signal.addEventListener("abort", () => reject(control.signal.reason), { once: true });
+      });
+      throw new Error("unreachable");
+    });
     const jobId = await backtestJobManager.submit({
       strategyKey: JOB_TEST_STRATEGY_KEY,
       symbol: "BTC-USDT",

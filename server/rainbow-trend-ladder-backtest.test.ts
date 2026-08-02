@@ -74,12 +74,12 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
 
 
 
-  it("直接使用已收盤 M30，並以相同 30M 邊界完成進場與持倉管理回測", () => {
+  it("直接使用已收盤 M30，並以相同 30M 邊界完成進場與持倉管理回測", async () => {
     const candles = makeLongEntryManagementCandles();
     const request = makeRequest(candles);
     const progress: Array<{ pct: number; message: string }> = [];
 
-    const result = runRainbowTrendLadderBacktest(
+    const result = await runRainbowTrendLadderBacktest(
       request,
       new StrategyRainbowTrendLadder(),
       request.config,
@@ -107,11 +107,11 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
   });
 
-  it("30M 資料跨分片時仍與單次回測完全等價，中間片不結算也不持久化", () => {
+  it("30M 資料跨分片時仍與單次回測完全等價，中間片不結算也不持久化", async () => {
     const candles = makeLongEntryManagementCandles();
     const request = makeRequest(candles);
     const strategy = new StrategyRainbowTrendLadder();
-    const oneShot = runRainbowTrendLadderBacktest(
+    const oneShot = await runRainbowTrendLadderBacktest(
       request,
       strategy,
       request.config,
@@ -127,7 +127,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     const splitIndex = 31;
     const firstSlice = candles.slice(0, splitIndex);
     const secondSlice = candles.slice(splitIndex);
-    const partial = runRainbowTrendLadderBacktest(
+    const partial = await runRainbowTrendLadderBacktest(
       request,
       strategy,
       request.config,
@@ -144,7 +144,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     expect(savePerformanceMetrics).not.toHaveBeenCalled();
     expect(partial.session.candleCount).toBe(firstSlice.length);
 
-    const segmented = runRainbowTrendLadderBacktest(
+    const segmented = await runRainbowTrendLadderBacktest(
       request,
       strategy,
       request.config,
@@ -169,7 +169,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
   });
 
-  it("同一 30M 桶內不執行持倉管理，只有下一個 30M 邊界才管理一次", () => {
+  it("同一 30M 桶內不執行持倉管理，只有下一個 30M 邊界才管理一次", async () => {
     const start = Date.UTC(2026, 0, 1, 0, 0, 0, 0);
     const makeCandle = (timestamp: number, close: number): OHLCVRow => ({
       symbol: "BTC-USDT",
@@ -214,7 +214,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
       lastCandle: null,
     };
 
-    const sameBucket = runRainbowTrendLadderBacktest(
+    const sameBucket = await runRainbowTrendLadderBacktest(
       request,
       new StrategyRainbowTrendLadder(),
       request.config,
@@ -229,7 +229,7 @@ describe("七彩虹線趨勢跟蹤階梯馬丁同源回測", () => {
     expect(sameBucket.session.state.rainbowTrendLadderRuntime?.lastManagementBarTimestamp).toBe(0);
 
     const nextBoundary = makeCandle(start + 30 * 60_000, 99.8);
-    const managed = runRainbowTrendLadderBacktest(
+    const managed = await runRainbowTrendLadderBacktest(
       { ...request, endDate: nextBoundary.timestamp },
       new StrategyRainbowTrendLadder(),
       request.config,

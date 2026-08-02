@@ -54,7 +54,7 @@ describe("20415 七彩虹馬丁動態風控整合測試", () => {
     const src = fs.readFileSync(enginePath, "utf-8");
 
     // 在 runGenericBacktest 區域中搜索
-    const genericStart = src.indexOf("private runGenericBacktest");
+    const genericStart = src.search(/private\s+(?:async\s+)?runGenericBacktest\s*\(/);
     expect(genericStart).toBeGreaterThan(0);
     const genericSrc = src.slice(genericStart);
 
@@ -69,7 +69,7 @@ describe("20415 七彩虹馬丁動態風控整合測試", () => {
   it("命令 3：持倉比例限制 — 回測引擎中有 maxPositionRatio 檢查邏輯", () => {
     const enginePath = path.resolve(__dirname, "services/backtest/backtestEngine.ts");
     const src = fs.readFileSync(enginePath, "utf-8");
-    const genericStart = src.indexOf("private runGenericBacktest");
+    const genericStart = src.search(/private\s+(?:async\s+)?runGenericBacktest\s*\(/);
     const genericSrc = src.slice(genericStart);
 
     // 必須有持倉比例超限的邏輯
@@ -81,7 +81,7 @@ describe("20415 七彩虹馬丁動態風控整合測試", () => {
   it("命令 4：權益回撤止損 — 回測引擎中有 peakEquity 追踪和回撤檢查", () => {
     const enginePath = path.resolve(__dirname, "services/backtest/backtestEngine.ts");
     const src = fs.readFileSync(enginePath, "utf-8");
-    const genericStart = src.indexOf("private runGenericBacktest");
+    const genericStart = src.search(/private\s+(?:async\s+)?runGenericBacktest\s*\(/);
     const genericSrc = src.slice(genericStart);
 
     // 必須追踪 peakEquity
@@ -93,7 +93,7 @@ describe("20415 七彩虹馬丁動態風控整合測試", () => {
   it("命令 5：動態加倉間距 — 回測引擎使用 ATR-based 動態 pipstep", () => {
     const enginePath = path.resolve(__dirname, "services/backtest/backtestEngine.ts");
     const src = fs.readFileSync(enginePath, "utf-8");
-    const genericStart = src.indexOf("private runGenericBacktest");
+    const genericStart = src.search(/private\s+(?:async\s+)?runGenericBacktest\s*\(/);
     const genericSrc = src.slice(genericStart);
 
     // 必須有 getGridStep 函數

@@ -11,7 +11,7 @@
  */
 
 import { BaseStrategyV35 } from '../base';
-import { getLatestADX, getLatestATR, determineMarketRegime, KLineInput } from '../../services/indicators';
+import { calculateADX, calculateATR, getLatestADX, getLatestATR, determineMarketRegime, KLineInput } from '../../services/indicators';
 import { getRegime, calculateATRMA } from '../../services/v61Utils'; // 從 v61Utils 導入共用邏輯
 
 // ===== V6.1 Config 類型 =====
@@ -217,6 +217,99 @@ export interface V61Signal {
   dailyTrades?: number;
 }
 
+export interface V61PrecomputedBar {
+  index: number;
+  availableBars: number;
+  timestamp?: number;
+  currentPrice: number;
+  regime: string;
+  atr: number;
+  atrAverage: number;
+  kamaFast: number | null;
+  kamaSlow: number | null;
+}
+
+function calculateV61KamaSeries(
+  closes: readonly number[],
+  length: number,
+  fastest: number,
+  slowest: number,
+): Array<number | null> {
+  const result: Array<number | null> = new Array(closes.length).fill(null);
+  if (closes.length < length + 1) return result;
+  const fastSC = 2 / (fastest + 1);
+  const slowSC = 2 / (slowest + 1);
+  let kama = closes[length - 1];
+  result[length - 1] = kama;
+  for (let index = length; index < closes.length; index += 1) {
+    const direction = Math.abs(closes[index] - closes[index - length]);
+    let volatility = 0;
+    for (let cursor = index - length + 1; cursor <= index; cursor += 1) {
+      volatility += Math.abs(closes[cursor] - closes[cursor - 1]);
+    }
+    const er = volatility === 0 ? 0 : direction / volatility;
+    const sc = (er * (fastSC - slowSC) + slowSC) ** 2;
+    kama += sc * (closes[index] - kama);
+    result[index] = kama;
+  }
+  return result;
+}
+
+export function calculateV61PrecomputedBarSeries(
+  candles: readonly KLineInput[],
+  rawConfig: Partial<V61Config> = {},
+): V61PrecomputedBar[] {
+  const cfg: V61Config = { ...V61_DEFAULT_CONFIG, ...rawConfig };
+  if (candles.length === 0) return [];
+  const closes = candles.map(candle => candle.close);
+  const atrSeries = calculateATR([...candles], 14);
+  const adxSeries = calculateADX([...candles], cfg.adx_period).adx;
+  const kamaFastSeries = calculateV61KamaSeries(
+    closes,
+    cfg.kama_fast_length,
+    cfg.kama_fast_fastest,
+    cfg.kama_fast_slowest,
+  );
+  const kamaSlowSeries = calculateV61KamaSeries(
+    closes,
+    cfg.kama_slow_length,
+    cfg.kama_slow_fastest,
+    cfg.kama_slow_slowest,
+  );
+  const recentAtr: number[] = [];
+  let recentAtrSum = 0;
+  return candles.map((candle, index) => {
+    const atr = atrSeries[index] ?? 0;
+    if (atrSeries[index] != null) {
+      recentAtr.push(atr);
+      recentAtrSum += atr;
+      if (recentAtr.length > 50) recentAtrSum -= recentAtr.shift()!;
+    }
+    const atrAverage = recentAtr.length < 50
+      ? recentAtr.at(-1) ?? 0
+      : recentAtrSum / recentAtr.length;
+    const adx = adxSeries[index] ?? 0;
+    const regime = !atr
+      ? 'ranging'
+      : adx > cfg.adx_strong_threshold && atr > atrAverage * cfg.atr_ratio_threshold
+        ? 'strong_trend'
+        : adx > cfg.adx_trend_threshold
+          ? 'weak_trend'
+          : 'ranging';
+    return {
+      index,
+      availableBars: index + 1,
+      timestamp: candle.timestamp,
+      currentPrice: candle.close,
+      regime,
+      atr,
+      atrAverage,
+      kamaFast: kamaFastSeries[index] ?? null,
+      kamaSlow: kamaSlowSeries[index] ?? null,
+    };
+  });
+}
+
 // ===== V6.1 策略引擎 =====
 export class StrategyKama3kV61 extends BaseStrategyV35 {
   readonly key = 'KAMA_3K_HF_V61';
@@ -391,28 +484,30 @@ export class StrategyKama3kV61 extends BaseStrategyV35 {
     positionLayers?: number,
     avgEntryPrice?: number,
     unrealizedPnlPct?: number,
+    precomputed?: V61PrecomputedBar,
   ): V61Signal {
-    if (candles.length < Math.max(this.cfg.kama_slow_length, 50) + 14) {
+    const availableBars = precomputed?.availableBars ?? candles.length;
+    if (availableBars < Math.max(this.cfg.kama_slow_length, 50) + 14) {
       return { action: 'wait', reason: '數據不足', confidence: 0 };
     }
 
-    const currentPrice = candles[candles.length - 1].close;
-    const ts = candles[candles.length - 1].timestamp;
+    const currentPrice = precomputed?.currentPrice ?? candles[candles.length - 1].close;
+    const ts = precomputed?.timestamp ?? candles[candles.length - 1].timestamp;
     const currentTime = new Date(ts ?? Date.now());
     
     // 每日風控重置
     this.resetDailyIfNeeded(currentTime);
 
     // 計算指標
-    const regime = getRegime(candles, this.cfg);
+    const regime = precomputed?.regime ?? getRegime(candles, this.cfg);
     const regimeParams = V61_REGIME_PARAMS[regime] || V61_REGIME_PARAMS.ranging;
-    const atrVal = getLatestATR(candles, 14) || 0;
-    const atrma = calculateATRMA(candles, 50);
+    const atrVal = precomputed?.atr ?? getLatestATR(candles, 14) ?? 0;
+    const atrma = precomputed?.atrAverage ?? calculateATRMA(candles, 50);
 
     // 計算 KAMA
-    const closes = candles.map(c => c.close);
-    const kamaFast = this.calculateKAMA(closes, this.cfg.kama_fast_length, this.cfg.kama_fast_fastest, this.cfg.kama_fast_slowest);
-    const kamaSlow = this.calculateKAMA(closes, this.cfg.kama_slow_length, this.cfg.kama_slow_fastest, this.cfg.kama_slow_slowest);
+    const closes = precomputed ? null : candles.map(c => c.close);
+    const kamaFast = precomputed?.kamaFast ?? this.calculateKAMA(closes!, this.cfg.kama_fast_length, this.cfg.kama_fast_fastest, this.cfg.kama_fast_slowest);
+    const kamaSlow = precomputed?.kamaSlow ?? this.calculateKAMA(closes!, this.cfg.kama_slow_length, this.cfg.kama_slow_fastest, this.cfg.kama_slow_slowest);
 
     if (kamaFast === null || kamaSlow === null) {
       return { action: 'wait', reason: 'KAMA 計算中', confidence: 0 };
@@ -444,7 +539,8 @@ export class StrategyKama3kV61 extends BaseStrategyV35 {
     }
 
     // Bar-Lock 檢查
-    if (this.cfg.enable_bar_lock && candles.length - 1 === this.lastEntryBar) {
+    const currentBarIndex = precomputed?.index ?? candles.length - 1;
+    if (this.cfg.enable_bar_lock && currentBarIndex === this.lastEntryBar) {
       return { action: 'wait', reason: 'Bar-Lock 限制', confidence: 0 };
     }
 
@@ -462,7 +558,7 @@ export class StrategyKama3kV61 extends BaseStrategyV35 {
     // 開倉
     const lotUsdt = this.getVolatilityLot(currentPrice, atrVal);
     this.dailyTrades++;
-    this.lastEntryBar = candles.length - 1;
+    this.lastEntryBar = currentBarIndex;
 
     const action = zoneResult.direction === 1 ? 'buy' : 'sell';
     return {

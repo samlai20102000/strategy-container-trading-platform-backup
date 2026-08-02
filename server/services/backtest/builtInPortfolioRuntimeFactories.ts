@@ -3,9 +3,11 @@ import {
   type KLineData,
   type StrategyState,
 } from "../../strategies/base";
+import { validateKamaRainbowMartinConfig } from "../../../shared/strategies/kamaRainbowMartin";
 import {
   createRainbow20415RuntimeMeta,
   createRainbow20415RuntimeState,
+  calculateRainbow20415LineSnapshotSeries,
   evaluateRainbow20415Entry,
   evaluateRainbow20415Management,
   type Rainbow20415CoreDecision,
@@ -13,6 +15,7 @@ import {
 import {
   createRainbowTrendLadderRuntimeMeta,
   createRainbowTrendLadderRuntimeState,
+  calculateRainbowTrendLadderLineSnapshotSeries,
   evaluateRainbowTrendLadderEntry,
   type RainbowTrendLadderCoreDecision,
 } from "../../strategies/rainbowTrendLadder/core";
@@ -20,6 +23,7 @@ import { evaluateRainbowTrendLadderManagement } from "../../strategies/rainbowTr
 import {
   createKamaRainbowMartinRuntimeMeta,
   createKamaRainbowMartinRuntimeState,
+  calculateKamaRainbowMartinSnapshotSeries,
   evaluateKamaRainbowMartinEntry,
   type KamaRainbowMartinEntryDecision,
 } from "../../strategies/kamaRainbowMartin/core";
@@ -28,13 +32,14 @@ import {
   type KamaRainbowMartinManagementDecision,
 } from "../../strategies/kamaRainbowMartin/management";
 import {
+  calculateV25PrecomputedBarSeries,
   createV25RuntimeState,
   evaluateV25Decision,
   type V25CoreDecision,
 } from "../../strategies/v25/core";
 import { evaluateV40EntryGates } from "../../strategies/v35/entryGate";
 import { evaluateV41EntryConditions } from "../../strategies/v41/entryConditions";
-import { StrategyKama3kV61 } from "../../strategies/v61/strategy_kama_3k_v61";
+import { calculateV61PrecomputedBarSeries, StrategyKama3kV61 } from "../../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../../strategies/v70/strategy_kama_3k_v70";
 import {
   calculateLayerLot,
@@ -85,10 +90,6 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 function allowedDirection(config: Readonly<Record<string, unknown>>): AllowedDirection {
   const value = String(config.direction ?? config.Direction ?? "both").trim().toLowerCase();
   return value === "long" || value === "short" ? value : "both";
-}
-
-function closedCandles(context: PortfolioAdapterBarContext): KLineData[] {
-  return context.candles.slice(0, context.index + 1).map(candle => ({ ...candle }));
 }
 
 function projectLegState(leg: BacktestOpenLegSnapshot, previous?: StrategyState): StrategyState {
@@ -257,6 +258,7 @@ function createCoreRuntime(
 }
 
 function rainbow20415Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
+  const snapshots = calculateRainbow20415LineSnapshotSeries(factoryContext.candles, factoryContext.config);
   return createCoreRuntime(factoryContext, {
     adapterId: "rainbow-20415-portfolio",
     adapterVersion: 1,
@@ -269,10 +271,11 @@ function rainbow20415Factory(factoryContext: PortfolioStrategyRuntimeFactoryCont
       }),
     }),
     evaluateEntry: context => evaluateRainbow20415Entry(
-      closedCandles(context),
+      [],
       createRainbow20415RuntimeState(),
       context.config,
       allowedDirection(context.config),
+      { snapshot: snapshots[context.index], currentPrice: context.candle.close },
     ) as Rainbow20415CoreDecision,
     evaluateManagement: (context, _leg, state) => evaluateRainbow20415Management({
       currentPrice: context.candle.close,
@@ -285,6 +288,7 @@ function rainbow20415Factory(factoryContext: PortfolioStrategyRuntimeFactoryCont
 }
 
 function rainbowTrendLadderFactory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
+  const snapshots = calculateRainbowTrendLadderLineSnapshotSeries(factoryContext.candles, factoryContext.config);
   return createCoreRuntime(factoryContext, {
     adapterId: "rainbow-trend-ladder-portfolio",
     adapterVersion: 1,
@@ -298,10 +302,11 @@ function rainbowTrendLadderFactory(factoryContext: PortfolioStrategyRuntimeFacto
       }),
     }),
     evaluateEntry: context => evaluateRainbowTrendLadderEntry({
-      candles: closedCandles(context),
       state: createRainbowTrendLadderRuntimeState(),
       rawConfig: context.config,
       allowedDirection: allowedDirection(context.config),
+      precomputedSnapshot: snapshots[context.index],
+      precomputedCurrentPrice: context.candle.close,
       spreadPoints: 0,
     }) as RainbowTrendLadderCoreDecision,
     evaluateManagement: (context, _leg, state) => evaluateRainbowTrendLadderManagement({
@@ -317,6 +322,8 @@ function rainbowTrendLadderFactory(factoryContext: PortfolioStrategyRuntimeFacto
 }
 
 function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
+  const validation = validateKamaRainbowMartinConfig(factoryContext.config);
+  const snapshots = calculateKamaRainbowMartinSnapshotSeries(factoryContext.candles, validation.config);
   return createCoreRuntime(factoryContext, {
     adapterId: "kama-rainbow-martin-portfolio",
     adapterVersion: 2,
@@ -333,10 +340,10 @@ function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactor
       }),
     }),
     evaluateEntry: context => evaluateKamaRainbowMartinEntry({
-      candles: closedCandles(context),
       state: createKamaRainbowMartinRuntimeState(),
       rawConfig: context.config,
       allowedDirection: allowedDirection(context.config),
+      precomputedSnapshot: snapshots[context.index],
       lastBarClosed: true,
       configRevision: `backtest:${context.timestamp}`,
     }) as KamaRainbowMartinEntryDecision,
@@ -351,21 +358,24 @@ function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactor
 }
 
 function v25Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
+  const bars = calculateV25PrecomputedBarSeries(factoryContext.candles, factoryContext.config);
   return createCoreRuntime(factoryContext, {
     adapterId: "kama-3k-v25-portfolio",
     adapterVersion: 1,
     seedState: (leg, previous) => createV25RuntimeState(projectLegState(leg, previous)),
     evaluateEntry: context => evaluateV25Decision(
-      closedCandles(context),
+      [],
       createV25RuntimeState(),
       context.config,
       allowedDirection(context.config),
+      bars[context.index],
     ) as V25CoreDecision,
     evaluateManagement: (context, _leg, state) => evaluateV25Decision(
-      closedCandles(context),
+      [],
       state,
       context.config,
       allowedDirection(context.config),
+      bars[context.index],
     ) as V25CoreDecision,
     entryCode: "V25_ENTRY",
     managementCode: "V25_MANAGE",
@@ -425,8 +435,9 @@ function createClassicKamaFactory(
       const fast = context.indicators.kamaFast;
       const slow = context.indicators.kamaSlow;
       if (fast == null || slow == null || context.index < 2) return { management, entries: [] };
-      const previous2 = context.candles[context.index - 2];
-      const previous1 = context.candles[context.index - 1];
+      const previous2 = context.previousCandle(2);
+      const previous1 = context.previousCandle(1);
+      if (!previous2 || !previous1) return { management, entries: [] };
       let side: "long" | "short" | null = null;
       let reasonCode = `${semantic}_KAMA_3K_ENTRY`;
       if (semantic === "V35") {
@@ -485,27 +496,29 @@ function createClassicKamaFactory(
 
 function v61Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
   const engine = new StrategyKama3kV61(factoryContext.config);
+  const bars = calculateV61PrecomputedBarSeries(factoryContext.candles, factoryContext.config);
   return {
     adapterId: "kama-3k-v61-portfolio",
     adapterVersion: 2,
     ownsPositionManagement: true,
     evaluateBar(context) {
-      const candles = closedCandles(context);
+      const precomputed = bars[context.index];
       const management: PortfolioAdapterIntent[] = [];
       for (const leg of context.openLegs) {
         const pnlPct = leg.entryNotional > 0 ? (leg.unrealizedGrossPnl / leg.entryNotional) * 100 : 0;
         const decision = engine.generateSignalV61(
-          candles,
+          [],
           true,
           leg.side,
           Math.max(1, leg.martinLayer + 1),
           leg.averageEntryPrice,
           pnlPct,
+          precomputed,
         );
         const intent = makeLegIntent(leg, decision, `V61_${decision.action.toUpperCase()}`, context);
         if (intent) management.push(intent);
       }
-      const signal = engine.generateSignalV61(candles, false);
+      const signal = engine.generateSignalV61([], false, undefined, undefined, undefined, undefined, precomputed);
       const side = signal.action === "buy" ? "long" : signal.action === "sell" ? "short" : null;
       const desired = signal.lotUsdt && signal.lotUsdt > 0 ? signal.lotUsdt / context.candle.close : undefined;
       const entry = side ? makeEntryIntent(context, side, "V61_ZONE_ENTRY", desired) : null;
@@ -516,23 +529,25 @@ function v61Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): Por
 
 function v70Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
   const engine = new StrategyKama3kV70(factoryContext.config);
+  const bars = engine.calculatePrecomputedBarSeries(factoryContext.candles, factoryContext.config);
   return {
     adapterId: "kama-3k-v70-portfolio",
     adapterVersion: 1,
     ownsPositionManagement: true,
     evaluateBar(context) {
-      const candles = closedCandles(context);
+      const precomputed = bars[context.index];
       const management: PortfolioAdapterIntent[] = [];
       for (const leg of context.openLegs) {
         const signal = engine.generateTradingSignal(
-          candles,
+          [],
           projectLegState(leg),
           context.config,
+          precomputed,
         );
         const intent = makeLegIntent(leg, signal, `V70_${signal.action.toUpperCase()}`, context);
         if (intent) management.push(intent);
       }
-      const signal = engine.generateTradingSignal(candles, createInitialStrategyState(), context.config);
+      const signal = engine.generateTradingSignal([], createInitialStrategyState(), context.config, precomputed);
       const side = signal.action === "buy" ? "long" : signal.action === "sell" ? "short" : null;
       const desired = signal.lotUsdt && signal.lotUsdt > 0 ? signal.lotUsdt / context.candle.close : undefined;
       const entry = side ? makeEntryIntent(context, side, "V70_MA200_KAMA_ENTRY", desired) : null;

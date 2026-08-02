@@ -22,7 +22,8 @@ export interface PortfolioAdapterBarContext {
   index: number;
   timestamp: number;
   candle: OHLCVRow;
-  candles: readonly OHLCVRow[];
+  /** O(1) bounded history accessor. Offset 1 means the previous closed bar. */
+  previousCandle(offset: number): OHLCVRow | undefined;
   config: Readonly<Record<string, unknown>>;
   strategy: BaseStrategy;
   executionMode: ExecutionMode;

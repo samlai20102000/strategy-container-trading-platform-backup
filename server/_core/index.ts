@@ -128,6 +128,34 @@ async function startServer() {
       });
     }
   });
+  app.post("/api/scheduled/backtest-worker", async (req, res) => {
+    let taskUid: string | undefined;
+    try {
+      const user = await sdk.authenticateRequest(req);
+      taskUid = user?.taskUid;
+      if (!user?.isCron || !taskUid) {
+        return res.status(403).json({ error: "cron-only" });
+      }
+      const {
+        recordBacktestWorkerRun,
+        verifyBacktestWorkerTask,
+      } = await import("../services/backtest/durableBacktestRepository");
+      if (!await verifyBacktestWorkerTask(taskUid)) {
+        return res.json({ ok: true, skipped: "orphan-or-disabled-task" });
+      }
+      const { backtestJobManager } = await import("../services/backtest/backtestJobManager");
+      const summary = await backtestJobManager.runDurableWorkerTick();
+      await recordBacktestWorkerRun(taskUid, summary.status ?? "IDLE", { ...summary });
+      return res.json({ ok: true, summary, ranAt: new Date().toISOString() });
+    } catch (e: any) {
+      return res.status(500).json({
+        error: e?.message ?? "unknown",
+        stack: e?.stack,
+        context: { url: req.originalUrl, taskUid },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
   // 24/7 自動交易 Heartbeat 回調端點
   // 每次 K 線週期觸發（例如 5 分鐘）產生信號並執行交易
   app.post("/api/scheduled/auto-trade", async (req, res) => {
@@ -541,11 +569,18 @@ async function startServer() {
       .then(({ ensureTradeReconciliationHeartbeat }) => ensureTradeReconciliationHeartbeat())
       .then(result => console.log(`[TradeReconciliation] Heartbeat ${result.action}: ${result.taskUid}`))
       .catch(error => console.warn("[TradeReconciliation] Heartbeat 註冊失敗:", error?.message || error));
+    void import("../services/backtest/backtestWorkerHeartbeat")
+      .then(({ ensureDurableBacktestHeartbeat }) => ensureDurableBacktestHeartbeat())
+      .then(result => console.log(`[BacktestWorker] Heartbeat ${result.action}: ${result.taskUid}`))
+      .catch(error => console.warn("[BacktestWorker] Heartbeat 註冊失敗:", error?.message || error));
   }
   // 策略工作室：註冊內建策略 + 從 DB 重載自訂策略（冷啟動自動重建）
   initStrategyStudio().catch((e) =>
     console.warn("[StrategyStudio] 初始化失敗:", e?.message),
   );
+  void import("../services/backtest/backtestJobManager")
+    .then(({ backtestJobManager }) => backtestJobManager.initialize())
+    .catch(error => console.warn("[BacktestJobManager] durable queue 初始化失敗:", error?.message || error));
 }
 
 startServer().catch(console.error);

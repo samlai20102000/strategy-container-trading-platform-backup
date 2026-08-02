@@ -103,10 +103,13 @@ export interface KamaRainbowMartinRuntimeState extends StrategyState {
 }
 
 export interface KamaRainbowMartinEntryInput {
-  candles: readonly KLineData[];
+  /** Live callers may supply candle history; portfolio backtests inject a causal precomputed snapshot instead. */
+  candles?: readonly KLineData[];
   state: StrategyState;
   rawConfig?: unknown;
   allowedDirection?: KamaRainbowMartinAllowedDirection;
+  /** Snapshot for exactly the current closed bar. It must never contain future-bar data. */
+  precomputedSnapshot?: KamaRainbowMartinSnapshot;
   /** Must be supplied by the exchange-aware candle provider. */
   lastBarClosed?: boolean;
   /** Stable artifact/config revision included in Bar-Lock identity. */
@@ -166,16 +169,32 @@ export function classifyKamaRainbowMartinLines(
   return { reasonCode: "KRM_MIXED_SLOPE", direction: "MIXED", lockedPair: null };
 }
 
-function emptySnapshot(candles: readonly KLineData[], requiredBars: number): KamaRainbowMartinSnapshot {
+function emptySnapshotAt(
+  candle: KLineData | undefined,
+  availableBars: number,
+  requiredBars: number,
+): KamaRainbowMartinSnapshot {
   return {
     lines: [],
     ready: false,
     requiredBars,
-    availableBars: candles.length,
-    barTimestamp: candles.at(-1)?.timestamp ?? 0,
-    closePrice: candles.at(-1)?.close ?? 0,
+    availableBars,
+    barTimestamp: candle?.timestamp ?? 0,
+    closePrice: candle?.close ?? 0,
     direction: "INSUFFICIENT",
     lockedPair: null,
+  };
+}
+
+function emptySnapshot(candles: readonly KLineData[], requiredBars: number): KamaRainbowMartinSnapshot {
+  return emptySnapshotAt(candles.at(-1), candles.length, requiredBars);
+}
+
+function cloneSnapshot(snapshot: KamaRainbowMartinSnapshot): KamaRainbowMartinSnapshot {
+  return {
+    ...snapshot,
+    lines: snapshot.lines.map(line => ({ ...line })),
+    lockedPair: snapshot.lockedPair ? [...snapshot.lockedPair] : null,
   };
 }
 
@@ -214,6 +233,63 @@ export function calculateKamaRainbowMartinSnapshot(
     direction: classification.direction,
     lockedPair: classification.lockedPair,
   };
+}
+
+/**
+ * Builds one causal snapshot per bar in a single pass over each enabled KAMA line.
+ * Snapshot i is equivalent to calculating only candles 0..i, without repeated prefix copies.
+ */
+export function calculateKamaRainbowMartinSnapshotSeries(
+  candles: readonly KLineData[],
+  config: KamaRainbowMartinConfig,
+): KamaRainbowMartinSnapshot[] {
+  const enabledLines = config.kamaLines.filter(line => line.enabled);
+  const requiredBars = getKamaRainbowMartinMinimumHistoryBars(config);
+  const snapshots = candles.map((candle, index) => emptySnapshotAt(candle, index + 1, requiredBars));
+  const firstInvalidIndex = candles.findIndex(
+    candle => !Number.isFinite(candle.close) || candle.close <= 0,
+  );
+  const validLength = firstInvalidIndex < 0 ? candles.length : firstInvalidIndex;
+  if (validLength < requiredBars) return snapshots;
+
+  const closes = candles.slice(0, validLength).map(candle => candle.close);
+  const lineSeries = enabledLines.map(line => ({
+    line,
+    series: calculateKamaSeries(closes, line),
+  }));
+
+  for (let index = requiredBars - 1; index < validLength; index += 1) {
+    const lines: KamaRainbowMartinLineObservation[] = [];
+    let ready = true;
+    for (const { line, series } of lineSeries) {
+      const previous = series[index - 1];
+      const current = series[index];
+      if (previous == null || current == null) {
+        ready = false;
+        break;
+      }
+      lines.push({
+        id: line.id,
+        name: line.name,
+        previous,
+        current,
+        slope: current - previous,
+      });
+    }
+    if (!ready) continue;
+    const classification = classifyKamaRainbowMartinLines(lines);
+    snapshots[index] = {
+      lines,
+      ready: true,
+      requiredBars,
+      availableBars: index + 1,
+      barTimestamp: candles[index]?.timestamp ?? 0,
+      closePrice: candles[index]?.close ?? 0,
+      direction: classification.direction,
+      lockedPair: classification.lockedPair,
+    };
+  }
+  return snapshots;
 }
 
 export function createKamaRainbowMartinRuntimeMeta(
@@ -343,7 +419,10 @@ export function evaluateKamaRainbowMartinEntry(
   const validation = validateKamaRainbowMartinConfig(input.rawConfig ?? createKamaRainbowMartinDefaultConfig());
   const config = validation.config;
   const state = cloneRuntimeState(input.state);
-  const snapshot = emptySnapshot(input.candles, getKamaRainbowMartinMinimumHistoryBars(config));
+  const candles = input.candles ?? [];
+  const snapshot = input.precomputedSnapshot
+    ? cloneSnapshot(input.precomputedSnapshot)
+    : emptySnapshot(candles, getKamaRainbowMartinMinimumHistoryBars(config));
 
   if (!validation.valid) {
     const reason = validation.issues.map(issue => `${issue.path}: ${issue.message}`).join("；");
@@ -366,7 +445,9 @@ export function evaluateKamaRainbowMartinEntry(
     return makeDecision("HOLD", "KRM_CANDLE_UNCLOSED", "最後一根 K 線尚未收盤，禁止掃描入場", config, snapshot, state);
   }
 
-  const calculated = calculateKamaRainbowMartinSnapshot(input.candles, config);
+  const calculated = input.precomputedSnapshot
+    ? cloneSnapshot(input.precomputedSnapshot)
+    : calculateKamaRainbowMartinSnapshot(candles, config);
   if (!calculated.ready) {
     return makeDecision(
       "HOLD",

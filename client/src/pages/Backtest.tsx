@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Play, RotateCcw, Download, Save, Loader2, XCircle, Clock, CheckCircle2, Trash2, ArrowLeft } from "lucide-react";
+import { Play, RotateCcw, Download, Save, Loader2, XCircle, Clock, CheckCircle2, Trash2, ArrowLeft, Activity, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -97,7 +97,23 @@ import {
   normalizeStrategyExecutionPolicy,
 } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
 
-type JobPhase = "idle" | "running" | "done" | "failed";
+type JobPhase = "idle" | "running" | "done" | "failed" | "cancelled";
+
+const BACKTEST_STALE_HEARTBEAT_MS = 120_000;
+
+function formatElapsedDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${hours}時 ${minutes}分 ${remainder}秒`
+    : `${minutes}分 ${remainder}秒`;
+}
+
+function formatBacktestTimestamp(timestamp?: number): string {
+  return timestamp ? new Date(timestamp).toLocaleString() : "尚未回報";
+}
 
 const KRM_BACKTEST_TIMEFRAME_OPTIONS: ReadonlyArray<{
   value: string;
@@ -140,6 +156,7 @@ export default function Backtest() {
   const [phase, setPhase] = useState<JobPhase>("idle");
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
+  const [clockNow, setClockNow] = useState(() => Date.now());
 
   // ===== 歷史記錄載入（任務 C1）=====
   const [activeTab, setActiveTab] = useState("run");
@@ -205,6 +222,13 @@ export default function Backtest() {
     { jobId: jobId ?? "" },
     { enabled: !!jobId && phase === "done", retry: false },
   );
+
+  useEffect(() => {
+    if (phase !== "running") return;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [phase]);
 
   // 選中策略的默認配置
   const selectedStrategy = useMemo(
@@ -302,11 +326,13 @@ export default function Backtest() {
     const p = progressQuery.data;
     if (!p) return;
     setProgress(p.progress);
-    setProgressMsg(p.message);
+    setProgressMsg(p.error ?? p.message);
     if (p.status === "completed") setPhase("done");
-    else if (p.status === "failed") {
+    else if (p.status === "cancelled") {
+      setPhase("cancelled");
+    } else if (p.status === "failed" || p.status === "timeout") {
       setPhase("failed");
-      toast.error(p.error ?? "回測失敗");
+      toast.error(`${p.errorCode ? `[${p.errorCode}] ` : ""}${p.error ?? "回測失敗"}`);
     }
   }, [progressQuery.data]);
 
@@ -660,6 +686,31 @@ export default function Backtest() {
   }, [symbol]);
 
   const result = resultQuery.data;
+  const durableProgress = progressQuery.data;
+  const durablePhaseLabel = (() => {
+    switch (durableProgress?.phase) {
+      case "QUEUED": return "排隊中";
+      case "PREPARING": return "準備資料";
+      case "RUNNING": return "策略運算";
+      case "FINALIZING": return "保存結果";
+      case "COMPLETED": return "已完成";
+      case "FAILED": return "失敗";
+      case "CANCELLED": return "已取消";
+      default: return phase === "running" ? "等待工作回報" : "—";
+    }
+  })();
+  const processedBars = durableProgress?.processedBars ?? 0;
+  const totalBars = durableProgress?.totalBars ?? 0;
+  const heartbeatAgeMs = durableProgress?.heartbeatAt
+    ? Math.max(0, clockNow - durableProgress.heartbeatAt)
+    : null;
+  const isJobStale = phase === "running"
+    && durableProgress?.status === "running"
+    && heartbeatAgeMs !== null
+    && heartbeatAgeMs > BACKTEST_STALE_HEARTBEAT_MS;
+  const elapsedStart = durableProgress?.startedAt ?? durableProgress?.createdAt;
+  const elapsedEnd = durableProgress?.finishedAt ?? clockNow;
+  const elapsedMs = elapsedStart ? Math.max(0, elapsedEnd - elapsedStart) : 0;
 
   // 策略 key → 名稱對照表（歷史記錄/對比用）
   const strategyNameMap = useMemo(() => {
@@ -1621,7 +1672,7 @@ export default function Backtest() {
                 <Save className="w-4 h-4 mr-1" />
                 {saveSnapshotMutation.isPending ? "儲存中..." : "儲存為快照"}
               </Button>
-              {(phase === "done" || phase === "failed") && (
+              {(phase === "done" || phase === "failed" || phase === "cancelled") && (
                 <Button variant="outline" onClick={handleReset}>
                   <RotateCcw className="w-4 h-4 mr-1" />
                   重新設定
@@ -1631,34 +1682,102 @@ export default function Backtest() {
 
             {/* 進度條 */}
             {phase === "running" && (
-              <div className="space-y-2">
+              <div className={`space-y-3 rounded-lg border p-3 ${isJobStale ? "border-amber-500/50 bg-amber-500/5" : "border-border/70 bg-muted/20"}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="gap-1 font-medium">
+                    {isJobStale ? <AlertTriangle className="h-3 w-3 text-amber-500" /> : <Activity className="h-3 w-3 text-blue-500" />}
+                    {durablePhaseLabel}
+                  </Badge>
+                  {isJobStale && (
+                    <Badge variant="outline" className="border-amber-500/50 text-amber-600 dark:text-amber-400">
+                      心跳逾時，正在等候接管
+                    </Badge>
+                  )}
+                  <span className="ml-auto text-[11px] font-mono text-muted-foreground">
+                    Job {jobId ?? "建立中"}
+                  </span>
+                </div>
+
                 <div className="flex items-center gap-2">
                   <Progress value={progress} className="flex-1" />
-                  <span className="text-xs font-mono text-muted-foreground w-10 text-right">{Math.round(progress)}%</span>
+                  <span className="w-12 text-right text-xs font-mono text-foreground">{Math.round(progress)}%</span>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-6 px-2 text-xs text-red-500 hover:text-red-600"
+                    disabled={cancelMutation.isPending}
+                    className="h-7 px-2 text-xs text-red-500 hover:text-red-600"
                     onClick={async () => {
                       if (!jobId) return;
                       try {
-                        await cancelMutation.mutateAsync({ jobId });
-                        setPhase("idle");
-                        setJobId(null);
-                        toast.info("任務已取消");
+                        const response = await cancelMutation.mutateAsync({ jobId });
+                        setPhase("cancelled");
+                        setProgressMsg(response.message);
+                        await Promise.all([
+                          utils.backtest.getProgress.invalidate({ jobId }),
+                          utils.backtest.getQueueStatus.invalidate(),
+                          utils.backtest.getActiveCount.invalidate(),
+                        ]);
+                        toast.info("取消要求已持久化，工作已終止");
                       } catch (e) {
                         toast.error(e instanceof Error ? e.message : "取消失敗");
                       }
                     }}
                   >
-                    <XCircle className="w-3 h-3 mr-0.5" /> 取消
+                    {cancelMutation.isPending
+                      ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      : <XCircle className="mr-1 h-3 w-3" />}
+                    {cancelMutation.isPending ? "取消中" : "取消"}
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">{progressMsg || "執行中..."}</p>
+
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] md:grid-cols-4">
+                  <div>
+                    <p className="text-muted-foreground">K 棒進度</p>
+                    <p className="font-mono font-medium text-foreground">
+                      {processedBars.toLocaleString()} / {totalBars > 0 ? totalBars.toLocaleString() : "載入中"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">最後心跳</p>
+                    <p className={`font-medium ${isJobStale ? "text-amber-600 dark:text-amber-400" : "text-foreground"}`}>
+                      {heartbeatAgeMs === null ? "尚未回報" : `${Math.floor(heartbeatAgeMs / 1000)} 秒前`}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">經過時間</p>
+                    <p className="font-mono font-medium text-foreground">{formatElapsedDuration(elapsedMs)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">執行嘗試</p>
+                    <p className="font-mono font-medium text-foreground">第 {durableProgress?.attemptCount ?? 0} 次</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+                  <span>開始：{formatBacktestTimestamp(durableProgress?.startedAt)}</span>
+                  <span>心跳：{formatBacktestTimestamp(durableProgress?.heartbeatAt)}</span>
+                </div>
+                <p className="text-xs text-foreground">{progressMsg || "工作已提交，等待 durable worker 回報..."}</p>
+                {isJobStale && (
+                  <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+                    這個 worker 的心跳已超過 120 秒。工作不會再無限停留於舊百分比；資料庫 lease 到期後，排程 worker 會接管重試，超過重試上限則回傳明確錯誤碼。
+                  </p>
+                )}
               </div>
             )}
             {phase === "failed" && (
-              <p className="text-xs text-red-500">回測失敗：{progressMsg}</p>
+              <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-600 dark:text-red-400">
+                <p className="font-semibold">回測失敗{durableProgress?.errorCode ? ` · ${durableProgress.errorCode}` : ""}</p>
+                <p className="mt-1 leading-relaxed">{progressMsg || "工作未能完成，請重新提交。"}</p>
+                {totalBars > 0 && <p className="mt-2 font-mono text-[11px]">停止於 {processedBars.toLocaleString()} / {totalBars.toLocaleString()} 根 K 棒</p>}
+              </div>
+            )}
+            {phase === "cancelled" && (
+              <div className="rounded-lg border border-slate-500/40 bg-slate-500/5 p-3 text-xs text-muted-foreground">
+                <p className="font-semibold text-foreground">回測已取消</p>
+                <p className="mt-1">{progressMsg || "取消要求已保存，worker lease 已撤銷。"}</p>
+                {totalBars > 0 && <p className="mt-2 font-mono text-[11px]">終止於 {processedBars.toLocaleString()} / {totalBars.toLocaleString()} 根 K 棒</p>}
+              </div>
             )}
           </CardContent>
         </Card>

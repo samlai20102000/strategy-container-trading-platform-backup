@@ -1,6 +1,7 @@
 import type { StrategyRainbowTrendLadder } from "../../strategies/builtin/strategyRainbowTrendLadder";
 import {
   calculateRainbowTrendLadderLineSnapshot,
+  calculateRainbowTrendLadderLineSnapshotSeries,
   createRainbowTrendLadderRuntimeState,
   evaluateRainbowTrendLadderEntry,
   type RainbowTrendLadderCoreDecision,
@@ -22,6 +23,7 @@ import {
   type TradeRecord,
 } from "./performanceCalculator";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
+import type { BacktestJobControl } from "./backtestJobControl";
 import {
   V25_END_OF_DATA_EXIT_REASON,
   assertSingleEquityLedger,
@@ -68,6 +70,7 @@ export interface RainbowTrendLadderBacktestRunOptions {
   session?: RainbowTrendLadderBacktestSession;
   /** 只有整個日期範圍最後一片可 finalize；中間資料片不得平倉或持久化。 */
   finalize?: boolean;
+  jobControl?: BacktestJobControl;
 }
 
 export interface RainbowTrendLadderBacktestRunResult extends BacktestResult {
@@ -103,7 +106,7 @@ function downsample(points: EquityPoint[], maxPoints: number): EquityPoint[] {
  * 進場與持倉管理都只由同一個已完整收盤的 M30 事件驅動；
  * 不再存在 M1／M5 管理節流，因此長區間回測只需載入 M30 資料。
  */
-export function runRainbowTrendLadderBacktest(
+export async function runRainbowTrendLadderBacktest(
   request: BacktestRequest,
   strategy: StrategyRainbowTrendLadder,
   rawConfig: Record<string, unknown>,
@@ -114,7 +117,7 @@ export function runRainbowTrendLadderBacktest(
   slippage: number,
   onProgress?: (pct: number, message: string) => void,
   options: RainbowTrendLadderBacktestRunOptions = {},
-): RainbowTrendLadderBacktestRunResult {
+): Promise<RainbowTrendLadderBacktestRunResult> {
   const config = assertValidRainbowTrendLadderConfig(rawConfig);
   const isFinalSegment = options.finalize ?? true;
   const priorSession = options.session;
@@ -149,6 +152,36 @@ export function runRainbowTrendLadderBacktest(
   ).toLowerCase();
   const allowedDirection: "long" | "short" | "both" =
     directionValue === "long" || directionValue === "short" ? directionValue : "both";
+
+  // 以與 runtime 完全相同的 bucket 規則先組裝整段已收盤 entry bars，再一次計算
+  // causal snapshots。逐棒決策按 timestamp O(1) 取值，不再重掃完整歷史。
+  const previewClosedEntryCandles = closedEntryCandles.map(candle => ({ ...candle }));
+  let previewBucketStart = activeBucketStart;
+  let previewBucket = activeBucket ? { ...activeBucket } : null;
+  for (const candle of candles) {
+    const bucketStart = Math.floor(candle.timestamp / entryFrameMs) * entryFrameMs;
+    if (!previewBucket || bucketStart !== previewBucketStart) {
+      if (previewBucket) previewClosedEntryCandles.push({ ...previewBucket });
+      previewBucketStart = bucketStart;
+      previewBucket = {
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        timestamp: bucketStart,
+      };
+    } else {
+      previewBucket.high = Math.max(previewBucket.high, candle.high);
+      previewBucket.low = Math.min(previewBucket.low, candle.low);
+      previewBucket.close = candle.close;
+      previewBucket.volume += candle.volume;
+    }
+  }
+  const previewSnapshots = calculateRainbowTrendLadderLineSnapshotSeries(previewClosedEntryCandles, config);
+  const snapshotByTimestamp = new Map(
+    previewClosedEntryCandles.map((candle, index) => [candle.timestamp, previewSnapshots[index]] as const),
+  );
 
   const openPositionAt = (price: number) => {
     const active = positionMeta as {
@@ -298,6 +331,14 @@ export function runRainbowTrendLadderBacktest(
     35,
     `數據就緒（${candles.length} 根 ${request.timeframe}），啟動七彩虹線階梯 ${entryTimeframeLabel}／${expectedTimeframe} 同源回測...`,
   );
+  await options.jobControl?.checkpoint({
+    phase: "RUNNING",
+    processedBars: 0,
+    totalBars: candles.length,
+    progress: 35,
+    message: `七彩虹線階梯 runner 已就緒（${candles.length} 根）`,
+    force: true,
+  });
   console.log(`[RainbowBacktest] Starting backtest for ${request.strategyKey} from ${new Date(startMs).toISOString()} to ${new Date(endMs).toISOString()} with ${candles.length} candles.`);
   const first = candles[0];
   if (!first) throw new Error("七彩虹線回測沒有可處理的 K 線");
@@ -327,7 +368,8 @@ export function runRainbowTrendLadderBacktest(
       
       if (config.Force_Close_On_Day_Start && crossedUtcDayBoundary) {
         const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
-          ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
+          ? snapshotByTimestamp.get(closedManagementCandle.timestamp)
+            ?? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
           : undefined;
         const dayBoundaryDecision = evaluateRainbowTrendLadderManagement(
           {
@@ -380,7 +422,8 @@ export function runRainbowTrendLadderBacktest(
         };
       } else {
         const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
-          ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
+          ? snapshotByTimestamp.get(closedManagementCandle.timestamp)
+            ?? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
           : undefined;
         decision = evaluateRainbowTrendLadderManagement(
           {
@@ -397,11 +440,12 @@ export function runRainbowTrendLadderBacktest(
       }
     } else if (closedManagementCandle) {
       decision = evaluateRainbowTrendLadderEntry({
-        candles: closedEntryCandles,
         state,
         rawConfig: config,
         allowedDirection,
         spreadPoints: 0,
+        precomputedSnapshot: snapshotByTimestamp.get(closedManagementCandle.timestamp),
+        precomputedCurrentPrice: closedManagementCandle.close,
       });
     }
 
@@ -423,19 +467,26 @@ export function runRainbowTrendLadderBacktest(
     });
     previousCandleTimestamp = candle.timestamp;
 
-    if (index > 0 && index % 2000 === 0) {
+    if (index > 0 && index % 250 === 0) {
       const progress = 35 + Math.floor((index / candles.length) * 60);
-      onProgress?.(
+      const message = `七彩虹線階梯同源回測 ${index}/${candles.length}（${entryTimeframeLabel} 已收盤 ${closedEntryCandles.length} 根）...`;
+      onProgress?.(progress, message);
+      await options.jobControl?.checkpoint({
+        phase: "RUNNING",
+        processedBars: index,
+        totalBars: candles.length,
         progress,
-        `七彩虹線階梯同源回測 ${index}/${candles.length}（${entryTimeframeLabel} 已收盤 ${closedEntryCandles.length} 根）...`,
-      );
+        message,
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
 
   if (isFinalSegment && config.Backtest_End_Position_Policy === "force_close" && positionMeta) {
     const last = candles[candles.length - 1];
     const trendSnapshot = closedEntryCandles.length >= requiredEntryBars
-      ? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
+      ? snapshotByTimestamp.get(closedEntryCandles.at(-1)?.timestamp ?? -1)
+        ?? calculateRainbowTrendLadderLineSnapshot(closedEntryCandles, config)
       : undefined;
     const forcedDecision = evaluateRainbowTrendLadderManagement(
       {
@@ -488,6 +539,16 @@ export function runRainbowTrendLadderBacktest(
   });
   assertSingleEquityLedger(accounting);
 
+  if (isFinalSegment) {
+    await options.jobControl?.checkpoint({
+      phase: "FINALIZING",
+      processedBars: candles.length,
+      totalBars: candles.length,
+      progress: 95,
+      message: "七彩虹線階梯計算完成，正在保存結果...",
+      force: true,
+    });
+  }
   if (isFinalSegment) onProgress?.(95, "計算七彩虹線階梯績效指標...");
   const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
   const runId = makeRunId(request.strategyKey, request.symbol);

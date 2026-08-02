@@ -20,6 +20,10 @@ import {
   type ResolvedPortfolioStrategyAdapter,
 } from "./portfolioStrategyAdapterRegistry";
 import { ensureBuiltInPortfolioRuntimeFactoriesRegistered } from "./builtInPortfolioRuntimeFactories";
+import {
+  throwIfBacktestAborted,
+  type BacktestJobControl,
+} from "./backtestJobControl";
 
 interface AdvancedKamaPortfolioInput {
   request: BacktestRequest;
@@ -33,6 +37,7 @@ interface AdvancedKamaPortfolioInput {
   commission: number;
   slippage: number;
   onProgress?: (progress: number, message: string) => void;
+  jobControl?: BacktestJobControl;
   resolvedAdapter?: ResolvedPortfolioStrategyAdapter;
 }
 
@@ -145,6 +150,7 @@ export async function runAdvancedKamaPortfolioBacktest(
     commission,
     slippage,
     onProgress,
+    jobControl,
     resolvedAdapter: suppliedAdapter,
   } = input;
   const resolvedAdapter = suppliedAdapter
@@ -260,7 +266,16 @@ export async function runAdvancedKamaPortfolioBacktest(
   // minimumClosedBars 是 registry 的保守資料需求提示，不得凌駕本次參數快照。
   // 真正的 warm-up 由各 executable adapter／策略核心依其 config 決定；KAMA 共用指標只需按本次長度起跑。
   const startIndex = Math.max(fastLength + 2, slowLength + 2, 3);
+  await jobControl?.checkpoint({
+    phase: "RUNNING",
+    processedBars: startIndex,
+    totalBars: candles.length,
+    progress: 35,
+    message: `三模式 portfolio kernel 已就緒（${candles.length} 根）`,
+    force: true,
+  });
   for (let index = startIndex; index < candles.length; index += 1) {
+    throwIfBacktestAborted(jobControl?.signal);
     const candle = candles[index];
     const price = candle.close;
     const timestamp = candle.timestamp;
@@ -295,11 +310,14 @@ export async function runAdvancedKamaPortfolioBacktest(
     }
 
     const closedTrades = kernel.snapshotTrades();
+    const previousCandle = (offset: number) => (
+      Number.isSafeInteger(offset) && offset >= 1 ? candles[index - offset] : undefined
+    );
     const adapterDecision = await runtimeAdapter.evaluateBar({
       index,
       timestamp,
       candle,
-      candles,
+      previousCandle,
       config,
       strategy,
       executionMode: executionPolicy.mode,
@@ -336,7 +354,7 @@ export async function runAdvancedKamaPortfolioBacktest(
       index,
       timestamp,
       candle,
-      candles,
+      previousCandle,
       config,
       strategy,
       executionMode: executionPolicy.mode,
@@ -355,14 +373,29 @@ export async function runAdvancedKamaPortfolioBacktest(
       consecutiveLosses: consecutiveLossCount(kernel.snapshotTrades()),
       closedTradeCount: kernel.snapshotTrades().length,
     });
-    if (index % 2_000 === 0) {
+    if (index % 250 === 0) {
       const progress = 35 + Math.floor(((index - startIndex) / Math.max(1, candles.length - startIndex)) * 60);
       onProgress?.(progress, `三模式 portfolio 回測 ${index}/${candles.length}（${progress}%）...`);
+      await jobControl?.checkpoint({
+        phase: "RUNNING",
+        processedBars: index,
+        totalBars: candles.length,
+        progress,
+        message: `三模式 portfolio 回測 ${index}/${candles.length}（${progress}%）...`,
+      });
       await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
 
   const last = candles[candles.length - 1];
+  await jobControl?.checkpoint({
+    phase: "FINALIZING",
+    processedBars: candles.length,
+    totalBars: candles.length,
+    progress: 95,
+    message: "三模式 portfolio 計算完成，正在保存績效與結果...",
+    force: true,
+  });
   const portfolio = kernel.finalize(endPositionPolicy, last.timestamp, last.close);
   const trades = buildTradeRecords(portfolio.trades);
   const equityCurve: EquityPoint[] = portfolio.equityCurve.map(point => ({

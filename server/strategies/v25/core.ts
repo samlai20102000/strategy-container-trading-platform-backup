@@ -41,6 +41,15 @@ export interface V25DecisionMetrics {
   nextMartinLayer: number | null;
 }
 
+export interface V25PrecomputedBar {
+  availableBars: number;
+  currentBar: KLineData;
+  bar1?: KLineData;
+  bar2?: KLineData;
+  kamaFast: number | null;
+  kamaSlow: number | null;
+}
+
 export interface V25CoreDecision {
   action: V25CoreAction;
   reason: string;
@@ -126,6 +135,34 @@ export function calculateV25Kama(
   return result;
 }
 
+export function calculateV25PrecomputedBarSeries(
+  candles: readonly KLineData[],
+  rawConfig: unknown = createV25DefaultConfig(),
+): V25PrecomputedBar[] {
+  const config = assertValidV25Config(rawConfig);
+  const closes = candles.map(candle => candle.close);
+  const kamaFastSeries = calculateV25Kama(
+    closes,
+    config.KAMA_Fast_Length,
+    config.p2_fastest,
+    config.p3_slowest,
+  );
+  const kamaSlowSeries = calculateV25Kama(
+    closes,
+    config.KAMA_Slow_Length,
+    config.q2_fastest,
+    config.q3_slowest,
+  );
+  return candles.map((currentBar, index) => ({
+    availableBars: index + 1,
+    currentBar,
+    bar1: index >= 2 ? candles[index - 2] : undefined,
+    bar2: index >= 1 ? candles[index - 1] : undefined,
+    kamaFast: kamaFastSeries[index] ?? null,
+    kamaSlow: kamaSlowSeries[index] ?? null,
+  }));
+}
+
 function holdDecision(
   reason: string,
   price: number,
@@ -192,6 +229,7 @@ export function evaluateV25Decision(
   state: StrategyState,
   rawConfig: unknown = createV25DefaultConfig(),
   allowedDirection: V25AllowedDirection = "both",
+  precomputed?: V25PrecomputedBar,
 ): V25CoreDecision {
   const config = assertValidV25Config(rawConfig);
   const nextState = cloneV25State(state);
@@ -200,35 +238,34 @@ export function evaluateV25Decision(
     config.KAMA_Fast_Length + 1,
     config.KAMA_Slow_Length + 1,
   );
-  if (candles.length < requiredBars) {
+  const availableBars = precomputed?.availableBars ?? candles.length;
+  if (availableBars < requiredBars) {
     return holdDecision(
-      `K線數據不足：需要 ${requiredBars} 根，目前 ${candles.length} 根`,
-      candles.at(-1)?.close ?? 0,
+      `K線數據不足：需要 ${requiredBars} 根，目前 ${availableBars} 根`,
+      precomputed?.currentBar.close ?? candles.at(-1)?.close ?? 0,
       nextState,
     );
   }
 
-  const closes = candles.map((candle) => candle.close);
   const currentIndex = candles.length - 1;
-  const currentBar = candles[currentIndex];
-  const bar1 = candles[currentIndex - 2];
-  const bar2 = candles[currentIndex - 1];
+  const currentBar = precomputed?.currentBar ?? candles[currentIndex];
+  const bar1 = precomputed?.bar1 ?? candles[currentIndex - 2];
+  const bar2 = precomputed?.bar2 ?? candles[currentIndex - 1];
   const currentPrice = currentBar.close;
 
-  const kamaFastSeries = calculateV25Kama(
-    closes,
+  const closes = precomputed ? null : candles.map(candle => candle.close);
+  const kamaFast = precomputed?.kamaFast ?? calculateV25Kama(
+    closes!,
     config.KAMA_Fast_Length,
     config.p2_fastest,
     config.p3_slowest,
-  );
-  const kamaSlowSeries = calculateV25Kama(
-    closes,
+  )[currentIndex];
+  const kamaSlow = precomputed?.kamaSlow ?? calculateV25Kama(
+    closes!,
     config.KAMA_Slow_Length,
     config.q2_fastest,
     config.q3_slowest,
-  );
-  const kamaFast = kamaFastSeries[currentIndex];
-  const kamaSlow = kamaSlowSeries[currentIndex];
+  )[currentIndex];
 
   if (kamaFast == null || kamaSlow == null) {
     return holdDecision("KAMA 尚未形成", currentPrice, nextState);

@@ -360,20 +360,22 @@ export const backtestRouter = router({
   /** 取消回測任務 */
   cancel: protectedProcedure
     .input(z.object({ jobId: z.string() }))
-    .mutation(async ({ input }) => {
-      const success = await backtestJobManager.cancel(input.jobId);
+    .mutation(async ({ input, ctx }) => {
+      const userId = ctx.user?.id;
+      if (!userId) throw new Error("請先登入");
+      const success = await backtestJobManager.cancel(input.jobId, userId);
       if (!success) throw new Error("任務不存在或已完成，無法取消");
       return { success: true, message: "任務已取消" };
     }),
 
-  /** 輪詢任務進度（記憶體優先，fallback DB） */
+  /** 輪詢 durable 任務進度（DB 為真相；同 pod 記憶體只作低延遲快取） */
   getProgress: protectedProcedure
     .input(z.object({ jobId: z.string() }))
     .query(async ({ input, ctx }) => {
       const userId = ctx.user?.id;
       if (!userId) throw new Error("請先登入");
       // 先從記憶體查（即時性最高）
-      const memProgress = backtestJobManager.getProgress(input.jobId);
+      const memProgress = backtestJobManager.getProgress(input.jobId, userId);
       if (memProgress) return memProgress;
       // Fallback: 從 DB 查（離開頁面後回來的場景）
       const dbJob = await backtestJobManager.getJobResultFromDB(input.jobId, userId);
@@ -381,14 +383,22 @@ export const backtestRouter = router({
       return {
         jobId: dbJob.jobId,
         status: dbJob.status,
+        phase: dbJob.phase,
         progress: dbJob.progress,
+        processedBars: dbJob.processedBars,
+        totalBars: dbJob.totalBars,
+        heartbeatAt: dbJob.heartbeatAt ? new Date(dbJob.heartbeatAt).getTime() : undefined,
+        leaseExpiresAt: dbJob.leaseExpiresAt ? new Date(dbJob.leaseExpiresAt).getTime() : undefined,
+        cancelRequested: dbJob.cancelRequested,
+        attemptCount: dbJob.attemptCount,
+        errorCode: dbJob.errorCode || undefined,
         message: dbJob.message || "",
         createdAt: new Date(dbJob.createdAt).getTime(),
         startedAt: dbJob.startedAt ? new Date(dbJob.startedAt).getTime() : undefined,
         finishedAt: dbJob.completedAt ? new Date(dbJob.completedAt).getTime() : undefined,
         error: dbJob.error || undefined,
         userId: dbJob.userId,
-        timeoutSeconds: 0,
+        timeoutSeconds: dbJob.timeoutSeconds ?? 0,
         strategyName: dbJob.strategyName,
       };
     }),
@@ -400,7 +410,7 @@ export const backtestRouter = router({
       const userId = ctx.user?.id;
       if (!userId) throw new Error("請先登入");
       // 先從記憶體查
-      const memResult = backtestJobManager.getResult(input.jobId);
+      const memResult = backtestJobManager.getResult(input.jobId, userId);
       if (memResult) return memResult;
       // Fallback: 從 DB 查
       const dbJob = await backtestJobManager.getJobResultFromDB(input.jobId, userId);
@@ -431,8 +441,8 @@ export const backtestRouter = router({
     }),
 
   /** 佇列狀態統計 */
-  getQueueStatus: protectedProcedure.query(() => {
-    return backtestJobManager.getQueueStatus();
+  getQueueStatus: protectedProcedure.query(async () => {
+    return backtestJobManager.getQueueStatusFromDB();
   }),
 
   // ==================== 歷史記錄（主資料庫持久化） ====================
@@ -505,8 +515,8 @@ export const backtestRouter = router({
     }),
 
   /** 獲取進行中的任務數（用於側邊欄 badge） */
-  getActiveCount: protectedProcedure.query(() => {
-    return { count: backtestJobManager.getActiveJobCount() };
+  getActiveCount: protectedProcedure.query(async () => {
+    return { count: await backtestJobManager.getActiveJobCountFromDB() };
   }),
 
   // ==================== 參數快照庫 ====================

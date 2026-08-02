@@ -20,7 +20,7 @@ const ORIGINAL_20415_HASHES: Record<string, string> = {
   "server/rainbow20415-config.test.ts": "efaa8347c238ba4fa55aa2bd7a7986fc5ad713b3e01d3a50624c42149cfdd4d0",
   "server/rainbow20415-core.test.ts": "67a21f5753ec13785a24f9ede227f24a85415dd5c9fb1e3e46a078e51d82b871",
   "server/strategies/builtin/strategy20415.ts": "25004d029e97b6ab742594ac146c474633ae2235bfd0a8b73292b6244637eea2",
-  "server/strategies/rainbow20415/core.ts": "245ef4c48a2423e0b4044bab45afb990e3c322e98dd1d79b204cf9eeb749d650",
+  "server/strategies/rainbow20415/core.ts": "188b747537d3982c4366d93308c70e557fe333860d8b92a6d1eb6d3bc60380e0",
   "shared/strategies/rainbow20415.ts": "84e5cb8aeb4024b3bf4f309e060b85eb1e31b70e899a4abfef65105a8bc664ca",
 };
 

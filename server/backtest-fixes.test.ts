@@ -411,7 +411,7 @@ describe("V5.7 無硬編碼靜態掃描", () => {
     const source = fs.readFileSync(enginePath, "utf-8");
 
     // 提取 runGenericBacktest 函數體
-    const genericStart = source.indexOf("private runGenericBacktest");
+    const genericStart = source.search(/private\s+(?:async\s+)?runGenericBacktest\s*\(/);
     expect(genericStart).toBeGreaterThan(0);
     const genericBody = source.slice(genericStart);
 

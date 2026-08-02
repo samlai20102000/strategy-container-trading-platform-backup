@@ -43,6 +43,11 @@ export interface Rainbow20415LineSnapshot {
   barTimestamp: number;
 }
 
+export interface Rainbow20415PrecomputedBar {
+  snapshot: Rainbow20415LineSnapshot;
+  currentPrice: number;
+}
+
 export interface Rainbow20415RuntimeMeta {
   configVersion: typeof RAINBOW_20415_CONFIG_VERSION;
   blindMode: boolean;
@@ -358,6 +363,81 @@ export function calculateRainbow20415LineSnapshot(
   };
 }
 
+export function calculateRainbow20415LineSnapshotSeries(
+  candles: readonly KLineData[],
+  rawConfig: unknown = createRainbow20415DefaultConfig(),
+): Rainbow20415LineSnapshot[] {
+  const config = assertValidRainbow20415Config(rawConfig);
+  const requiredBars = Math.max(...config.Lines.map(line => line.period)) + 1;
+  const emptyAt = (index: number): Rainbow20415LineSnapshot => ({
+    ...EMPTY_LINE_SNAPSHOT,
+    current: {},
+    previous: {},
+    slopes: {},
+    currentRank: [],
+    previousRank: [],
+    requiredBars,
+    availableBars: index + 1,
+    barTimestamp: candles[index]?.timestamp ?? 0,
+  });
+  const snapshots = candles.map((_candle, index) => emptyAt(index));
+  const firstInvalidIndex = candles.findIndex(
+    candle => !Number.isFinite(candle.close) || candle.close <= 0,
+  );
+  const validLength = firstInvalidIndex < 0 ? candles.length : firstInvalidIndex;
+  if (validLength < requiredBars) return snapshots;
+
+  const closes = candles.slice(0, validLength).map(candle => candle.close);
+  const lineSeries = config.Lines.map(line => ({
+    line,
+    series: calculateRainbow20415LineSeries(closes, line),
+  }));
+  for (let index = requiredBars - 1; index < validLength; index += 1) {
+    const current = {} as Record<Rainbow20415LineId, number>;
+    const previous = {} as Record<Rainbow20415LineId, number>;
+    const slopes = {} as Record<Rainbow20415LineId, number>;
+    let ready = true;
+    for (const { line, series } of lineSeries) {
+      const currentValue = series[index];
+      const previousValue = series[index - 1];
+      if (currentValue == null || previousValue == null) {
+        ready = false;
+        break;
+      }
+      current[line.id] = currentValue;
+      previous[line.id] = previousValue;
+      slopes[line.id] = currentValue - previousValue;
+    }
+    if (!ready) continue;
+    const slopeValues = RAINBOW_20415_LINE_IDS.map(lineId => slopes[lineId]);
+    const slopeDirection: Rainbow20415SlopeDirection = slopeValues.every(value => value > 0)
+      ? "UP"
+      : slopeValues.every(value => value < 0)
+        ? "DOWN"
+        : "MIXED";
+    const currentRankResult = rankLineIds(current);
+    const previousRankResult = rankLineIds(previous);
+    const noCross = !currentRankResult.hasTies
+      && !previousRankResult.hasTies
+      && currentRankResult.rank.every((lineId, rankIndex) => previousRankResult.rank[rankIndex] === lineId);
+    snapshots[index] = {
+      current,
+      previous,
+      slopes,
+      currentRank: currentRankResult.rank,
+      previousRank: previousRankResult.rank,
+      slopeDirection,
+      noCross,
+      hasTies: currentRankResult.hasTies || previousRankResult.hasTies,
+      ready: true,
+      requiredBars,
+      availableBars: index + 1,
+      barTimestamp: candles[index]?.timestamp ?? 0,
+    };
+  }
+  return snapshots;
+}
+
 function updateObservationState(
   state: Rainbow20415RuntimeState,
   snapshot: Rainbow20415LineSnapshot,
@@ -403,11 +483,12 @@ export function evaluateRainbow20415Entry(
   state: StrategyState,
   rawConfig: unknown = createRainbow20415DefaultConfig(),
   allowedDirection: Rainbow20415AllowedDirection = "both",
+  precomputed?: Rainbow20415PrecomputedBar,
 ): Rainbow20415CoreDecision {
   const config = assertValidRainbow20415Config(rawConfig);
   const nextState = cloneRainbow20415State(state);
-  const currentPrice = candles.at(-1)?.close ?? 0;
-  const snapshot = calculateRainbow20415LineSnapshot(candles, config);
+  const currentPrice = precomputed?.currentPrice ?? candles.at(-1)?.close ?? 0;
+  const snapshot = precomputed?.snapshot ?? calculateRainbow20415LineSnapshot(candles, config);
 
   if (hasActivePosition(nextState)) {
     return entryHold("持倉盲人模式中：七線不干預既有倉位", currentPrice, nextState, snapshot);
