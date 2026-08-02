@@ -2615,3 +2615,6 @@
 - [x] 最終完整 Vitest 回歸通過：127 個測試檔、1,032 項通過；僅 1 檔／4 項既有 skip
 - [x] TypeScript 無錯誤，vite＋esbuild production build 成功；dist/index.js 1.8 MB
 - [x] `/backtest` 桌面 1440×1000 與手機 390×844 視覺驗收通過；本輪 03:40Z 後無 console error／warning 或 4xx／5xx 請求
+- [x] 正式網域部署完成後建立並啟用 project-level `durable-backtest-worker-v1` Heartbeat；taskUid `WKBQV2epUhQ75thjmN7NVp` 已保存至唯一 registry
+- [x] 正式 Heartbeat 首輪 callback 於 2026-08-02 03:55:36Z 執行，HTTP 200、1.206 秒完成；registry 寫入 03:55:38Z 心跳與 worker summary
+- [x] production watchdog 成功接管 03:45 遺留 PREPARING 工作，於第 3 次 attempt 明確終態化為 `BACKTEST_DATA_LOAD_FAILED`（47 根不足最低 120 根），證明不再永久 running
