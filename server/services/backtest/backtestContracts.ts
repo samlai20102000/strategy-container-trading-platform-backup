@@ -105,6 +105,7 @@ export interface BacktestOpenPositionSnapshot {
 
 export interface BacktestOpenLegSnapshot extends BacktestOpenPositionSnapshot {
   legId: string;
+  cycleId: string;
   role: PositionLegRole;
   sideCode: PositionSide;
   martinLayer: number;

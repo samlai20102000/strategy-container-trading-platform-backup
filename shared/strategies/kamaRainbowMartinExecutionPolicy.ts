@@ -10,7 +10,7 @@ export const KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT = 4 as const;
 
 /**
  * KRM 的 H3 風險順序是策略契約，而不是可由前端 payload 覆蓋的偏好：
- * 主腿 -4% 先開保護腿，保護腿永遠禁止馬丁；KRM 預設硬止損為 -5%。
+ * 主腿 -4% 先自動開保護腿（不等待反向入場訊號），保護腿永遠禁止馬丁；KRM 預設硬止損為 -5%。
  */
 export function normalizeStrategyExecutionPolicy(
   strategyKey: string | null | undefined,
@@ -24,6 +24,7 @@ export function normalizeStrategyExecutionPolicy(
     return {
       ...policy,
       primaryLossTriggerPct: KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT,
+      requireOppositeSignal: false,
       hedgeMartinEnabled: false,
     };
   }

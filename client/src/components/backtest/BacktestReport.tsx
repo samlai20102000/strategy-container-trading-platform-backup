@@ -63,6 +63,12 @@ const EXECUTION_MODE_META: Record<ExecutionMode, { code: string; label: string; 
 
 export interface ReportTrade {
   id: number;
+  legId?: string;
+  cycleId?: string;
+  role?: "PRIMARY" | "INDEPENDENT" | "HEDGE";
+  deploymentMode?: "S1" | "M2" | "H3";
+  triggerSource?: "AUTO" | "MANUAL" | "RISK" | "WEBHOOK" | "RECONCILIATION";
+  entryReason?: string;
   entryTime: number;
   exitTime: number;
   side: string;
@@ -186,6 +192,13 @@ function fmtTime(ts: number): string {
   return new Date(ts).toLocaleString("zh-TW", { hour12: false });
 }
 
+function tradeDeploymentMode(trade: ReportTrade): "S1" | "M2" | "H3" {
+  if (trade.deploymentMode) return trade.deploymentMode;
+  if (trade.role === "INDEPENDENT") return "M2";
+  if (trade.role === "HEDGE") return "H3";
+  return "S1";
+}
+
 export default function BacktestReport({
   runId,
   strategyName,
@@ -230,9 +243,15 @@ export default function BacktestReport({
   }, [trades, resultFilter, martinFilter]);
 
   const exportCSV = () => {
-    const headers = ["時間", "方向", "入場價", "出場價", "數量", "盈虧", "盈虧%", "原因", "馬丁層數"];
+    const headers = ["時間", "部署模式", "腿角色", "Cycle ID", "Leg ID", "觸發來源", "開倉原因", "方向", "入場價", "出場價", "數量", "盈虧", "盈虧%", "平倉原因", "馬丁層數"];
     const rows = trades.map((t) => [
       fmtTime(t.exitTime),
+      tradeDeploymentMode(t),
+      t.role ?? "PRIMARY",
+      t.cycleId ?? "legacy-s1",
+      t.legId ?? `legacy-s1:${t.id}`,
+      t.triggerSource ?? "LEGACY",
+      t.entryReason ?? "LEGACY_ENTRY",
       t.side === "long" ? "買升" : "買跌",
       t.entryPrice,
       t.exitPrice,
@@ -746,6 +765,7 @@ export default function BacktestReport({
               <TableHeader>
                 <TableRow>
                   <TableHead className="text-xs">出場時間</TableHead>
+                  <TableHead className="text-xs">部署模式</TableHead>
                   <TableHead className="text-xs">方向</TableHead>
                   <TableHead className="text-xs text-right">入場價</TableHead>
                   <TableHead className="text-xs text-right">出場價</TableHead>
@@ -760,6 +780,17 @@ export default function BacktestReport({
                 {filteredTrades.map((t) => (
                   <TableRow key={t.id}>
                     <TableCell className="text-xs whitespace-nowrap">{fmtTime(t.exitTime)}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className={`text-[10px] font-semibold ${
+                        tradeDeploymentMode(t) === "S1"
+                          ? EXECUTION_MODE_META.SINGLE_EXCLUSIVE.className
+                          : tradeDeploymentMode(t) === "M2"
+                            ? EXECUTION_MODE_META.MULTI_POSITION.className
+                            : EXECUTION_MODE_META.HEDGE_GUARDED.className
+                      }`} title={`${t.role ?? "PRIMARY"} · ${t.cycleId ?? "legacy-s1"} · ${t.legId ?? `legacy-s1:${t.id}`} · ${t.triggerSource ?? "LEGACY"} · ${t.entryReason ?? "LEGACY_ENTRY"}`}>
+                        {tradeDeploymentMode(t)}
+                      </Badge>
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant="outline"
@@ -793,7 +824,7 @@ export default function BacktestReport({
                 ))}
                 {filteredTrades.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-xs text-muted-foreground py-6">
+                    <TableCell colSpan={10} className="text-center text-xs text-muted-foreground py-6">
                       無符合篩選條件的交易
                     </TableCell>
                   </TableRow>

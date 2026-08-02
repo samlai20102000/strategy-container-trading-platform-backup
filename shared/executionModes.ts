@@ -66,7 +66,8 @@ export interface HedgeGuardedPolicy extends BaseExecutionPolicy {
   mode: "HEDGE_GUARDED";
   maxOpenLegs: 2;
   primaryLossTriggerPct: number;
-  requireOppositeSignal: true;
+  /** true=必須有反向策略訊號；false=可由策略風控自動產生反向保護候選。 */
+  requireOppositeSignal: boolean;
   hedgeRatio: number;
   maxHedgeRatio: number;
   hedgeCooldownSeconds: number;
@@ -108,6 +109,11 @@ export interface CandidateIntent {
   deploymentId: number;
   action: CandidateIntentAction;
   side?: PositionSide;
+  /**
+   * 策略語義要求的腿角色；僅為輸入證據，最終角色仍由 mode engine 驗證與核准。
+   * 未提供時維持既有通用三模式行為。
+   */
+  roleHint?: PositionLegRole;
   requestedQuantity?: number;
   signalPrice?: number;
   barTimestamp?: number;

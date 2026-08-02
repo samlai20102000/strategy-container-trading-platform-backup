@@ -14,6 +14,8 @@ export interface PortfolioAdapterIndicators {
 export interface PortfolioAdapterIntent {
   action: BacktestPortfolioCandidate["action"];
   reasonCode: string;
+  roleHint?: BacktestPortfolioCandidate["roleHint"];
+  cycleIdHint?: BacktestPortfolioCandidate["cycleIdHint"];
   quantity?: number;
   eventKind?: BacktestPortfolioCandidate["eventKind"];
 }

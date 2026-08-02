@@ -35,6 +35,8 @@ export interface BacktestPortfolioCandidate extends CandidateIntent {
   /** 同 K 棒事件優先級；未提供時依 action 推導。 */
   eventKind?: BacktestIntrabarEventKind;
   sequence?: number;
+  /** 新輔助腿應歸屬的既有策略 cycle；由策略 adapter 提供，kernel 只作帳本歸因。 */
+  cycleIdHint?: string;
 }
 
 export interface BacktestPortfolioBar {
@@ -82,6 +84,9 @@ export interface BacktestPortfolioTrade {
   cycleId: string;
   side: PositionSide;
   role: PositionLegRole;
+  deploymentMode: "S1" | "M2" | "H3";
+  triggerSource: CandidateIntent["source"];
+  entryReason: string;
   entryTime: number;
   exitTime: number;
   entryPrice: number;
@@ -139,6 +144,8 @@ interface PortfolioLeg {
   cycleId: string;
   side: PositionSide;
   role: PositionLegRole;
+  triggerSource: CandidateIntent["source"];
+  entryReason: string;
   status: "OPEN" | "CLOSED";
   layers: PortfolioLayer[];
   quantity: number;
@@ -634,14 +641,21 @@ export class ThreeModePortfolioKernel {
       return;
     }
 
-    const cycleId = role === "HEDGE"
-      ? this.openLegs().find(leg => leg.role === "PRIMARY")?.cycleId ?? this.nextCycleId(bar.timestamp)
-      : this.nextCycleId(bar.timestamp);
+    const hintedCycleId = candidate.cycleIdHint?.trim().slice(0, 128) || null;
+    const cycleId = role === "PRIMARY"
+      ? this.nextCycleId(bar.timestamp)
+      : hintedCycleId
+        ?? (role === "HEDGE"
+          ? this.openLegs().find(leg => leg.role === "PRIMARY")?.cycleId
+          : undefined)
+        ?? this.nextCycleId(bar.timestamp);
     const leg: PortfolioLeg = {
       legId: targetId,
       cycleId,
       side,
       role,
+      triggerSource: candidate.source,
+      entryReason: candidate.reasonCode,
       status: "OPEN",
       layers: [{ price: fillPrice, quantity, fee, timestamp: bar.timestamp }],
       quantity,
@@ -700,6 +714,9 @@ export class ThreeModePortfolioKernel {
       cycleId: leg.cycleId,
       side: leg.side,
       role: leg.role,
+      deploymentMode: leg.role === "PRIMARY" ? "S1" : leg.role === "INDEPENDENT" ? "M2" : "H3",
+      triggerSource: leg.triggerSource,
+      entryReason: leg.entryReason,
       entryTime: leg.openedAt,
       exitTime: bar.timestamp,
       entryPrice: leg.averageEntryPrice,
@@ -1218,6 +1235,7 @@ export class ThreeModePortfolioKernel {
     const unrealizedGrossPnl = this.unrealizedGrossPnl(leg, price);
     return {
       legId: leg.legId,
+      cycleId: leg.cycleId,
       role: leg.role,
       sideCode: leg.side,
       martinLayer: Math.max(0, leg.layers.length - 1),

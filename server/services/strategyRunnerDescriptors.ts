@@ -98,15 +98,15 @@ const BUILT_IN_DESCRIPTORS: Readonly<Record<BuiltInStrategyKey, StrategyRunnerDe
   KAMA_RAINBOW_MARTIN_V1: descriptor({
     strategyKey: "KAMA_RAINBOW_MARTIN_V1",
     strategyVersion: 1,
-    logicRevision: "kama-rainbow-martin-v1-leg-scoped-advanced-runtime-v2",
+    logicRevision: "kama-rainbow-martin-v1-three-mode-cycle-contract-v3",
     adapterId: "kama-rainbow-martin-portfolio",
-    adapterVersion: 2,
+    adapterVersion: 3,
     martingaleLayers: true,
     independentLegState: true,
     preciseLegClose: true,
     hedgeGuard: true,
     certifications: {
-      BACKTEST: certified(ALL_MODES, "六線 KAMA、腿級馬丁與 exit-first 管理由專用 adapter 接入 canonical kernel", ["krm-pure-core", "multi-leg-ledger", "h3-guard"]),
+      BACKTEST: certified(ALL_MODES, "六線 KAMA、S1 主腿、每 cycle 單一 M2 反向腿與自動 H3 保護由專用 adapter 接入 canonical kernel", ["krm-pure-core", "multi-leg-ledger", "krm-three-mode-contract-v2"]),
       SIMULATION: certified(ALL_MODES, "KRM guarded executor 已支援腿級模式 envelope", ["advanced-signal-envelope", "leg-scoped-runtime"]),
       LIVE: certified(ALL_MODES, "KRM guarded executor 已支援腿級模式 envelope", ["advanced-signal-envelope", "leg-scoped-runtime"]),
     },

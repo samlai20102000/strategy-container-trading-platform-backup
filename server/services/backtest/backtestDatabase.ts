@@ -38,6 +38,12 @@ export interface BacktestRunRow {
 }
 
 export interface BacktestTradeRowInput {
+  legId?: string;
+  cycleId?: string;
+  role?: "PRIMARY" | "INDEPENDENT" | "HEDGE";
+  deploymentMode?: "S1" | "M2" | "H3";
+  triggerSource?: "AUTO" | "MANUAL" | "RISK" | "WEBHOOK" | "RECONCILIATION";
+  entryReason?: string;
   entryTime: number;
   exitTime: number;
   side: string;
@@ -117,7 +123,13 @@ export class BacktestDatabase {
         pnl REAL NOT NULL,
         pnl_pct REAL NOT NULL,
         exit_reason TEXT NOT NULL,
-        martin_layer INTEGER NOT NULL DEFAULT 0
+        martin_layer INTEGER NOT NULL DEFAULT 0,
+        leg_id TEXT,
+        cycle_id TEXT,
+        role TEXT,
+        deployment_mode TEXT,
+        trigger_source TEXT,
+        entry_reason TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_trades_run_id
@@ -134,12 +146,24 @@ export class BacktestDatabase {
     this.ensureBacktestRunColumn("execution_context", "TEXT");
     this.ensureBacktestRunColumn("mode_results", "TEXT");
     this.ensureBacktestRunColumn("leg_accounting", "TEXT");
+    this.ensureBacktestTradeColumn("leg_id", "TEXT");
+    this.ensureBacktestTradeColumn("cycle_id", "TEXT");
+    this.ensureBacktestTradeColumn("role", "TEXT");
+    this.ensureBacktestTradeColumn("deployment_mode", "TEXT");
+    this.ensureBacktestTradeColumn("trigger_source", "TEXT");
+    this.ensureBacktestTradeColumn("entry_reason", "TEXT");
   }
 
   private ensureBacktestRunColumn(name: string, definition: string): void {
     const columns = this.db.prepare("PRAGMA table_info(backtest_runs)").all() as Array<{ name: string }>;
     if (columns.some((column) => column.name === name)) return;
     this.db.exec(`ALTER TABLE backtest_runs ADD COLUMN ${name} ${definition}`);
+  }
+
+  private ensureBacktestTradeColumn(name: string, definition: string): void {
+    const columns = this.db.prepare("PRAGMA table_info(backtest_trades)").all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === name)) return;
+    this.db.exec(`ALTER TABLE backtest_trades ADD COLUMN ${name} ${definition}`);
   }
 
   /** 批次插入 K 線（transaction 高速寫入，重複主鍵自動覆蓋） */
@@ -205,8 +229,9 @@ export class BacktestDatabase {
     `);
     const insertTrade = this.db.prepare(`
       INSERT INTO backtest_trades
-        (run_id, entry_time, exit_time, side, entry_price, exit_price, size, pnl, pnl_pct, exit_reason, martin_layer)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (run_id, entry_time, exit_time, side, entry_price, exit_price, size, pnl, pnl_pct, exit_reason, martin_layer,
+         leg_id, cycle_id, role, deployment_mode, trigger_source, entry_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const txn = this.db.transaction(() => {
       insertRun.run({
@@ -229,6 +254,12 @@ export class BacktestDatabase {
           t.pnlPct,
           t.exitReason,
           t.martinLayer,
+          t.legId ?? null,
+          t.cycleId ?? null,
+          t.role ?? null,
+          t.deploymentMode ?? null,
+          t.triggerSource ?? null,
+          t.entryReason ?? null,
         );
       }
     });

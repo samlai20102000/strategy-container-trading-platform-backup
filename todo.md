@@ -2618,3 +2618,17 @@
 - [x] 正式網域部署完成後建立並啟用 project-level `durable-backtest-worker-v1` Heartbeat；taskUid `WKBQV2epUhQ75thjmN7NVp` 已保存至唯一 registry
 - [x] 正式 Heartbeat 首輪 callback 於 2026-08-02 03:55:36Z 執行，HTTP 200、1.206 秒完成；registry 寫入 03:55:38Z 心跳與 worker summary
 - [x] production watchdog 成功接管 03:45 遺留 PREPARING 工作，於第 3 次 attempt 明確終態化為 `BACKTEST_DATA_LOAD_FAILED`（47 根不足最低 120 根），證明不再永久 running
+
+## 2026-08-02 Kama 彩虹馬丁三模式語義與報告一致性 P0 修復
+
+- [x] 鎖定 Kama 彩虹馬丁 S1／M2／H3 的既有狀態、觸發、退出、資金與快照資料流，禁止以未確認假設改寫策略語義
+- [x] 建立 Kama 彩虹馬丁專用三模式契約：M2 僅在 S1 浮虧且相反入場訊號出現時開一條反向腿；同一 S1 cycle 的後續反向訊號不得再開 M2
+- [x] 建立 Kama 彩虹馬丁 H3 契約：S1 浮虧達既有可配置 X% 閾值時自動開一條反向對沖腿，且不得硬編碼未確認門檻
+- [x] 統一 S1／M2／H3 共用同一策略資金池、可用資金與 gross／margin 上限，保持各腿持倉與盈虧歸因獨立
+- [x] 修復回測中心的三模式生命週期、交易聚合、總回報／已實現／未實現一致性及每筆 S1／M2／H3 模式歸因
+- [x] 更新 CSV 報告加入部署模式、觸發來源、cycle／leg、開平倉原因與資金歸因，確保 UI 指標可由報告重算
+- [x] 更新實盤三模式執行與 fail-closed 保護，但驗證流程不得觸發任何真實下單、撤單或平倉 mutation
+- [x] 更新新建策略與參數快照的版本化 schema／導入相容性，舊快照缺欄位時以 canonical 既有預設安全升級
+- [x] 補齊 M2 單次觸發、H3 閾值觸發、共享資金、cycle 重置、回測／實盤決策等價及未來策略模式歸因契約測試
+- [x] 以用戶提供的 95 筆 S1 與 6 筆 M2 報告作診斷基線，重新回測並交付實際交易筆數與逐筆觸發證據，不預設修復後筆數或收益
+- [x] 完成 TypeScript、完整 Vitest、production build、UI／CSV 驗收、checkpoint 與自動發布

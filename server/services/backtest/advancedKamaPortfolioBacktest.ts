@@ -101,6 +101,12 @@ function buildTradeRecords(
 ): TradeRecord[] {
   return trades.map((trade, index) => ({
     id: index + 1,
+    legId: trade.legId,
+    cycleId: trade.cycleId,
+    role: trade.role,
+    deploymentMode: trade.deploymentMode,
+    triggerSource: trade.triggerSource,
+    entryReason: trade.entryReason,
     entryTime: trade.entryTime,
     exitTime: trade.exitTime,
     side: trade.side === "LONG" ? "long" : "short",
@@ -239,6 +245,8 @@ export async function runAdvancedKamaPortfolioBacktest(
     reasonCode: string,
     quantity?: number,
     eventKind?: BacktestPortfolioCandidate["eventKind"],
+    roleHint?: BacktestPortfolioCandidate["roleHint"],
+    cycleIdHint?: BacktestPortfolioCandidate["cycleIdHint"],
   ): BacktestPortfolioCandidate => {
     candidateSequence += 1;
     const side: PositionSide | undefined = action.endsWith("LONG")
@@ -251,6 +259,7 @@ export async function runAdvancedKamaPortfolioBacktest(
       deploymentId,
       action,
       side,
+      roleHint,
       requestedQuantity: quantity,
       signalPrice: candles.find(candle => candle.timestamp === timestamp)?.close,
       barTimestamp: timestamp,
@@ -259,6 +268,7 @@ export async function runAdvancedKamaPortfolioBacktest(
       reason: reasonCode,
       createdAt: timestamp,
       eventKind,
+      cycleIdHint,
       sequence: candidateSequence,
     };
   };
@@ -336,7 +346,15 @@ export async function runAdvancedKamaPortfolioBacktest(
     });
     if (!hasForcedExit) {
       for (const intent of [...adapterDecision.management, ...adapterDecision.entries]) {
-        candidates.push(nextCandidate(timestamp, intent.action, intent.reasonCode, intent.quantity, intent.eventKind));
+        candidates.push(nextCandidate(
+          timestamp,
+          intent.action,
+          intent.reasonCode,
+          intent.quantity,
+          intent.eventKind,
+          intent.roleHint,
+          intent.cycleIdHint,
+        ));
       }
     }
 

@@ -1,9 +1,7 @@
 import type { PositionLeg, Strategy } from "../../drizzle/schema";
-import {
-  normalizeExecutionModePolicy,
-  type ExecutionPolicy,
-} from "../../shared/executionModes";
+import type { ExecutionPolicy } from "../../shared/executionModes";
 import type { KamaRainbowMartinConfig } from "../../shared/strategies/kamaRainbowMartin";
+import { normalizeStrategyExecutionPolicy } from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
 import type { ExchangeAdapter, OrderResult } from "../exchanges/types";
 import {
   approvedEmergencyReasonFromCloseReason,
@@ -338,7 +336,8 @@ export async function executeKamaRainbowMartinAdvancedSignal(input: {
   config: KamaRainbowMartinConfig;
 }): Promise<KamaRainbowMartinExecutionResult> {
   const { strategy, signal, signalId, adapter, options, config } = input;
-  const policy = normalizeExecutionModePolicy(
+  const policy = normalizeStrategyExecutionPolicy(
+    strategy.strategyKey,
     strategy.executionPolicy ?? { mode: strategy.executionMode || "SINGLE_EXCLUSIVE" },
   );
   if (policy.mode === "SINGLE_EXCLUSIVE") {
@@ -346,11 +345,18 @@ export async function executeKamaRainbowMartinAdvancedSignal(input: {
   }
   const action = signal.kamaRainbowMartinAction;
   if (!action) return { status: "rejected", message: "Kama 彩虹馬丁缺少 sealed action" };
-  const existingTarget = options.legId
-    ? await getOwnedPositionLeg({ userId: strategy.userId, strategyId: strategy.id, legId: options.legId })
+  if (options.legId && signal.kamaRainbowMartinLegId && options.legId !== signal.kamaRainbowMartinLegId) {
+    return { status: "rejected", message: "Kama 彩虹馬丁 sealed legId 與 execution options 不一致" };
+  }
+  if (options.cycleId && signal.kamaRainbowMartinCycleId && options.cycleId !== signal.kamaRainbowMartinCycleId) {
+    return { status: "rejected", message: "Kama 彩虹馬丁 sealed cycleId 與 execution options 不一致" };
+  }
+  const sealedLegId = signal.kamaRainbowMartinLegId || options.legId;
+  const existingTarget = sealedLegId
+    ? await getOwnedPositionLeg({ userId: strategy.userId, strategyId: strategy.id, legId: sealedLegId })
     : null;
   const eventKey = signal.kamaRainbowMartinEventKey || options.eventKey || `${signal.barTimestamp || Date.now()}:${action}`;
-  const cycleId = boundedIdentity(options.cycleId || existingTarget?.cycleId || `krm-cycle:${strategy.id}:${eventKey}`);
+  const cycleId = boundedIdentity(signal.kamaRainbowMartinCycleId || options.cycleId || existingTarget?.cycleId || `krm-cycle:${strategy.id}:${eventKey}`);
   if (action === "CLOSE") {
     if (!existingTarget) return { status: "rejected", message: "Kama 彩虹馬丁 advanced close 缺少可證明 ownership 的 legId" };
     return executeAdvancedClose({ strategy, signal, signalId, adapter, options, config, policy, targetLeg: existingTarget, cycleId });
@@ -412,6 +418,7 @@ export async function executeKamaRainbowMartinAdvancedSignal(input: {
       requestedQuantity: normalized.qty,
       source: options.source,
       eventKey,
+      roleHint: signal.kamaRainbowMartinRoleHint,
     },
     signalId,
     adapter,
@@ -429,6 +436,9 @@ export async function executeKamaRainbowMartinAdvancedSignal(input: {
   const targetRole = decision.targetRole;
   if (!targetLegId || !targetRole || !decision.targetSide) {
     return { status: "rejected", message: "Kama 彩虹馬丁 advanced decision 缺少 leg ownership" };
+  }
+  if (signal.kamaRainbowMartinRoleHint && targetRole !== signal.kamaRainbowMartinRoleHint) {
+    return { status: "rejected", message: "Kama 彩虹馬丁 sealed role 與 canonical mode decision 不一致" };
   }
   if (targetRole === "HEDGE" && !initialAction) {
     return { status: "rejected", message: "Kama 彩虹馬丁 H3 保護腿禁止加倉" };

@@ -177,7 +177,11 @@ describe("KamaRainbowMartin advanced executor", () => {
 
     const result = await executeKamaRainbowMartinAdvancedSignal({
       strategy: strategy("HEDGE_GUARDED"),
-      signal: signal("OPEN_SHORT", { barTimestamp: 1_900_000_000_000 }),
+      signal: signal("OPEN_SHORT", {
+        barTimestamp: 1_900_000_000_000,
+        kamaRainbowMartinCycleId: "cycle-h3-1",
+        kamaRainbowMartinRoleHint: "HEDGE",
+      }),
       signalId: 91,
       adapter: exchange,
       options: { source: "AUTO", cycleId: "cycle-h3-1", eventKey: "event-h3-1" },
@@ -185,6 +189,10 @@ describe("KamaRainbowMartin advanced executor", () => {
     });
 
     expect(result.status).toBe("executed");
+    expect(mocks.authorizeRuntimeModeAction).toHaveBeenCalledWith(expect.objectContaining({
+      cycleId: "cycle-h3-1",
+      signal: expect.objectContaining({ roleHint: "HEDGE" }),
+    }));
     expect(exchange.placeOrder).toHaveBeenCalledWith(expect.objectContaining({
       side: "sell",
       posSide: "short",
@@ -208,6 +216,73 @@ describe("KamaRainbowMartin advanced executor", () => {
       legId: "hedge-leg-1",
       executionMode: "HEDGE_GUARDED",
     }));
+  });
+
+  it("persists a sealed M2 open as a fresh layer-1 INDEPENDENT leg in the S1 cycle", async () => {
+    const exchange = adapter();
+    mocks.getOwnedPositionLeg.mockResolvedValue(null);
+    mocks.authorizeRuntimeModeAction.mockResolvedValue({
+      allowed: true,
+      envelope: {
+        decision: {
+          outcome: "EXECUTE",
+          decisionId: "decision-m2-open",
+          reasonCode: "M2_INDEPENDENT_OPEN_APPROVED",
+          targetLegId: "m2-short-1",
+          targetRole: "INDEPENDENT",
+          targetSide: "SHORT",
+          approvedQuantity: 0.005,
+          contextSnapshot: {},
+        },
+      },
+    });
+
+    const result = await executeKamaRainbowMartinAdvancedSignal({
+      strategy: strategy("MULTI_POSITION"),
+      signal: signal("OPEN_SHORT", {
+        kamaRainbowMartinCycleId: "cycle-m2-1",
+        kamaRainbowMartinRoleHint: "INDEPENDENT",
+      }),
+      signalId: 94,
+      adapter: exchange,
+      options: { source: "AUTO", cycleId: "cycle-m2-1", eventKey: "event-m2-open" },
+      config: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+    });
+
+    expect(result.status).toBe("executed");
+    expect(mocks.authorizeRuntimeModeAction).toHaveBeenCalledWith(expect.objectContaining({
+      cycleId: "cycle-m2-1",
+      signal: expect.objectContaining({ roleHint: "INDEPENDENT" }),
+    }));
+    expect(mocks.createOrGetPositionLeg).toHaveBeenCalledWith(expect.objectContaining({
+      legId: "m2-short-1",
+      cycleId: "cycle-m2-1",
+      role: "INDEPENDENT",
+      side: "SHORT",
+      executionMode: "MULTI_POSITION",
+      martinState: expect.objectContaining({ currentLayer: 1 }),
+    }));
+  });
+
+  it("rejects conflicting sealed and options cycle identities before quote or mode authorization", async () => {
+    const exchange = adapter();
+    const result = await executeKamaRainbowMartinAdvancedSignal({
+      strategy: strategy("MULTI_POSITION"),
+      signal: signal("OPEN_SHORT", {
+        kamaRainbowMartinCycleId: "cycle-sealed",
+        kamaRainbowMartinRoleHint: "INDEPENDENT",
+      }),
+      signalId: 95,
+      adapter: exchange,
+      options: { source: "AUTO", cycleId: "cycle-options", eventKey: "event-cycle-conflict" },
+      config: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+    });
+
+    expect(result).toMatchObject({ status: "rejected" });
+    expect(result.message).toContain("sealed cycleId");
+    expect(mocks.fetchFreshQuote).not.toHaveBeenCalled();
+    expect(mocks.authorizeRuntimeModeAction).not.toHaveBeenCalled();
+    expect(exchange.placeOrder).not.toHaveBeenCalled();
   });
 
   it("updates only the sealed M2 target leg when applying a martingale add", async () => {

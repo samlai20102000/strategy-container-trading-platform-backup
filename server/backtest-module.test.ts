@@ -268,7 +268,24 @@ describe("backtestDatabase (SQLite)", () => {
         mode_results: JSON.stringify(modeResults),
         leg_accounting: JSON.stringify(legAccounting),
       },
-      trades: [],
+      trades: [{
+        legId: "m2-leg-1",
+        cycleId: "krm-cycle-1",
+        role: "INDEPENDENT",
+        deploymentMode: "M2",
+        triggerSource: "AUTO",
+        entryReason: "KRM_M2_LOSS_REVERSE_SHORT",
+        entryTime: runTs,
+        exitTime: runTs + 3_600_000,
+        side: "short",
+        entryPrice: 100,
+        exitPrice: 95,
+        size: 1,
+        pnl: 5,
+        pnlPct: 5,
+        exitReason: "KRM_TRAILING_CLOSE",
+        martinLayer: 1,
+      }],
       metrics: { totalReturn: 0.1125 },
       equityCurve: [{ timestamp: runTs, equity: 10_011.25, price: 100 }],
     });
@@ -277,6 +294,14 @@ describe("backtestDatabase (SQLite)", () => {
     expect(JSON.parse(run!.execution_context!)).toEqual(executionContext);
     expect(JSON.parse(run!.mode_results!)).toEqual(modeResults);
     expect(JSON.parse(run!.leg_accounting!)).toEqual(legAccounting);
+    expect(db.getBacktestTrades(runId)[0]).toMatchObject({
+      leg_id: "m2-leg-1",
+      cycle_id: "krm-cycle-1",
+      role: "INDEPENDENT",
+      deployment_mode: "M2",
+      trigger_source: "AUTO",
+      entry_reason: "KRM_M2_LOSS_REVERSE_SHORT",
+    });
     expect(db.getPerformanceMetrics(runId)?.metrics).toEqual({ totalReturn: 0.1125 });
   });
 

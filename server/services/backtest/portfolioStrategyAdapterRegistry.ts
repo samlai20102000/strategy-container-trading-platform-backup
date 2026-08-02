@@ -239,7 +239,7 @@ const ALL_MODES = ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"] as con
 for (const value of [
   { adapterId: "rainbow-20415-portfolio", adapterVersion: 1, semantic: "RAINBOW_20415", minimumClosedBars: 120, evidence: ["rainbow20415/core.ts"] },
   { adapterId: "rainbow-trend-ladder-portfolio", adapterVersion: 1, semantic: "RAINBOW_TREND_LADDER", minimumClosedBars: 120, evidence: ["rainbowTrendLadder/core.ts"] },
-  { adapterId: "kama-rainbow-martin-portfolio", adapterVersion: 2, semantic: "KAMA_RAINBOW_MARTIN", minimumClosedBars: 120, evidence: ["kamaRainbowMartin/core.ts", "kamaRainbowMartin/management.ts"] },
+  { adapterId: "kama-rainbow-martin-portfolio", adapterVersion: 3, semantic: "KAMA_RAINBOW_MARTIN", minimumClosedBars: 120, evidence: ["kamaRainbowMartin/core.ts", "kamaRainbowMartin/management.ts", "krm-three-mode-contract-v2"] },
   { adapterId: "kama-3k-v25-portfolio", adapterVersion: 1, semantic: "KAMA_3K_V25", minimumClosedBars: 120, evidence: ["v25/core.ts"] },
   { adapterId: "kama-3k-v35-portfolio", adapterVersion: 2, semantic: "KAMA_3K_V35", minimumClosedBars: 120, evidence: ["v35/entryGate.ts", "threeModePortfolioKernel.ts"] },
   { adapterId: "kama-3k-v41-portfolio", adapterVersion: 1, semantic: "KAMA_3K_V41", minimumClosedBars: 120, evidence: ["v41/entryConditions.ts", "v40PositionCore"] },

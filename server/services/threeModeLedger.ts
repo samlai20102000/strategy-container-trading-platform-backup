@@ -223,6 +223,27 @@ export async function listActivePositionLegs(input: {
   ));
 }
 
+/**
+ * 查詢某 cycle 是否曾建立指定角色；不限制狀態，確保已關閉的 M2 也會永久消耗該
+ * S1 cycle 的單次開腿資格。
+ */
+export async function hasPositionLegRoleInCycle(input: {
+  userId: number;
+  strategyId: number;
+  cycleId: string;
+  role: NonNullable<InsertPositionLeg["role"]>;
+}): Promise<boolean> {
+  const db = await getDb();
+  if (!db) throw new Error("資料庫不可用");
+  const rows = await db.select({ id: positionLegs.id }).from(positionLegs).where(and(
+    eq(positionLegs.userId, input.userId),
+    eq(positionLegs.strategyId, input.strategyId),
+    eq(positionLegs.cycleId, input.cycleId),
+    eq(positionLegs.role, input.role),
+  )).limit(1);
+  return rows.length > 0;
+}
+
 export async function getOwnedPositionLeg(input: {
   userId: number;
   strategyId: number;

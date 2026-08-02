@@ -170,12 +170,27 @@ function evaluateM2(candidate: CandidateIntent, policy: ExecutionPolicy, runtime
   }
   const existing = legs.find(leg => leg.side === candidate.side);
   if (existing) {
+    if (candidate.roleHint && candidate.roleHint !== existing.role) {
+      return newDecision(candidate, "MULTI_POSITION", {
+        outcome: "RECONCILIATION_REQUIRED",
+        reasonCode: "M2_ROLE_HINT_CONFLICT",
+        targetLegId: existing.legId,
+        targetSide: existing.side,
+        targetRole: existing.role,
+        reduceOnly: false,
+        contextSnapshot: {
+          existingRole: existing.role,
+          requestedRole: candidate.roleHint,
+          failClosed: true,
+        },
+      });
+    }
     return newDecision(candidate, "MULTI_POSITION", {
       outcome: "APPROVED",
       reasonCode: "M2_EXISTING_LEG_ADD",
       targetLegId: existing.legId,
       targetSide: existing.side,
-      targetRole: "INDEPENDENT",
+      targetRole: existing.role,
       approvedQuantity: candidate.requestedQuantity,
       reduceOnly: false,
       contextSnapshot: { openLegCount: legs.length, martinScope: existing.legId },
@@ -197,15 +212,58 @@ function evaluateM2(candidate: CandidateIntent, policy: ExecutionPolicy, runtime
       contextSnapshot: { openLegCount: legs.length, maxOpenLegs: policy.maxOpenLegs },
     });
   }
+  if (candidate.roleHint === "HEDGE") {
+    return newDecision(candidate, "MULTI_POSITION", {
+      outcome: "REJECTED",
+      reasonCode: "M2_HEDGE_ROLE_INVALID",
+      targetSide: candidate.side,
+      reduceOnly: false,
+      contextSnapshot: { requestedRole: candidate.roleHint },
+    });
+  }
+  if (candidate.roleHint === "PRIMARY" && legs.length > 0) {
+    return newDecision(candidate, "MULTI_POSITION", {
+      outcome: "RECONCILIATION_REQUIRED",
+      reasonCode: "M2_PRIMARY_MUST_OPEN_FIRST",
+      targetSide: candidate.side,
+      targetRole: "PRIMARY",
+      reduceOnly: false,
+      contextSnapshot: { openLegCount: legs.length, failClosed: true },
+    });
+  }
+  if (candidate.roleHint === "INDEPENDENT") {
+    const primary = legs.find(leg => leg.role === "PRIMARY");
+    const independent = legs.find(leg => leg.role === "INDEPENDENT");
+    if (!primary || independent || primary.side === candidate.side) {
+      return newDecision(candidate, "MULTI_POSITION", {
+        outcome: "RECONCILIATION_REQUIRED",
+        reasonCode: "M2_INDEPENDENT_REQUIRES_OPPOSITE_PRIMARY",
+        targetSide: candidate.side,
+        targetRole: "INDEPENDENT",
+        reduceOnly: false,
+        contextSnapshot: {
+          primaryLegId: primary?.legId ?? null,
+          primarySide: primary?.side ?? null,
+          independentLegId: independent?.legId ?? null,
+          failClosed: true,
+        },
+      });
+    }
+  }
+  const targetRole: PositionLegRole = candidate.roleHint ?? "INDEPENDENT";
   return newDecision(candidate, "MULTI_POSITION", {
     outcome: "APPROVED",
-    reasonCode: "M2_NEW_INDEPENDENT_LEG",
-    targetLegId: generatedLegId(candidate, "INDEPENDENT"),
+    reasonCode: targetRole === "PRIMARY" ? "M2_NEW_PRIMARY_LEG" : "M2_NEW_INDEPENDENT_LEG",
+    targetLegId: generatedLegId(candidate, targetRole),
     targetSide: candidate.side,
-    targetRole: "INDEPENDENT",
+    targetRole,
     approvedQuantity: candidate.requestedQuantity,
     reduceOnly: false,
-    contextSnapshot: { openLegCount: legs.length, isolation: "LEG_SCOPED" },
+    contextSnapshot: {
+      openLegCount: legs.length,
+      isolation: "LEG_SCOPED",
+      requestedRole: candidate.roleHint ?? null,
+    },
   });
 }
 
@@ -236,6 +294,16 @@ function evaluateH3(
     });
   }
   if (!primary) {
+    if (candidate.roleHint === "HEDGE" || candidate.roleHint === "INDEPENDENT") {
+      return newDecision(candidate, "HEDGE_GUARDED", {
+        outcome: "REJECTED",
+        reasonCode: "H3_PRIMARY_REQUIRED",
+        targetSide: candidate.side,
+        targetRole: candidate.roleHint,
+        reduceOnly: false,
+        contextSnapshot: { requestedRole: candidate.roleHint, failClosed: true },
+      });
+    }
     if (candidate.action === "ADD_LONG" || candidate.action === "ADD_SHORT") {
       return newDecision(candidate, "HEDGE_GUARDED", {
         outcome: "HOLD",
@@ -257,6 +325,17 @@ function evaluateH3(
     });
   }
   if (candidate.side === primary.side) {
+    if (candidate.roleHint && candidate.roleHint !== "PRIMARY") {
+      return newDecision(candidate, "HEDGE_GUARDED", {
+        outcome: "RECONCILIATION_REQUIRED",
+        reasonCode: "H3_ROLE_HINT_CONFLICT",
+        targetLegId: primary.legId,
+        targetSide: primary.side,
+        targetRole: primary.role,
+        reduceOnly: false,
+        contextSnapshot: { requestedRole: candidate.roleHint, existingRole: primary.role, failClosed: true },
+      });
+    }
     if (hedge) {
       return newDecision(candidate, "HEDGE_GUARDED", {
         outcome: "HOLD",
@@ -286,6 +365,17 @@ function evaluateH3(
       targetSide: hedge.side,
       targetRole: "HEDGE",
       contextSnapshot: { primaryLegId: primary.legId },
+    });
+  }
+  if (candidate.roleHint && candidate.roleHint !== "HEDGE") {
+    return newDecision(candidate, "HEDGE_GUARDED", {
+      outcome: "RECONCILIATION_REQUIRED",
+      reasonCode: "H3_ROLE_HINT_CONFLICT",
+      targetLegId: primary.legId,
+      targetSide: primary.side,
+      targetRole: primary.role,
+      reduceOnly: false,
+      contextSnapshot: { requestedRole: candidate.roleHint, expectedRole: "HEDGE", failClosed: true },
     });
   }
 

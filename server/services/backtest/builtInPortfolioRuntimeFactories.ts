@@ -324,10 +324,10 @@ function rainbowTrendLadderFactory(factoryContext: PortfolioStrategyRuntimeFacto
 function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
   const validation = validateKamaRainbowMartinConfig(factoryContext.config);
   const snapshots = calculateKamaRainbowMartinSnapshotSeries(factoryContext.candles, validation.config);
-  return createCoreRuntime(factoryContext, {
-    adapterId: "kama-rainbow-martin-portfolio",
-    adapterVersion: 2,
-    seedState: (leg, previous) => createKamaRainbowMartinRuntimeState({
+  const legStates = new Map<string, StrategyState>();
+  const m2OpenedCycles = new Set<string>();
+  let flatState = createKamaRainbowMartinRuntimeState();
+  const seedState = (leg: BacktestOpenLegSnapshot, previous?: StrategyState) => createKamaRainbowMartinRuntimeState({
       ...projectLegState(leg, previous),
       kamaRainbowMartinRuntime: createKamaRainbowMartinRuntimeMeta({
         entryTimestamp: leg.openedAt,
@@ -338,23 +338,114 @@ function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactor
           value: Math.max(leg.size / Math.max(1, leg.martinLayer + 1), Number.EPSILON),
         },
       }),
-    }),
-    evaluateEntry: context => evaluateKamaRainbowMartinEntry({
-      state: createKamaRainbowMartinRuntimeState(),
+    });
+
+  const evaluateEntry = (context: PortfolioAdapterBarContext) => evaluateKamaRainbowMartinEntry({
+      state: flatState,
       rawConfig: context.config,
       allowedDirection: allowedDirection(context.config),
       precomputedSnapshot: snapshots[context.index],
       lastBarClosed: true,
       configRevision: `backtest:${context.timestamp}`,
-    }) as KamaRainbowMartinEntryDecision,
-    evaluateManagement: (context, _leg, state) => evaluateKamaRainbowMartinManagement({
-      currentPrice: context.candle.close,
-      now: context.timestamp,
-      riskEventKey: `backtest:${context.timestamp}`,
-    }, state, context.config) as KamaRainbowMartinManagementDecision,
-    entryCode: "KRM_ENTRY",
-    managementCode: "KRM_MANAGE",
-  });
+    }) as KamaRainbowMartinEntryDecision;
+
+  return {
+    adapterId: "kama-rainbow-martin-portfolio",
+    adapterVersion: 3,
+    ownsPositionManagement: true,
+    evaluateBar(context) {
+      synchronizeStates(legStates, context.openLegs, seedState);
+      for (const leg of context.openLegs) {
+        if (leg.role === "INDEPENDENT") m2OpenedCycles.add(leg.cycleId);
+      }
+
+      const management: PortfolioAdapterIntent[] = [];
+      for (const leg of context.openLegs) {
+        // H3 是平台管理的保護腿：只可由自動回復／主腿退出／強制風控解除，禁止進入 KRM 馬丁管理。
+        if (leg.role === "HEDGE") continue;
+        const decision = evaluateKamaRainbowMartinManagement({
+          currentPrice: context.candle.close,
+          now: context.timestamp,
+          riskEventKey: `backtest:${context.timestamp}:${leg.legId}`,
+        }, legStates.get(leg.legId)!, context.config) as KamaRainbowMartinManagementDecision;
+        if (decision.nextState) legStates.set(leg.legId, projectLegState(leg, decision.nextState));
+        const intent = makeLegIntent(leg, decision, `KRM_MANAGE_${decision.action.toUpperCase()}`, context);
+        if (intent) management.push({
+          ...intent,
+          roleHint: leg.role,
+          cycleIdHint: leg.cycleId,
+        });
+      }
+
+      const primary = context.openLegs.find(leg => leg.role === "PRIMARY");
+      const independent = context.openLegs.find(leg => leg.role === "INDEPENDENT");
+      const hedge = context.openLegs.find(leg => leg.role === "HEDGE");
+      const entries: PortfolioAdapterIntent[] = [];
+
+      // H3 的保護候選完全由主腿浮虧驅動；mode engine 以 canonical policy 門檻再次核准。
+      if (context.executionMode === "HEDGE_GUARDED" && primary && !hedge) {
+        entries.push({
+          action: primary.sideCode === "LONG" ? "OPEN_SHORT" : "OPEN_LONG",
+          reasonCode: "KRM_H3_AUTO_PROTECTION_CANDIDATE",
+          roleHint: "HEDGE",
+          cycleIdHint: primary.cycleId,
+          quantity: entryQuantity(context),
+          eventKind: "NEW_DIRECTION_OR_HEDGE",
+        });
+        return { management, entries };
+      }
+
+      // 尚有非主腿的孤立狀態時禁止開新 S1，交由對帳／既有腿退出收斂。
+      if (!primary && context.openLegs.length > 0) return { management, entries };
+
+      const entryDecision = evaluateEntry(context);
+      if (entryDecision.nextState) flatState = entryDecision.nextState;
+      const normalizedAction = entryDecision.action.toLowerCase();
+      const side = normalizedAction === "buy" || normalizedAction === "open_long"
+        ? "long"
+        : normalizedAction === "sell" || normalizedAction === "open_short"
+          ? "short"
+          : null;
+      if (!side) return { management, entries };
+
+      const sizingDecision = entryDecision as DecisionLike;
+      const desired = sizingDecision.lotUsdt && sizingDecision.lotUsdt > 0
+        ? sizingDecision.lotUsdt / context.candle.close
+        : orderSizeQuantity(sizingDecision.orderSize, context.candle.close, context.initialCapital, context.baseLotUsdt);
+
+      if (!primary) {
+        const intent = makeEntryIntent(context, side, `KRM_S1_PRIMARY_${side.toUpperCase()}`, desired);
+        if (intent) entries.push({ ...intent, roleHint: "PRIMARY" });
+        return { management, entries };
+      }
+
+      if (context.executionMode !== "MULTI_POSITION"
+          || independent
+          || m2OpenedCycles.has(primary.cycleId)
+          || primary.unrealizedGrossPnl >= 0
+          || (side === "long" ? "LONG" : "SHORT") === primary.sideCode) {
+        return { management, entries };
+      }
+
+      const intent = makeEntryIntent(context, side, `KRM_M2_LOSS_REVERSE_${side.toUpperCase()}`, desired);
+      if (intent) entries.push({
+        ...intent,
+        reasonCode: `KRM_M2_LOSS_REVERSE_${side.toUpperCase()}`,
+        roleHint: "INDEPENDENT",
+        cycleIdHint: primary.cycleId,
+      });
+      return { management, entries };
+    },
+    onBarCommitted(context) {
+      synchronizeStates(legStates, context.afterLegs, seedState);
+      for (const leg of context.afterLegs) {
+        if (leg.role === "INDEPENDENT") m2OpenedCycles.add(leg.cycleId);
+      }
+      if (context.afterLegs.length > context.beforeLegs.length) {
+        flatState = createKamaRainbowMartinRuntimeState();
+      }
+    },
+  };
 }
 
 function v25Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {
@@ -559,7 +650,7 @@ function v70Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): Por
 const BUILT_IN_FACTORIES = [
   ["rainbow-20415-portfolio", 1, rainbow20415Factory],
   ["rainbow-trend-ladder-portfolio", 1, rainbowTrendLadderFactory],
-  ["kama-rainbow-martin-portfolio", 2, kamaRainbowMartinFactory],
+  ["kama-rainbow-martin-portfolio", 3, kamaRainbowMartinFactory],
   ["kama-3k-v25-portfolio", 1, v25Factory],
   ["kama-3k-v35-portfolio", 2, createClassicKamaFactory("kama-3k-v35-portfolio", 2, "V35")],
   ["kama-3k-v41-portfolio", 1, createClassicKamaFactory("kama-3k-v41-portfolio", 1, "V41")],

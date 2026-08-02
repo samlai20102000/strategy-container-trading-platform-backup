@@ -5,6 +5,12 @@
 
 export interface TradeRecord {
   id: number;
+  legId?: string;
+  cycleId?: string;
+  role?: "PRIMARY" | "INDEPENDENT" | "HEDGE";
+  deploymentMode?: "S1" | "M2" | "H3";
+  triggerSource?: "AUTO" | "MANUAL" | "RISK" | "WEBHOOK" | "RECONCILIATION";
+  entryReason?: string;
   entryTime: number;
   exitTime: number;
   side: "long" | "short";

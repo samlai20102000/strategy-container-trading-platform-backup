@@ -23,6 +23,8 @@ export interface ModeSignalInput {
   reason?: string;
   requestedQuantity?: number;
   source?: CandidateIntent["source"];
+  /** 策略語義要求的腿角色；必須由 mode engine 再驗證。 */
+  roleHint?: CandidateIntent["roleHint"];
   /** 同一 runtime 事件重試必須提供相同識別，供 decision ledger 去重。 */
   eventKey?: string;
 }
@@ -92,6 +94,7 @@ export function buildCandidateIntent(
     deploymentId,
     action,
     side: action.includes("LONG") ? "LONG" : action.includes("SHORT") ? "SHORT" : undefined,
+    roleHint: signal.roleHint,
     requestedQuantity: Number.isFinite(requestedQuantity) && requestedQuantity > 0
       ? requestedQuantity
       : undefined,

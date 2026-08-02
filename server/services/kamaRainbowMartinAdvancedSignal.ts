@@ -1,5 +1,5 @@
 import type { PositionLeg, Strategy } from "../../drizzle/schema";
-import { normalizeExecutionModePolicy } from "../../shared/executionModes";
+import { normalizeStrategyExecutionPolicy } from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
 import {
   getKamaRainbowMartinMinimumHistoryBars,
   type KamaRainbowMartinConfig,
@@ -17,7 +17,11 @@ import {
 } from "./kamaRainbowMartinMarketData";
 import { restoreKamaRainbowMartinLegState } from "./kamaRainbowMartinLegState";
 import { saveStrategyState } from "./strategyStateManager";
-import { listActivePositionLegs, updatePositionLegRuntime } from "./threeModeLedger";
+import {
+  hasPositionLegRoleInCycle,
+  listActivePositionLegs,
+  updatePositionLegRuntime,
+} from "./threeModeLedger";
 
 type AdvancedMode = "MULTI_POSITION" | "HEDGE_GUARDED";
 type HoldReason =
@@ -46,6 +50,7 @@ interface LegCandidate {
   layerNum?: number;
   orderSize?: { mode: "quantity" | "usdt"; value: number };
   closeReason?: "HARD_STOP" | "TRAILING_TAKE_PROFIT" | "KILL" | "MANUAL" | "OTHER";
+  unrealizedPnl: number;
 }
 
 function managementAction(action: "add_long" | "add_short" | "close" | "hold"): LegCandidate["action"] {
@@ -66,6 +71,7 @@ function sealedSignal(input: {
   eventKey: string;
   cycleId: string;
   legId?: string;
+  roleHint?: "PRIMARY" | "INDEPENDENT" | "HEDGE";
   barTimestamp?: number;
   layerNum?: number;
   orderSize?: { mode: "quantity" | "usdt"; value: number };
@@ -93,6 +99,7 @@ function sealedSignal(input: {
     kamaRainbowMartinExecutionMode: input.mode,
     kamaRainbowMartinCycleId: input.cycleId,
     kamaRainbowMartinLegId: input.legId,
+    kamaRainbowMartinRoleHint: input.roleHint,
   };
 }
 
@@ -109,6 +116,29 @@ async function evaluateLegs(input: AdvancedSignalInput, legs: PositionLeg[]): Pr
     const avgPrice = Number(leg.avgEntryPrice);
     const unrealizedPnl = (leg.side === "LONG" ? 1 : -1) * (price - avgPrice) * quantity;
     const eventKey = `${quote.exchange}:${quote.symbol}:risk:${quote.capturedAt}:${leg.legId}:${price}`;
+    if (leg.role === "HEDGE") {
+      await updatePositionLegRuntime(leg.legId, {
+        unrealizedPnl: unrealizedPnl.toFixed(8),
+        riskState: {
+          markPrice: price,
+          unrealizedPnl,
+          observedAt: quote.capturedAt,
+          reasonCode: "KRM_H3_PROTECTION_HOLD",
+          martinDisabled: true,
+        },
+      });
+      candidates.push({
+        leg,
+        action: "HOLD",
+        reason: "H3 保護腿由平台解除規則管理，禁止 KRM 馬丁加倉",
+        reasonCode: "KRM_H3_PROTECTION_HOLD",
+        price,
+        observedAt: quote.capturedAt,
+        eventKey,
+        unrealizedPnl,
+      });
+      continue;
+    }
     const decision = evaluateKamaRainbowMartinManagement(
       { currentPrice: price, now: quote.capturedAt, riskEventKey: eventKey },
       restoreKamaRainbowMartinLegState(leg),
@@ -135,6 +165,7 @@ async function evaluateLegs(input: AdvancedSignalInput, legs: PositionLeg[]): Pr
       layerNum: decision.layerNum,
       orderSize: decision.orderSize,
       closeReason: decision.closeReason,
+      unrealizedPnl,
     });
   }
   return candidates;
@@ -166,7 +197,8 @@ function selectH3ProtectionCandidate(
   candidates: LegCandidate[],
 ): ParsedSignal | null {
   if (input.mode !== "HEDGE_GUARDED") return null;
-  const policy = normalizeExecutionModePolicy(
+  const policy = normalizeStrategyExecutionPolicy(
+    input.strategy.strategyKey,
     input.strategy.executionPolicy ?? { mode: input.strategy.executionMode || "SINGLE_EXCLUSIVE" },
   );
   if (policy.mode !== "HEDGE_GUARDED") return null;
@@ -189,6 +221,7 @@ function selectH3ProtectionCandidate(
     price: primary.price,
     eventKey: `${primary.eventKey}:h3-protection:${policy.primaryLossTriggerPct}`,
     cycleId: primary.leg.cycleId,
+    roleHint: "HEDGE",
   });
 }
 
@@ -201,7 +234,8 @@ function selectH3RecoveryCandidate(
   candidates: LegCandidate[],
 ): LegCandidate | null {
   if (input.mode !== "HEDGE_GUARDED") return null;
-  const policy = normalizeExecutionModePolicy(
+  const policy = normalizeStrategyExecutionPolicy(
+    input.strategy.strategyKey,
     input.strategy.executionPolicy ?? { mode: input.strategy.executionMode || "SINGLE_EXCLUSIVE" },
   );
   if (policy.mode !== "HEDGE_GUARDED" || policy.unwindPolicy !== "CLOSE_HEDGE_ON_RECOVERY") {
@@ -281,6 +315,7 @@ export async function generateKamaRainbowMartinAdvancedSignal(
         eventKey: selected.eventKey,
         cycleId: selected.leg.cycleId,
         legId: selected.leg.legId,
+        roleHint: selected.leg.role,
         layerNum: selected.layerNum,
         orderSize: selected.orderSize,
         closeReason: selected.closeReason,
@@ -303,6 +338,7 @@ export async function generateKamaRainbowMartinAdvancedSignal(
         eventKey: recovery.eventKey,
         cycleId: recovery.leg.cycleId,
         legId: recovery.leg.legId,
+        roleHint: "HEDGE",
         closeReason: recovery.closeReason,
       }),
       holdReason: null,
@@ -325,6 +361,7 @@ export async function generateKamaRainbowMartinAdvancedSignal(
         eventKey: selected.eventKey,
         cycleId: selected.leg.cycleId,
         legId: selected.leg.legId,
+        roleHint: selected.leg.role,
         layerNum: selected.layerNum,
         orderSize: selected.orderSize,
         closeReason: selected.closeReason,
@@ -377,6 +414,56 @@ export async function generateKamaRainbowMartinAdvancedSignal(
     };
   }
 
+  const primaryLeg = activeLegs.find(leg => leg.role === "PRIMARY");
+  let roleHint: "PRIMARY" | "INDEPENDENT";
+  let cycleId: string;
+  if (!primaryLeg) {
+    if (activeLegs.length > 0) {
+      return {
+        signal: null,
+        holdReason: {
+          type: "strategy_hold",
+          detail: "Kama 彩虹馬丁偵測到沒有 S1 主腿的孤立腿，禁止開啟新 cycle 並等待 reconciliation",
+        },
+      };
+    }
+    roleHint = "PRIMARY";
+    cycleId = `krm:${input.strategy.id}:${entry.barTimestamp || Date.now()}`;
+  } else {
+    if (input.mode !== "MULTI_POSITION") {
+      return {
+        signal: null,
+        holdReason: { type: "strategy_hold", detail: "Kama 彩虹馬丁 H3 模式不以入場訊號建立第二條策略腿" },
+      };
+    }
+    const primaryCandidate = candidates.find(candidate => candidate.leg.legId === primaryLeg.legId);
+    const oppositeSide = entrySide !== primaryLeg.side;
+    const activeIndependent = activeLegs.some(leg => leg.role === "INDEPENDENT");
+    const alreadyUsed = await hasPositionLegRoleInCycle({
+      userId: input.strategy.userId,
+      strategyId: input.strategy.id,
+      cycleId: primaryLeg.cycleId,
+      role: "INDEPENDENT",
+    });
+    if (!primaryCandidate || primaryCandidate.unrealizedPnl >= 0 || !oppositeSide || activeIndependent || alreadyUsed) {
+      const blocker = !primaryCandidate
+        ? "主腿損益證據缺失"
+        : primaryCandidate.unrealizedPnl >= 0
+          ? "S1 尚未浮虧"
+          : !oppositeSide
+            ? "不是相反入場訊號"
+            : activeIndependent
+              ? "M2 仍在持倉"
+              : "本 S1 cycle 已使用過 M2 資格";
+      return {
+        signal: null,
+        holdReason: { type: "strategy_hold", detail: `Kama 彩虹馬丁 M2 不開腿：${blocker}` },
+      };
+    }
+    roleHint = "INDEPENDENT";
+    cycleId = primaryLeg.cycleId;
+  }
+
   return {
     signal: sealedSignal({
       strategy: input.strategy,
@@ -387,7 +474,8 @@ export async function generateKamaRainbowMartinAdvancedSignal(
       reasonCode: entry.reasonCode,
       price: entry.price,
       eventKey: batch.lastClosedBarIdentity,
-      cycleId: activeLegs[0]?.cycleId ?? `krm:${input.strategy.id}:${entry.barTimestamp || Date.now()}`,
+      cycleId,
+      roleHint,
       barTimestamp: entry.barTimestamp,
     }),
     holdReason: null,

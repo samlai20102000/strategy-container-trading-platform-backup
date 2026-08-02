@@ -156,6 +156,7 @@ export interface ParsedSignal {
   kamaRainbowMartinExecutionMode?: "SINGLE_EXCLUSIVE" | "MULTI_POSITION" | "HEDGE_GUARDED";
   kamaRainbowMartinCycleId?: string;
   kamaRainbowMartinLegId?: string;
+  kamaRainbowMartinRoleHint?: "PRIMARY" | "INDEPENDENT" | "HEDGE";
 }
 
 /**

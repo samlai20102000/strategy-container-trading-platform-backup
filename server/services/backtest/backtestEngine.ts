@@ -251,6 +251,7 @@ function buildLegacyS1LegAccounting(
       ? [{
           ...accounting.openPosition,
           legId: `legacy-s1:${result.runId}:open`,
+          cycleId: `legacy-cycle:${result.runId}:open`,
           role: "PRIMARY",
           sideCode: accounting.openPosition.side === "long" ? "LONG" : "SHORT",
           martinLayer: 0,
