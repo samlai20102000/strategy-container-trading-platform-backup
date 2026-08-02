@@ -3,6 +3,7 @@
 **稽核日期：** 2026-08-02  
 **策略：** `KAMA_RAINBOW_MARTIN_V1`  
 **復原與變更基線：** `f810347d2652ac7bbd86ec81b113c36f84dd4a1a`  
+**已發布穩定 checkpoint：** `9fb39799`
 **執行原則：** 保留可證明穩定的 S1、回測基礎設施與全域 Maker-First；撤銷 KRM M2／H3 的所有執行認證，直到 cycle-close 完整重設計及本地驗證另案完成。
 
 ## 1. 結論
@@ -94,16 +95,24 @@ Production 程式只修改兩個檔案。`strategyRunnerDescriptors.ts` 是 KRM 
 | 歷史回測 | 27,744／27,744 根完成，95／95 筆逐筆一致 |
 | 交易 mutation | 0 |
 | Maker-First 核心 diff | 0 個檔案 |
+| 正式網域 | `https://tradeauto-ny5chipj.manus.space/` 與 `/backtest` 均以 GET 回應 HTTP 200 |
+| 正式站認證守門 | 未登入狀態顯示「登入以繼續」，未嘗試登入或提交任何表單 |
 
 Production build 仍回報既有的大型 JavaScript chunk 警告（主 bundle 約 3.53 MB、gzip 約 714.83 KB）。這是效能優化提醒而非建置失敗，且不由本次兩個 production 檔案變更引入。
 
-## 7. OKX live-auth 測試政策
+## 7. 正式網域唯讀驗證
+
+Checkpoint `9fb39799` 建立後已依專案設定自動發布。正式網域根路徑與 `/backtest` 均以 HTTP GET 回應 200，頁面標題為「策略容器化自動交易平台」；未登入狀態會顯示「登入以繼續」，證明認證守門仍生效。驗證期間未點擊登入、未送出表單、未呼叫任何策略建立／修改 API，也未送出下單、撤單或平倉請求，production 唯讀驗證的交易 mutation 計數為 0。
+
+正式部署的 CSS asset hash 與本地 production build 相同。JavaScript app bundle 由發布環境以其 production 環境變數重新建置，因此 hash 與本地 build 不同；此差異不作為版本失敗判定。Server-side 的 KRM S1-only 權威能力由完整測試、catalog／descriptor 契約及正式 checkpoint 鎖定；未在無登入狀態下繞過認證讀取受保護 catalog。
+
+## 8. OKX live-auth 測試政策
 
 `server/okx-api-auth.test.ts` 原本只要環境中存在憑證便在一般 Vitest 自動呼叫 OKX 私有 API，導致外部網路回傳 HTML／403 時產生非產品回歸的假失敗。它已改為同時要求完整憑證與 `RUN_OKX_LIVE_AUTH_TEST=1` 才執行；預設完整套件會以真正的 `skip` 呈現，不以 `return` 偽裝通過。
 
 此調整沒有修改 OKX adapter 或任何交易邏輯。需要驗證真實連線時，可在受控環境明確 opt-in；本次依零交易 mutation 原則未執行真實帳戶交易操作。
 
-## 8. 凍結後續條件
+## 9. 凍結後續條件
 
 KRM M2／H3 應持續保持凍結，除非未來另案同時具備：版本化 cycle-close 規則、組合回報分母、共同 trailing 狀態機、M2 budget、H3 recovery／unwind、逐腿與 cycle 級會計、舊 artifact 遷移規則、相同 immutable snapshot 的本地重播、零 mutation 守門、Maker-First 不變性及完整回歸證據。僅完成部分條件不得重新把 `supportedModes` 改回 advanced。
 

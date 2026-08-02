@@ -2660,6 +2660,6 @@
 - [x] 保留全域 Maker-First：post-only 開／加／平倉、緊急退出 2 秒×2 後才可 taker、policyRunId、recovery、posSide、reduceOnly、owned size 與架構守門不得修改或弱化
 - [x] 新增 KRM S1-only capability、UI feed、回測／artifact／runtime fail-closed 與 stale artifact 回歸測試；保留全域 Maker-First 架構守門全數通過
 - [x] 執行 KRM S1 27,744 根歷史回測：95／95 筆 identity hash 一致、無 `this.pnl is not a function`、M2／H3 腿為 0、會計差異與交易 mutation 均為 0
-- [ ] 執行完整 Vitest、TypeScript、production build、桌面／手機 UI、敏感交易 mutation=0 與正式網域唯讀驗證
-- [ ] 交付保留／凍結／刪除／拒絕矩陣、測試證據與穩定 checkpoint；不發布任何 M2／H3 cycle-close 新邏輯
+- [x] 執行完整 Vitest、TypeScript、production build、桌面／手機 UI、敏感交易 mutation=0 與正式網域唯讀驗證
+- [x] 交付保留／凍結／刪除／拒絕矩陣、測試證據與穩定 checkpoint；不發布任何 M2／H3 cycle-close 新邏輯
 - [x] 將 `okx-api-auth.test.ts` 的真實 OKX 網路／憑證驗證改為明確 opt-in integration test，讓預設完整 Vitest 可重現且不因外部 HTML／403 回應假失敗，同時保留可手動執行的真實連線驗證
