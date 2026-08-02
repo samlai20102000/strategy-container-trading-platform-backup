@@ -2663,3 +2663,15 @@
 - [x] 執行完整 Vitest、TypeScript、production build、桌面／手機 UI、敏感交易 mutation=0 與正式網域唯讀驗證
 - [x] 交付保留／凍結／刪除／拒絕矩陣、測試證據與穩定 checkpoint；不發布任何 M2／H3 cycle-close 新邏輯
 - [x] 將 `okx-api-auth.test.ts` 的真實 OKX 網路／憑證驗證改為明確 opt-in integration test，讓預設完整 Vitest 可重現且不因外部 HTML／403 回應假失敗，同時保留可手動執行的真實連線驗證
+
+## UI 精簡：移除所有三模式（M2／H3）前端元素
+
+- [x] 移除回測中心 ExecutionModeConfigurator 中的 M2／H3 選項卡與相關說明
+- [ ] 移除部署管理 DeploymentWorkbench 中的 M2／H3 選項卡、相關表單欄位與配置面板
+- [ ] 移除策略工作室中任何 M2／H3 相關的參數輸入
+- [ ] 移除儀表板、參數快照庫、持倉監控等頁面中任何 M2／H3 相關的指標顯示或模式標籤
+- [ ] 確保所有 `ExecutionMode` 相關的 UI 元素只顯示 `SINGLE_EXCLUSIVE` 模式
+- [ ] 執行完整測試、UI 視覺驗證與 checkpoint
+
+## UI 調整
+- [ ] 移除所有 UI 中涉及三模式部署的元素（M2、H3 選項卡、相關表單欄位、配置面板等），讓系統恢復到只顯示 S1 單模式的舊版本外觀。

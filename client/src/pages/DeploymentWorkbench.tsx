@@ -188,15 +188,12 @@ function RecentModeDecisionsPanel({
             );
           })}
         </div>
-      )}
     </section>
   );
 }
 
 const EXECUTION_MODES: ExecutionMode[] = [
   "SINGLE_EXCLUSIVE",
-  "MULTI_POSITION",
-  "HEDGE_GUARDED",
 ];
 
 const ACTIVATION_STATES: DeploymentActivationState[] = [
@@ -381,101 +378,6 @@ function PolicyEditor({
           </Select>
         </div>
       )}
-
-      {policy.mode === "MULTI_POSITION" && (
-        <Alert className="border-violet-500/30 bg-violet-500/10">
-          <Boxes className="h-4 w-4 text-violet-300" />
-          <AlertTitle>M2 固定安全契約</AlertTitle>
-          <AlertDescription>
-            最多兩腿、LONG／SHORT 各一腿，馬丁與出場狀態按 leg 隔離；這些不變量不可由 UI 關閉。
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {policy.mode === "HEDGE_GUARDED" && (
-        <div className="space-y-4 rounded-xl border border-amber-500/25 bg-amber-500/5 p-4">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label>主腿浮虧觸發（%）</Label>
-              <Input
-                type="number"
-                min={0.1}
-                max={100}
-                step={0.1}
-                value={policy.primaryLossTriggerPct}
-                disabled={isKamaRainbowMartin}
-                onChange={event => onChange({
-                  ...policy,
-                  primaryLossTriggerPct: Number(event.target.value),
-                })}
-              />
-              {isKamaRainbowMartin && (
-                <p className="text-xs leading-5 text-amber-200/80">
-                  KRM canonical 契約固定為 {KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT}%：先於預設 5% 硬止損啟動保護腿。
-                </p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label>對沖比例</Label>
-              <Input
-                type="number"
-                min={0.01}
-                max={1}
-                step={0.01}
-                value={policy.hedgeRatio}
-                onChange={event => onChange({ ...policy, hedgeRatio: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>最大對沖比例</Label>
-              <Input
-                type="number"
-                min={0.01}
-                max={1}
-                step={0.01}
-                value={policy.maxHedgeRatio}
-                onChange={event => onChange({ ...policy, maxHedgeRatio: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>對沖冷卻（秒）</Label>
-              <Input
-                type="number"
-                min={0}
-                max={86400}
-                value={policy.hedgeCooldownSeconds}
-                onChange={event => onChange({ ...policy, hedgeCooldownSeconds: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>最短持有（秒）</Label>
-              <Input
-                type="number"
-                min={0}
-                max={86400}
-                value={policy.minimumHedgeHoldSeconds}
-                onChange={event => onChange({ ...policy, minimumHedgeHoldSeconds: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>解除策略</Label>
-              <Select
-                value={policy.unwindPolicy}
-                onValueChange={value => onChange({ ...policy, unwindPolicy: value } as ExecutionPolicy)}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="CLOSE_LOSER_KEEP_WINNER">平虧損腿、保留獲利腿</SelectItem>
-                  <SelectItem value="CLOSE_HEDGE_ON_RECOVERY">主腿恢復時平保護腿</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <p className="text-xs leading-5 text-amber-200/80">
-            H3 必須同時滿足主腿浮虧門檻與反向信號。保護腿馬丁固定停用，backend 會再次正規化並驗證。
-          </p>
-        </div>
-      )}
     </div>
   );
 }
@@ -643,7 +545,7 @@ export default function DeploymentWorkbench() {
   const [pendingAction, setPendingAction] = useState<WorkbenchLifecycleAction | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
-  const [modeOpen, setModeOpen] = useState(false);
+
   const [policyOpen, setPolicyOpen] = useState(false);
   const [quickCreatedId, setQuickCreatedId] = useState<number | null>(null);
   const [quickSymbolSpec, setQuickSymbolSpec] = useState<{
@@ -974,22 +876,7 @@ export default function DeploymentWorkbench() {
     onError: mutationError,
   });
 
-  const [targetMode, setTargetMode] = useState<ExecutionMode>(activeMode);
-  const [targetPolicy, setTargetPolicy] = useState<ExecutionPolicy>(() => (
-    createDefaultStrategyExecutionPolicy(undefined, activeMode)
-  ));
-  const openModeDialog = () => {
-    const nextMode = activeMode === "SINGLE_EXCLUSIVE" ? "MULTI_POSITION" : "SINGLE_EXCLUSIVE";
-    setTargetMode(nextMode);
-    setTargetPolicy(createDefaultStrategyExecutionPolicy(activeDeployment?.strategyKey, nextMode));
-    setModeOpen(true);
-  };
-  const switchModeMutation = trpc.deployments.switchMode.useMutation({
-    onSuccess: result => {
-      setLatestReport(parsePreflightReport(result.report));
-      toast.success("模式切換 preflight 通過，policy 已更新且部署保持停用");
-      setModeOpen(false);
-      refreshDeployment();
+
     },
     onError: mutationError,
   });
@@ -1009,8 +896,8 @@ export default function DeploymentWorkbench() {
   });
 
   return (
-    <DashboardLayout>
-      <div className="mx-auto max-w-[1800px] space-y-6 p-4 sm:p-6 lg:p-8">
+  );
+}    <div className="mx-auto max-w-[1800px] space-y-6 p-4 sm:p-6 lg:p-8">
         <section className="relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.12),transparent_36%),linear-gradient(135deg,rgba(15,23,42,0.94),rgba(9,14,28,0.96))] p-5 shadow-2xl shadow-black/10 sm:p-7">
           <div className="absolute inset-y-0 right-0 w-px bg-gradient-to-b from-transparent via-cyan-300/40 to-transparent" />
           <div className="relative flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
@@ -1018,9 +905,9 @@ export default function DeploymentWorkbench() {
               <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300/90">
                 <LockKeyhole className="h-4 w-4" /> Canonical Deployment Control Plane
               </div>
-              <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">三模式部署工作台</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">部署工作台</h1>
               <p className="mt-3 text-sm leading-6 text-slate-300 sm:text-base">
-                以 revision、preflight 與 transition journal 操作 S1／M2／H3。建立、複製與模式切換皆保持停用，只有通過最新唯讀 Gate 後才能明確啟用。
+                以 revision、preflight 與 transition journal 操作 S1 模式。建立、複製與模式切換皆保持停用，只有通過最新唯讀 Gate 後才能明確啟用。
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1078,8 +965,9 @@ export default function DeploymentWorkbench() {
                 </div>
               </CardContent>
             </Card>
-          ))}
-        </section>
+          })}
+        </div>
+    </section>
 
         <section className="grid min-h-[720px] gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
           <Card className="overflow-hidden border-border/70 bg-card/70">
@@ -1618,22 +1506,7 @@ export default function DeploymentWorkbench() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={modeOpen} onOpenChange={setModeOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[800px]">
-          <DialogHeader><DialogTitle>切換 execution mode</DialogTitle><DialogDescription>Backend 會要求 flat、無 pending intents／reconciliation／hedge relationship／reservation，並以目標 policy 執行 fresh preflight。</DialogDescription></DialogHeader>
-          <div className="space-y-5">
-            <div className="grid gap-3 sm:grid-cols-3">
-              {EXECUTION_MODES.map(mode => {
-                const meta = DEPLOYMENT_MODE_META[mode];
-                return <button key={mode} type="button" onClick={() => { setTargetMode(mode); setTargetPolicy(createDefaultStrategyExecutionPolicy(activeDeployment?.strategyKey, mode)); }} className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] active:scale-[0.98] ${targetMode === mode ? meta.accent : "border-border bg-background/30"}`}><span className="font-mono text-lg font-bold">{meta.code}</span><p className="mt-1 font-semibold">{meta.label}</p><p className="mt-1 text-xs leading-5 opacity-80">{meta.shortDescription}</p></button>;
-              })}
-            </div>
-            <PolicyEditor policy={targetPolicy} strategyKey={activeDeployment?.strategyKey} onChange={setTargetPolicy} />
-            <Alert className="border-amber-500/25 bg-amber-500/8"><TimerReset className="h-4 w-4 text-amber-300" /><AlertTitle>原子模式切換</AlertTitle><AlertDescription>目標 policy 預檢、revision 更新與 READY_DISABLED 會在同一 optimistic-lock transaction 提交；不會直接進入 ACTIVE。</AlertDescription></Alert>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setModeOpen(false)}>取消</Button><Button disabled={!activeDeployment || targetMode === activeMode || switchModeMutation.isPending} onClick={() => activeDeployment && switchModeMutation.mutate({ deploymentId: activeDeployment.id, expectedRevision: activeRevision, transitionKey: buildDeploymentTransitionKey("switch-mode", activeDeployment.id), executionMode: targetMode, executionPolicy: targetPolicy as unknown as Record<string, unknown> })}>{switchModeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}執行 flat Gate 與模式切換</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </DashboardLayout>
+
   );
 }
+
