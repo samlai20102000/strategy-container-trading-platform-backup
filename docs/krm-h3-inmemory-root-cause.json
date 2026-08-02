@@ -1,0 +1,232 @@
+{
+  "generatedAt": "2026-08-02T09:28:52.541Z",
+  "safety": "READ_ONLY_IN_MEMORY_REPLAY_NO_JOB_PERSISTENCE_NO_EXCHANGE_CALL",
+  "sourceJobs": {
+    "s1": "job_1785654375277_2786d336",
+    "advanced": "job_1785654377496_829afe74"
+  },
+  "advancedMode": "HEDGE_GUARDED",
+  "replayParity": {
+    "candleCount": 27744,
+    "persistedTradeCount": 3,
+    "replayTradeCount": 3,
+    "persistedRejectedDecisionCount": 6,
+    "replayRejectedDecisionCount": 6,
+    "persistedRealizedPnl": -440.16,
+    "replayRealizedPnl": -440.16,
+    "persistedOpenPositionCount": 1,
+    "replayOpenPositionCount": 1
+  },
+  "decisions": {
+    "total": 7412,
+    "outcomes": {
+      "APPROVED": 10,
+      "HOLD": 7393,
+      "REJECTED": 6,
+      "CLOSE_ONLY": 3
+    },
+    "nonApprovedCount": 7399,
+    "nonApprovedReasonCodes": {
+      "H3_LOSS_THRESHOLD_NOT_MET": 7386,
+      "RISK_MARGIN_USAGE_LIMIT": 6,
+      "H3_ACTIVE_RATIO_LOCKED": 7
+    },
+    "nonApprovedCandidateActions": {
+      "OPEN_SHORT": 7386,
+      "ADD_LONG": 13
+    },
+    "outcomeReasonPairs": {
+      "APPROVED:H3_NEW_PRIMARY": 2,
+      "HOLD:H3_LOSS_THRESHOLD_NOT_MET": 7386,
+      "APPROVED:H3_PRIMARY_ADD": 6,
+      "REJECTED:RISK_MARGIN_USAGE_LIMIT": 6,
+      "APPROVED:H3_HEDGE_ARMED": 2,
+      "HOLD:H3_ACTIVE_RATIO_LOCKED": 7,
+      "CLOSE_ONLY:LEG_SCOPED_CLOSE": 3
+    }
+  },
+  "cycleOccupancy": {
+    "intervals": [
+      {
+        "cycleId": "btcycle:1433034275:1735783200000:1",
+        "role": "PRIMARY",
+        "openedAt": 1735783200000,
+        "closedAt": 1740594600000
+      },
+      {
+        "cycleId": "btcycle:1433034275:1735783200000:1",
+        "role": "HEDGE",
+        "openedAt": 1740578400000,
+        "closedAt": 1752183000000
+      },
+      {
+        "cycleId": "btcycle:1433034275:1752184800000:2",
+        "role": "PRIMARY",
+        "openedAt": 1752184800000,
+        "closedAt": 1760695200000
+      },
+      {
+        "cycleId": "btcycle:1433034275:1752184800000:2",
+        "role": "HEDGE",
+        "openedAt": 1760688000000,
+        "closedAt": null
+      }
+    ],
+    "cycles": [
+      {
+        "cycleId": "btcycle:1433034275:1752184800000:2",
+        "roles": [
+          "HEDGE",
+          "PRIMARY"
+        ],
+        "openedAt": 1752184800000,
+        "closedAt": null,
+        "occupiedDays": 387.083,
+        "hasOpenLeg": true
+      },
+      {
+        "cycleId": "btcycle:1433034275:1735783200000:1",
+        "roles": [
+          "HEDGE",
+          "PRIMARY"
+        ],
+        "openedAt": 1735783200000,
+        "closedAt": 1752183000000,
+        "occupiedDays": 189.813,
+        "hasOpenLeg": false
+      }
+    ],
+    "suppressedBaselineS1": {
+      "baselineEntryCount": 95,
+      "m2PrimaryEntryCount": 2,
+      "overlappingEntryCount": 1,
+      "suppressedEntryCount": 94,
+      "blockedByAnyOpenLeg": 94,
+      "blockedByPrimary": 23,
+      "blockedByAuxiliaryOnly": 71,
+      "outsideObservedOccupancy": 0,
+      "firstTenSuppressed": [
+        {
+          "timestamp": 1736253000000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1736361000000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1736476200000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1736874000000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1737039600000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1737356400000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1737473400000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1737662400000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1738317600000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        },
+        {
+          "timestamp": 1738587600000,
+          "activeCycleIds": [
+            "btcycle:1433034275:1735783200000:1"
+          ],
+          "activeRoles": [
+            "PRIMARY"
+          ],
+          "blockedByAnyOpenLeg": true,
+          "blockedByPrimary": true,
+          "blockedByAuxiliaryOnly": false
+        }
+      ]
+    }
+  }
+}

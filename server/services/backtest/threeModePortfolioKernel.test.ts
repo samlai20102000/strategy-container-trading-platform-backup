@@ -170,6 +170,48 @@ describe("ThreeModePortfolioKernel", () => {
     expect(result.accounting.reconciled).toBe(true);
   });
 
+  it("characterization：KRM M2 關 PRIMARY 目前不會擴張成同 cycle 共同平倉", () => {
+    const policy = createDefaultStrategyExecutionPolicy(
+      KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+      "MULTI_POSITION",
+    );
+    const portfolio = kernel(policy);
+
+    portfolio.processBar({ timestamp: 1_000, price: 100 }, [
+      candidate("krm-cycle-primary", 1_000, "OPEN_LONG", 1, { roleHint: "PRIMARY" }),
+    ]);
+    const primary = portfolio.snapshotOpenLegs(100).find(leg => leg.role === "PRIMARY");
+    portfolio.processBar({ timestamp: 2_000, price: 95 }, [
+      candidate("krm-cycle-auxiliary", 2_000, "OPEN_SHORT", 1, {
+        roleHint: "INDEPENDENT",
+        cycleIdHint: primary?.cycleId,
+      }),
+    ]);
+    portfolio.processBar({ timestamp: 3_000, price: 97 }, [
+      candidate("krm-cycle-primary-close", 3_000, "CLOSE_LONG", 1, {
+        roleHint: "PRIMARY",
+        cycleIdHint: primary?.cycleId,
+      }),
+    ]);
+
+    const result = portfolio.finalize("mark_to_market", 4_000, 97);
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0]).toMatchObject({
+      role: "PRIMARY",
+      cycleId: primary?.cycleId,
+      exitTime: 3_000,
+    });
+    expect(result.legAccounting.openLegs).toHaveLength(1);
+    expect(result.legAccounting.openLegs[0]).toMatchObject({
+      role: "INDEPENDENT",
+      cycleId: primary?.cycleId,
+    });
+    expect(result.decisions.find(item => item.candidateId === "krm-cycle-primary-close")).toMatchObject({
+      outcome: "CLOSE_ONLY",
+      reasonCode: "LEG_SCOPED_CLOSE",
+    });
+  });
+
   it("KRM M2 與 S1 共用同一策略 gross／margin 資金上限，不為獨立腿重置本金", () => {
     const basePolicy = createDefaultStrategyExecutionPolicy(
       KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
