@@ -885,7 +885,7 @@ export const backtestRouter = router({
             stopLossPct: String(kamaRainbowMartinConfig.hardStopLossPct),
             takeProfitPct: "0",
             kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
-            reentryEnabled: false,
+            reentryEnabled: kamaRainbowMartinConfig.reentryEnabled,
           } : {}),
         })
         .where(eq(strategies.id, input.targetStrategyId));
@@ -1201,7 +1201,7 @@ export const backtestRouter = router({
             stopLossPct: String(kamaRainbowMartinConfig.hardStopLossPct),
             takeProfitPct: "0",
             kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
-            reentryEnabled: false,
+            reentryEnabled: kamaRainbowMartinConfig.reentryEnabled,
           } : {}),
         })
         .where(eq(strategies.id, input.targetInstanceId));

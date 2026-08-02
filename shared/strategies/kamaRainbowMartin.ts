@@ -68,6 +68,8 @@ export interface KamaRainbowMartinLayerProtection {
 export interface KamaRainbowMartinConfig {
   version: typeof KAMA_RAINBOW_MARTIN_CONFIG_VERSION;
   timeframe: KamaRainbowMartinTimeframe;
+  /** Allow a new base entry after this strategy has fully closed its previous leg. */
+  reentryEnabled: boolean;
   kamaLines: KamaRainbowMartinLineConfig[];
   /** Number of add layers, excluding the base fill; derived from layerConfigs in layered mode. */
   maxLayers: number;
@@ -120,6 +122,7 @@ const DEFAULT_LINES: readonly KamaRainbowMartinLineConfig[] = [
 export const KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG: Readonly<KamaRainbowMartinConfig> = {
   version: KAMA_RAINBOW_MARTIN_CONFIG_VERSION,
   timeframe: "M30",
+  reentryEnabled: false,
   kamaLines: DEFAULT_LINES.map(line => ({ ...line })),
   maxLayers: 11,
   multiplier: 1.5,
@@ -310,6 +313,10 @@ export function normalizeKamaRainbowMartinConfig(raw: unknown): KamaRainbowMarti
   return {
     version: KAMA_RAINBOW_MARTIN_CONFIG_VERSION,
     timeframe: toTimeframe(firstDefined(input.timeframe, input.entryTimeframe), defaults.timeframe),
+    reentryEnabled: toBoolean(
+      firstDefined(input.reentryEnabled, input.autoReentryEnabled, input.autoReentry, input.Reentry_Enabled),
+      defaults.reentryEnabled,
+    ),
     kamaLines: parseLines(firstDefined(input.kamaLines, input.lines), defaults.kamaLines),
     maxLayers,
     multiplier: toNumber(firstDefined(input.multiplier, input.martinMultiplier), defaults.multiplier),

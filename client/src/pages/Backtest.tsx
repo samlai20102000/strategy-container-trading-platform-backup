@@ -90,7 +90,6 @@ import {
   validateKamaRainbowMartinConfig,
   type KamaRainbowMartinTimeframe,
 } from "@shared/strategies/kamaRainbowMartin";
-import ExecutionModeConfigurator from "@/components/ExecutionModeConfigurator";
 import type { ExecutionMode, ExecutionPolicy, StrategyModeCapabilities } from "@shared/executionModes";
 import {
   createDefaultStrategyExecutionPolicy,
@@ -1161,14 +1160,6 @@ export default function Backtest() {
                 </div>
               )}
             </div>
-
-            <ExecutionModeConfigurator
-              strategyKey={strategyKey}
-              value={executionPolicy}
-              onChange={setExecutionPolicy}
-              capabilities={selectedModeCapabilities}
-              context="backtest"
-            />
 
             <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/[0.04] p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">

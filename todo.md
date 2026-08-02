@@ -2665,11 +2665,23 @@
 - [x] 將 `okx-api-auth.test.ts` 的真實 OKX 網路／憑證驗證改為明確 opt-in integration test，讓預設完整 Vitest 可重現且不因外部 HTML／403 回應假失敗，同時保留可手動執行的真實連線驗證
 
 ## 2026-08-02 S1 單模式舊版 UI 恢復
-
 - [x] 盤點所有前端可見的 M2／H3、三模式與模式切換入口，建立最小修改清單
 - [x] 移除部署工作台中的 M2／H3 選項、相關表單欄位、配置面板與模式切換操作，只保留 S1
 - [x] 移除回測、策略、快照、持倉與導覽等其他 UI 中的 M2／H3 可見元素，只保留 S1
 - [x] 保留後端能力、防呆、Maker-First、交易生命週期與其他既有功能，不修改交易資料或觸發交易 mutation
 - [x] 新增或更新 Vitest，鎖定 S1-only UI 且防止 M2／H3 元素回歸
 - [x] 完成 TypeScript、受影響與完整 Vitest、production build、桌面與手機視覺驗證
+- [x] 核對 TODO、保存 checkpoint 並確認新版本已自動發布
+
+## 2026-08-02 KAMA 彩虹馬丁自動重新入市與 S1 UI 隱藏
+- [x] 盤點 Kama 彩虹馬丁 canonical config、回測／實盤入場、平倉後狀態、快照、新建／編輯／導入策略與 UI 資料流
+- [x] 在共用 Kama 彩虹馬丁配置加入向後相容的 `reentryEnabled`，預設關閉，且舊快照／舊策略安全正規化為 `false`
+- [x] 在回測中心 Kama 彩虹馬丁設定加入「自動重新入市」開關與明確說明；其他策略不得顯示此開關
+- [x] 讓回測與實盤在平倉後依 `reentryEnabled` 決定是否允許新一輪入場；啟用時仍須重新滿足當下入場條件且不得繞過既有去重、風控、Maker-First 與交易生命週期
+- [x] 將 `reentryEnabled` 貫穿參數快照保存／套用／匯入、策略新增／編輯／複製與 KRM runtime hydrate，禁止硬編碼遺失
+- [x] 從全部回測策略配置 UI 隱藏「S1 單模式與風控政策／S1 單倉獨占」區塊，但保留 canonical S1 profile、Preflight 與底層風控預設不變
+- [x] 從側邊欄移除「S1 部署／部署工作台」入口，但保留既有部署後端、路由與其他功能不變
+- [x] 從策略交易全部策略卡移除 S1 profile 摘要與「建立 S1 停用部署草稿」入口，確保圖片一的 S1 部署 UI 無一般使用者入口，但保留部署頁路由、procedure 與生命週期邏輯不變
+- [x] 新增 Vitest 契約與整合回歸：開啟可平倉後重入、關閉不再重入、條件不符不重入、舊快照預設關閉、所有快照／策略映射保真、S1 UI 隱藏而底層 profile 不變
+- [x] 執行 TypeScript、受影響與完整 Vitest、production build、桌面／手機視覺與 console／network 驗收；全程不觸發實盤下單、撤單或平倉
 - [x] 核對 TODO、保存 checkpoint 並確認新版本已自動發布

@@ -24,6 +24,7 @@ export type KamaRainbowMartinReasonCode =
   | "KRM_POSITION_MANAGEMENT"
   | "KRM_BAR_ALREADY_PROCESSED"
   | "KRM_DIRECTION_BLOCKED"
+  | "KRM_REENTRY_DISABLED"
   | "KRM_KILLED";
 
 export interface KamaRainbowMartinLineObservation {
@@ -87,6 +88,8 @@ export interface KamaRainbowMartinRuntimeMeta {
   lastActionTimestamp: number;
   lastActionSignature: string;
   lastCloseReason: string | null;
+  /** A full close occurred and the current closed bar may be evaluated once for immediate re-entry. */
+  reentryPending: boolean;
   lastProcessedBarKey: string;
   lastProcessedBarTimestamp: number;
   lastDecisionCode: KamaRainbowMartinReasonCode;
@@ -310,6 +313,7 @@ export function createKamaRainbowMartinRuntimeMeta(
     lastActionTimestamp: 0,
     lastActionSignature: "",
     lastCloseReason: null,
+    reentryPending: false,
     lastProcessedBarKey: "",
     lastProcessedBarTimestamp: 0,
     lastDecisionCode: "KRM_DATA_NOT_READY",
@@ -361,6 +365,9 @@ function withObservation(
 ): KamaRainbowMartinRuntimeState {
   state.kamaRainbowMartinRuntime = createKamaRainbowMartinRuntimeMeta({
     ...state.kamaRainbowMartinRuntime,
+    reentryPending: processedBarKey
+      ? false
+      : state.kamaRainbowMartinRuntime?.reentryPending ?? false,
     lastProcessedBarKey: processedBarKey ?? state.kamaRainbowMartinRuntime?.lastProcessedBarKey ?? "",
     lastProcessedBarTimestamp: processedBarKey
       ? snapshot.barTimestamp
@@ -461,7 +468,19 @@ export function evaluateKamaRainbowMartinEntry(
 
   const configRevision = input.configRevision?.trim() || config.version;
   const barKey = `${configRevision}:${calculated.barTimestamp}`;
-  if (state.kamaRainbowMartinRuntime?.lastProcessedBarKey === barKey) {
+  const runtime = createKamaRainbowMartinRuntimeMeta(state.kamaRainbowMartinRuntime);
+  if (runtime.lastCloseReason && !config.reentryEnabled) {
+    return makeDecision(
+      "HOLD",
+      "KRM_REENTRY_DISABLED",
+      `上一輪已平倉（${runtime.lastCloseReason}）；自動重新入市未啟用，停止新增底倉`,
+      config,
+      calculated,
+      state,
+    );
+  }
+  const immediateReentry = runtime.reentryPending && config.reentryEnabled;
+  if (runtime.lastProcessedBarKey === barKey && !immediateReentry) {
     return makeDecision(
       "HOLD",
       "KRM_BAR_ALREADY_PROCESSED",

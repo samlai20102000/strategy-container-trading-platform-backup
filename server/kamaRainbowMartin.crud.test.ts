@@ -74,7 +74,10 @@ function validCreateInput() {
     maxMartinLevel: 99,
     martinSpacingPct: 99,
     strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
-    kamaRainbowMartinConfig: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+    kamaRainbowMartinConfig: {
+      ...KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+      reentryEnabled: true,
+    },
   };
 }
 
@@ -116,7 +119,7 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
     });
   });
 
-  it("建立時只寫入 KRM 私有 canonical config 並強制 disabled", async () => {
+  it("建立時只寫入 KRM 私有 canonical config、保存自動重入並強制策略 disabled", async () => {
     const result = await appRouter.createCaller(createContext()).strategies.create(validCreateInput());
 
     expect(mocks.getApiKeyById).toHaveBeenCalledWith(7, 41);
@@ -138,10 +141,10 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
       maxMartinLevel: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.maxLayers,
       martinSpacingPct: String(KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.gapPct),
       kLinePeriod: 30,
-      reentryEnabled: false,
+      reentryEnabled: true,
     });
     expect(payload.martinState[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]).toEqual(
-      KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+      { ...KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG, reentryEnabled: true },
     );
     expect(payload.martinState.__rainbowTrendLadderConfig).toBeUndefined();
     expect(result).toMatchObject({
@@ -169,6 +172,7 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
       gapPct: 2.5,
       multiplier: 1.8,
       maxLayers: 6,
+      reentryEnabled: true,
       layerConfigs: [
         { layerStart: 1, layerEnd: 2, multiplier: 2.25, gapPct: 0.75 },
         { layerStart: 3, layerEnd: 6, multiplier: 1.2, gapPct: 1.4 },
@@ -191,7 +195,7 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
       maxMartinLevel: nextConfig.maxLayers,
       martinSpacingPct: "0.75",
       kLinePeriod: 30,
-      reentryEnabled: false,
+      reentryEnabled: true,
     });
     expect(data.martinState.runtimeMarker).toBe("keep-me");
     expect(data.martinState[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]).toEqual(nextConfig);

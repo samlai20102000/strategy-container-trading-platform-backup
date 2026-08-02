@@ -41,22 +41,12 @@ import {
 } from "@/components/V40EntryGatePanel";
 import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
 import { trpc } from "@/lib/trpc";
-import ExecutionProfileSummary from "@/components/ExecutionProfileSummary";
-import {
-  DEPLOYMENT_MODE_META,
-  DEPLOYMENT_SAFETY_COPY,
-} from "@/lib/deploymentWorkbench";
 import {
   getStrategyApiIdentity,
   type SafeApiAccountSummary,
   type StrategyApiBindingSummary,
 } from "@/lib/strategyApiIdentity";
-import {
-  EXECUTION_MODES,
-  type DeploymentActivationState,
-  type ExecutionMode,
-} from "@shared/executionModes";
-import { createDefaultStrategyExecutionPolicy } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
+import { type DeploymentActivationState } from "@shared/executionModes";
 import {
   V25_STRATEGY_KEY,
   createV25DefaultConfig,
@@ -139,12 +129,6 @@ interface MartinLayerPreviewRow {
   avgPrice: number;
   triggerPrice: number;
   lotSize: number;
-}
-
-function strategyExecutionMode(value: unknown): ExecutionMode {
-  return EXECUTION_MODES.includes(value as ExecutionMode)
-    ? value as ExecutionMode
-    : "SINGLE_EXCLUSIVE";
 }
 
 function strategyActivationState(value: unknown): DeploymentActivationState {
@@ -387,9 +371,13 @@ function StrategiesContent() {
   const [expandedMartinStrategyIds, setExpandedMartinStrategyIds] = useState<Set<number>>(() => new Set());
   const [refreshingMartinStrategyId, setRefreshingMartinStrategyId] = useState<number | null>(null);
   const strategyPageSize = 8;
+  const legacyStrategies = useMemo(
+    () => (strategies ?? []).filter(strategy => !isCanonicalDeploymentRow(strategy)),
+    [strategies],
+  );
   const filteredStrategies = useMemo(() => {
     const query = strategySearch.trim().toLowerCase();
-    return (strategies ?? []).filter((strategy) => {
+    return legacyStrategies.filter((strategy) => {
       const isMartingale = strategy.martingaleLayerCapability?.isMartingale === true;
       const filterMatch = strategyFilter === "all"
         || (strategyFilter === "martingale" && isMartingale)
@@ -400,7 +388,7 @@ function StrategiesContent() {
       if (!query) return true;
       return `${strategy.name} ${strategy.symbol} ${strategy.exchange}`.toLowerCase().includes(query);
     });
-  }, [strategies, strategyFilter, strategySearch]);
+  }, [legacyStrategies, strategyFilter, strategySearch]);
   const strategyPageCount = Math.max(1, Math.ceil(filteredStrategies.length / strategyPageSize));
   useEffect(() => {
     setStrategyPage(page => Math.min(page, strategyPageCount));
@@ -411,13 +399,6 @@ function StrategiesContent() {
   const visibleStrategies = useMemo(
     () => filteredStrategies.slice((strategyPage - 1) * strategyPageSize, strategyPage * strategyPageSize),
     [filteredStrategies, strategyPage],
-  );
-  const canonicalActionRequired = useMemo(
-    () => (strategies ?? []).filter(strategy =>
-      isCanonicalDeploymentRow(strategy)
-      && ["DRAINING", "BLOCKED", "PREFLIGHT_FAILED"].includes(String((strategy as any).activationState ?? "")),
-    ),
-    [strategies],
   );
   const visibleMartingaleStrategyIds = useMemo(
     () => visibleStrategies
@@ -752,61 +733,6 @@ function StrategiesContent() {
     onError: (e) => toast.error(`重置失敗：${e.message}`),
   });
 
-  const createDeploymentDraftMutation = trpc.deployments.create.useMutation({
-    onSuccess: (deployment) => {
-      toast.success("停用部署草稿已建立", {
-        description: DEPLOYMENT_SAFETY_COPY.defaultDisabled,
-      });
-      void utils.strategies.list.invalidate();
-      window.location.assign(`/deployments?deploymentId=${deployment.id}`);
-    },
-    onError: (error) => toast.error(`建立部署草稿失敗：${error.message}`),
-  });
-
-  const createDisabledDraftFromStrategy = (
-    strategy: NonNullable<typeof strategies>[number],
-  ) => {
-    const executionMode: ExecutionMode = "SINGLE_EXCLUSIVE";
-    const strategyKey = String((strategy as any).strategyKey ?? "").trim();
-    if (!strategyKey || strategyKey === "none") {
-      toast.error("此策略沒有可封印的 registry strategyKey，無法建立 canonical 部署草稿。");
-      return;
-    }
-    const modeMeta = DEPLOYMENT_MODE_META[executionMode];
-    if (!confirm(
-      `以「${strategy.name}」建立 ${modeMeta.code} · ${modeMeta.label} 的停用部署草稿？\n\n建立後不會送單、不會自動啟用；必須到部署工作台重新執行唯讀 Preflight 並明確啟用。`,
-    )) return;
-
-    createDeploymentDraftMutation.mutate({
-      name: `${strategy.name} · ${modeMeta.code} 草稿`.slice(0, 100),
-      description: `由策略 #${strategy.id} 建立的 canonical ${modeMeta.code} 停用部署草稿。`,
-      apiKeyId: strategy.apiKeyId,
-      symbol: strategy.symbol,
-      strategyKey,
-      executionMode,
-      executionPolicy: createDefaultStrategyExecutionPolicy(strategyKey, executionMode) as unknown as Record<string, unknown>,
-      sourceStrategyId: strategy.id,
-      positionSize: Math.max(0.00000001, Number(strategy.positionSize) || 0.01),
-      positionMode: (strategy as any).positionMode === "quantity" ? "quantity" : "usdt",
-      leverage: Math.max(1, Math.round(Number(strategy.leverage) || 1)),
-      direction: ["long", "short", "both"].includes(String(strategy.direction))
-        ? strategy.direction as "long" | "short" | "both"
-        : "both",
-      orderType: strategy.orderType === "limit" ? "limit" : "market",
-      maxPositionPct: Math.max(0, Number(strategy.maxPositionPct) || 0),
-      stopLossPct: Math.max(0, Number(strategy.stopLossPct) || 0),
-      takeProfitPct: Math.max(0, Number(strategy.takeProfitPct) || 0),
-      maxDailyLoss: Math.max(0, Number(strategy.maxDailyLoss) || 0),
-      martinMultiplier: Math.max(1, Number((strategy as any).martinMultiplier) || 1),
-      maxMartinLevel: Math.max(1, Math.round(Number((strategy as any).maxMartinLevel) || 1)),
-      martinSpacingPct: Math.max(0, Number((strategy as any).martinSpacingPct) || 0),
-      reentryEnabled: (strategy as any).reentryEnabled !== false,
-      reentryCooldownBars: Math.max(0, Math.round(Number((strategy as any).reentryCooldownBars) || 0)),
-      tradeMode: (strategy as any).tradeMode === "auto" ? "auto" : "webhook",
-      kLinePeriod: Math.max(1, Math.round(Number((strategy as any).kLinePeriod) || 15)),
-    });
-  };
-
   const openCreate = () => {
     setSnapshotImportSource(null);
     setForm({ ...emptyForm, apiKeyId: apiKeys?.[0] ? String(apiKeys[0].id) : "" });
@@ -885,7 +811,7 @@ function StrategiesContent() {
             maxLossPct: String(kamaRainbowMartinConfig.hardStopLossPct),
             callbackPct: String(kamaRainbowMartinConfig.trailing.callbackPct),
             kLinePeriod: String(KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[kamaRainbowMartinConfig.timeframe]),
-            reentryOnTrend: true,
+            reentryOnTrend: kamaRainbowMartinConfig.reentryEnabled,
             maxLossUsdt: "0",
             Initial_Capital: "100",
             First_Order_Pct: "0.5",
@@ -1346,28 +1272,6 @@ function StrategiesContent() {
         </div>
       </div>
 
-      {canonicalActionRequired.length > 0 && (
-        <div className="flex flex-col gap-4 rounded-xl border border-amber-500/35 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
-            <div className="min-w-0">
-              <p className="font-semibold text-amber-100">{canonicalActionRequired.length} 個 canonical deployment 需要處理</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {canonicalActionRequired.slice(0, 5).map(deployment => (
-                  <Badge key={deployment.id} variant="outline" className="border-amber-500/30 bg-background/30 text-amber-200">
-                    #{deployment.id} {(deployment as any).executionMode} · {(deployment as any).activationState}
-                  </Badge>
-                ))}
-              </div>
-              <p className="mt-2 text-xs leading-5 text-amber-100/75">請在工作台檢查 preflight blocker、ledger 與最後 mode decision；此頁不提供 canonical enabled 布林繞過。</p>
-            </div>
-          </div>
-          <Button asChild variant="outline" className="shrink-0 border-amber-400/40 text-amber-100 hover:bg-amber-500/15">
-            <Link href={`/deployments?deploymentId=${canonicalActionRequired[0]?.id}`}>前往部署工作台</Link>
-          </Button>
-        </div>
-      )}
-
       <Tabs defaultValue="list">
         <TabsList>
           <TabsTrigger value="list">策略列表</TabsTrigger>
@@ -1381,7 +1285,7 @@ function StrategiesContent() {
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </CardContent>
             </Card>
-          ) : !strategies || strategies.length === 0 ? (
+          ) : legacyStrategies.length === 0 ? (
             <Card>
               <CardContent className="py-12 text-center space-y-3">
                 <Settings2 className="h-8 w-8 mx-auto text-muted-foreground/50" />
@@ -1430,7 +1334,7 @@ function StrategiesContent() {
                     </SelectContent>
                   </Select>
                   <span className="text-xs text-muted-foreground">
-                    {filteredStrategies.length} / {strategies.length} 個策略
+                    {filteredStrategies.length} / {legacyStrategies.length} 個策略
                   </span>
                 </div>
               </div>
@@ -1456,11 +1360,7 @@ function StrategiesContent() {
                         </Badge>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        {isCanonicalDeploymentRow(s) ? (
-                          <Badge className="border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-[10px]" variant="outline">
-                            {(s as any).executionMode} · {(s as any).activationState ?? "DRAFT"}
-                          </Badge>
-                        ) : s.enabled ? (
+                        {s.enabled ? (
                           <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[10px]" variant="outline">
                             運行中
                           </Badge>
@@ -1473,19 +1373,13 @@ function StrategiesContent() {
                             已停止
                           </Badge>
                         )}
-                        {isCanonicalDeploymentRow(s) ? (
-                          <Button asChild size="sm" variant="outline" className="h-7 border-cyan-500/30 text-cyan-300">
-                            <Link href={`/deployments?deploymentId=${s.id}`}>部署工作台</Link>
-                          </Button>
-                        ) : (
-                          <Switch
-                            checked={s.enabled}
-                            title={s.enabled ? "關閉即暫停接收訊號" : "開啟即恢復接收訊號"}
-                            onCheckedChange={(v) =>
-                              toggleMutation.mutate({ id: s.id, enabled: v })
-                            }
-                          />
-                        )}
+                        <Switch
+                          checked={s.enabled}
+                          title={s.enabled ? "關閉即暫停接收訊號" : "開啟即恢復接收訊號"}
+                          onCheckedChange={(v) =>
+                            toggleMutation.mutate({ id: s.id, enabled: v })
+                          }
+                        />
                       </div>
 	                    </div>
 
@@ -1493,38 +1387,6 @@ function StrategiesContent() {
 	                      strategy={{ apiKeyId: s.apiKeyId, exchange: s.exchange }}
 	                      apiKeys={apiKeys}
 	                    />
-
-                    <ExecutionProfileSummary
-                      compact
-                      strategyKey={(s as any).strategyKey}
-                      executionMode={strategyExecutionMode((s as any).executionMode)}
-                      executionPolicy={(s as any).executionPolicy as Record<string, unknown> | null}
-                      artifactScope={isCanonicalDeploymentRow(s) ? "EXECUTION_PROFILE" : "PARAMETERS_ONLY"}
-                      strategyVersion={Number((s as any).strategyVersion) || undefined}
-                    />
-
-                    {!isCanonicalDeploymentRow(s) ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="w-full bg-cyan-600 text-white hover:bg-cyan-500"
-                          disabled={createDeploymentDraftMutation.isPending}
-                          onClick={() => createDisabledDraftFromStrategy(s)}
-                        >
-                          {createDeploymentDraftMutation.isPending
-                            ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                            : <Plus className="mr-2 h-3.5 w-3.5" />}
-                          建立 S1 停用部署草稿
-                        </Button>
-                      ) : (
-                        <Button asChild type="button" size="sm" variant="outline" className="w-full border-cyan-500/30 text-cyan-300">
-                          <Link href={`/deployments?deploymentId=${s.id}`}>
-                            <Radio className="mr-2 h-3.5 w-3.5" />
-                            檢閱 Preflight 與生命週期
-                          </Link>
-                        </Button>
-                      )}
-
 	                    {!s.enabled && s.disabledReason && (
                       <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-400">
                         停用原因：{s.disabledReason}
@@ -1957,14 +1819,7 @@ function StrategiesContent() {
 
                     <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:items-center">
                       {/* T2：暫停 / 恢復 / 停止 控制按鈕 */}
-                      {isCanonicalDeploymentRow(s) ? (
-                        <Button asChild variant="outline" size="sm" className="col-span-2 min-w-0 w-full border-cyan-500/40 text-cyan-300 sm:flex-1">
-                          <Link href={`/deployments?deploymentId=${s.id}`}>
-                            <Radio className="h-3.5 w-3.5 mr-1" />
-                            Preflight 與生命週期
-                          </Link>
-                        </Button>
-                      ) : s.enabled ? (
+                      {s.enabled ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -1993,23 +1848,21 @@ function StrategiesContent() {
                           恢復
                         </Button>
                       )}
-                      {!isCanonicalDeploymentRow(s) && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="min-w-0 w-full sm:flex-1"
-                          disabled={setStatusMutation.isPending || (!s.enabled && s.disabledReason !== "手動暫停")}
-                          title="停止：不再接收訊號並重置馬丁狀態"
-                          onClick={() => {
-                            if (confirm(`停止策略「${s.name}」？\n停止後將重置馬丁加倉狀態，下次啟動從初始倉位開始。`)) {
-                              setStatusMutation.mutate({ id: s.id, status: "stopped" });
-                            }
-                          }}
-                        >
-                          <Square className="h-3.5 w-3.5 mr-1" />
-                          停止
-                        </Button>
-                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="min-w-0 w-full sm:flex-1"
+                        disabled={setStatusMutation.isPending || (!s.enabled && s.disabledReason !== "手動暫停")}
+                        title="停止：不再接收訊號並重置馬丁狀態"
+                        onClick={() => {
+                          if (confirm(`停止策略「${s.name}」？\n停止後將重置馬丁加倉狀態，下次啟動從初始倉位開始。`)) {
+                            setStatusMutation.mutate({ id: s.id, status: "stopped" });
+                          }
+                        }}
+                      >
+                        <Square className="h-3.5 w-3.5 mr-1" />
+                        停止
+                      </Button>
                       <Button
                         variant="outline"
                         size="sm"
@@ -2567,6 +2420,7 @@ function StrategiesContent() {
                     martinLayersJson: JSON.stringify(nextConfig.layerConfigs),
                     martin_mode: bridge.martinMode,
                     kLinePeriod: String(KAMA_RAINBOW_MARTIN_TIMEFRAME_MINUTES[nextConfig.timeframe]),
+                    reentryOnTrend: nextConfig.reentryEnabled,
                   }));
                 }}
                 context="strategy"

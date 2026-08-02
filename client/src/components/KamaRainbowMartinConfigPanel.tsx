@@ -320,6 +320,42 @@ export function KamaRainbowMartinConfigPanel({
                 <p className="mt-1 text-[10px] leading-4 text-slate-500">估算基礎數量：{formatEstimate(estimatedBaseQuantity)}；{quantityPrecision}。</p>
               </div>
             </div>
+            <div
+              data-testid="krm-auto-reentry-control"
+              className={cn(
+                "mt-4 flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center sm:justify-between",
+                config.reentryEnabled
+                  ? "border-emerald-400/30 bg-emerald-400/[0.07]"
+                  : "border-slate-700/90 bg-slate-950/55",
+              )}
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Label htmlFor="krm-auto-reentry" className="text-sm font-black tracking-wide text-slate-100">
+                    自動重新入市（Auto Re-entry）
+                  </Label>
+                  <Badge className={cn(
+                    "border font-mono text-[9px] tracking-[0.14em]",
+                    config.reentryEnabled
+                      ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-200"
+                      : "border-slate-600 bg-slate-800/70 text-slate-300",
+                  )}>
+                    {config.reentryEnabled ? "ENABLED" : "DISABLED"}
+                  </Badge>
+                </div>
+                <p className="mt-1.5 max-w-4xl text-xs leading-5 text-slate-400">
+                  啟用後，腿級平倉完成時若當下已收線 K 棒仍通過交叉鎖、全線斜率、方向與既有風控，會立即建立下一輪多／空底倉；關閉後完成首輪平倉便停止新增底倉。
+                </p>
+              </div>
+              <Switch
+                id="krm-auto-reentry"
+                aria-label="自動重新入市"
+                checked={config.reentryEnabled}
+                onCheckedChange={(reentryEnabled) => updateConfig({ reentryEnabled })}
+                disabled={disabled}
+                className="shrink-0"
+              />
+            </div>
           </Sector>
 
           <Sector index="02" title="動態 KAMA 彩虹陣列" subtitle="支援 2–32 條；id 是快照與監控的穩定身份，名稱、參數、啟用狀態及色譜可配置。" icon={Activity} tone="emerald">

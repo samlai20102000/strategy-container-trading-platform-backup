@@ -6,6 +6,7 @@ import {
   createKamaRainbowMartinRuntimeState,
   evaluateKamaRainbowMartinEntry,
   type KamaRainbowMartinLineObservation,
+  type KamaRainbowMartinSnapshot,
 } from "./strategies/kamaRainbowMartin/core";
 
 function line(id: string, previous: number, current: number): KamaRainbowMartinLineObservation {
@@ -83,6 +84,66 @@ describe("Kama 彩虹馬丁交叉鎖與 entry evaluator", () => {
         allowedDirection: "short",
       }).reasonCode,
     ).toBe("KRM_DIRECTION_BLOCKED");
+  });
+
+  it("完整平倉後僅在開關啟用且當下條件仍成立時允許同棒重新入市", () => {
+    const barTimestamp = 1_900_000_000_000;
+    const barKey = `revision-a:${barTimestamp}`;
+    const trendingSnapshot: KamaRainbowMartinSnapshot = {
+      lines: [line("A", 100, 101), line("B", 90, 91)],
+      ready: true,
+      requiredBars: 21,
+      availableBars: 30,
+      barTimestamp,
+      closePrice: 101,
+      direction: "UP",
+      lockedPair: null,
+    };
+    const closedState = createKamaRainbowMartinRuntimeState();
+    Object.assign(closedState.kamaRainbowMartinRuntime!, {
+      lastCloseReason: "TRAILING_TAKE_PROFIT",
+      reentryPending: true,
+      lastProcessedBarKey: barKey,
+      lastProcessedBarTimestamp: barTimestamp,
+    });
+
+    const enabledConfig = createKamaRainbowMartinDefaultConfig();
+    enabledConfig.reentryEnabled = true;
+    const enabled = evaluateKamaRainbowMartinEntry({
+      state: closedState,
+      rawConfig: enabledConfig,
+      configRevision: "revision-a",
+      precomputedSnapshot: trendingSnapshot,
+      lastBarClosed: true,
+    });
+    expect(enabled.action).toBe("OPEN_LONG");
+    expect(enabled.reasonCode).toBe("KRM_ALL_UP");
+    expect(enabled.nextState.kamaRainbowMartinRuntime?.reentryPending).toBe(false);
+
+    const disabled = evaluateKamaRainbowMartinEntry({
+      state: closedState,
+      rawConfig: createKamaRainbowMartinDefaultConfig(),
+      configRevision: "revision-a",
+      precomputedSnapshot: trendingSnapshot,
+      lastBarClosed: true,
+    });
+    expect(disabled.action).toBe("HOLD");
+    expect(disabled.reasonCode).toBe("KRM_REENTRY_DISABLED");
+
+    const mixedSnapshot: KamaRainbowMartinSnapshot = {
+      ...trendingSnapshot,
+      lines: [line("A", 100, 101), line("B", 91, 90)],
+      direction: "MIXED",
+    };
+    const conditionsFailed = evaluateKamaRainbowMartinEntry({
+      state: closedState,
+      rawConfig: enabledConfig,
+      configRevision: "revision-a",
+      precomputedSnapshot: mixedSnapshot,
+      lastBarClosed: true,
+    });
+    expect(conditionsFailed.action).toBe("HOLD");
+    expect(conditionsFailed.reasonCode).toBe("KRM_MIXED_SLOPE");
   });
 
   it("同 config revision／bar 只掃描一次，revision 改變才可重新評估", () => {

@@ -43,20 +43,21 @@ describe("Strategies 行動版響應式佈局契約", () => {
     expect(strategiesSource).not.toContain('(s as any).executionMode === "LEGACY"');
   });
 
-  it("策略卡只顯示 S1 Execution Profile，沒有模式選項或切換 mutation", () => {
-    expect(strategiesSource).toContain("<ExecutionProfileSummary");
-    expect(strategiesSource).toContain("建立 S1 停用部署草稿");
+  it("策略卡不顯示 S1 Execution Profile 或部署入口，也沒有模式選項或切換 mutation", () => {
+    expect(strategiesSource).not.toContain("<ExecutionProfileSummary");
+    expect(strategiesSource).not.toContain("建立 S1 停用部署草稿");
+    expect(strategiesSource).not.toContain("部署工作台");
+    expect(strategiesSource).not.toContain("Preflight 與生命週期");
     expect(strategiesSource).not.toContain("EXECUTION_MODES.map((mode)");
     expect(strategiesSource).not.toContain("strategy-mode-controls-${s.id}");
     expect(strategiesSource).not.toContain("trpc.deployments.switchMode.useMutation");
     expect(strategiesSource).not.toContain("switchCanonicalDeploymentMode");
   });
 
-  it("LEGACY 策略只能建立 S1 停用部署草稿，不會直接啟用或送單", () => {
-    expect(strategiesSource).toContain("trpc.deployments.create.useMutation");
-    expect(strategiesSource).toContain('const executionMode: ExecutionMode = "SINGLE_EXCLUSIVE"');
-    expect(strategiesSource).toContain("sourceStrategyId: strategy.id");
-    expect(strategiesSource).toContain("建立後不會送單、不會自動啟用");
-    expect(strategiesSource).toContain("DEPLOYMENT_SAFETY_COPY.defaultDisabled");
+  it("LEGACY 策略頁不再提供建立 S1 部署草稿的 UI 或 mutation", () => {
+    expect(strategiesSource).not.toContain("trpc.deployments.create.useMutation");
+    expect(strategiesSource).not.toContain("sourceStrategyId: strategy.id");
+    expect(strategiesSource).not.toContain("建立後不會送單、不會自動啟用");
+    expect(strategiesSource).not.toContain("DEPLOYMENT_SAFETY_COPY.defaultDisabled");
   });
 });

@@ -33,6 +33,7 @@ describe("Kama 彩虹馬丁快照 canonical round-trip", () => {
 
   it("完整配置經 attach、JSON 序列化與讀回後不漂移，wrong-key 讀取必須 fail-closed", () => {
     const config = createKamaRainbowMartinDefaultConfig();
+    config.reentryEnabled = true;
     config.trailing.enabled = false;
     config.kamaLines[1].enabled = false;
     config.kamaLines.push({
@@ -61,6 +62,7 @@ describe("Kama 彩虹馬丁快照 canonical round-trip", () => {
       importedAt: 123456,
     });
     expect(restoredConfig).toEqual(config);
+    expect(restoredConfig?.reentryEnabled).toBe(true);
     expect(validateKamaRainbowMartinConfig(restoredConfig).valid).toBe(true);
     expect(getBoundStrategyConfig(restored, "RAINBOW_TREND_LADDER_V1")).toBeUndefined();
   });

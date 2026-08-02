@@ -359,6 +359,21 @@ export async function runKamaRainbowMartinBacktest(
       state = decision.nextState;
     } else if (decision.action === "close") {
       applyClose(decision, candle.timestamp);
+      if (config.reentryEnabled) {
+        const reentryDecision = evaluateKamaRainbowMartinEntry({
+          state,
+          rawConfig: config,
+          configRevision: config.version,
+          lastBarClosed: true,
+          allowedDirection,
+          precomputedSnapshot: precomputedSnapshots[historyOffset + index],
+        });
+        if (reentryDecision.action === "OPEN_LONG" || reentryDecision.action === "OPEN_SHORT") {
+          applyEntryOrAdd(reentryDecision, candle.timestamp);
+        } else {
+          state = reentryDecision.nextState;
+        }
+      }
     } else {
       applyEntryOrAdd(decision, candle.timestamp);
     }

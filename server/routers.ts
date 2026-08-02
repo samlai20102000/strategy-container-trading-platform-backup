@@ -858,7 +858,7 @@ const strategiesRouter = router({
         } : {}),
         ...(kamaRainbowMartinConfig ? {
           kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
-          reentryEnabled: false,
+          reentryEnabled: kamaRainbowMartinConfig.reentryEnabled,
         } : {}),
       });
       // T3：回傳新建策略的 Webhook URL，供前端顯示成功引導彈窗
@@ -994,7 +994,7 @@ const strategiesRouter = router({
           getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct),
         );
         data.kLinePeriod = getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe);
-        data.reentryEnabled = false;
+        data.reentryEnabled = kamaRainbowMartinConfig.reentryEnabled;
       }
       if (v41Config) {
         const currentState = existing.martinState && typeof existing.martinState === "object"

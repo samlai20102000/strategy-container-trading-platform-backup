@@ -38,6 +38,24 @@ function makeTrendingCandles(count = 42): OHLCVRow[] {
   });
 }
 
+function makeTrailingReentryCandles(): OHLCVRow[] {
+  const candles = makeTrendingCandles(21);
+  const start = candles[0].timestamp;
+  for (const [offset, close] of [130, 127.5].entries()) {
+    candles.push({
+      symbol: "BTC-USDT",
+      timeframe: "30m",
+      timestamp: start + (21 + offset) * 30 * 60_000,
+      open: close,
+      high: close + 0.5,
+      low: close - 0.5,
+      close,
+      volume: 1,
+    });
+  }
+  return candles;
+}
+
 function makeConfig(policy: KamaRainbowMartinBacktestEndPositionPolicy) {
   return {
     ...createKamaRainbowMartinDefaultConfig(),
@@ -123,6 +141,41 @@ describe("Kama 彩虹馬丁同源回測", () => {
     expect(result.accounting.syntheticForceCloseCount).toBe(1);
     expect(result.accounting.reconciled).toBe(true);
     expect(result.session.positionMeta).toBeNull();
+  });
+
+  it("追蹤止盈平倉後，開啟自動重入會在同棒條件仍成立時重開，關閉則保持空倉", async () => {
+    const candles = makeTrailingReentryCandles();
+    const enabledRequest = makeRequest(candles, "mark_to_market");
+    enabledRequest.config = { ...enabledRequest.config, reentryEnabled: true };
+    const enabled = await runKamaRainbowMartinBacktest(
+      enabledRequest,
+      "Kama彩虹馬丁策略",
+      enabledRequest.config,
+      candles,
+      enabledRequest.startDate,
+      enabledRequest.endDate,
+      0,
+      0,
+    );
+
+    const disabledRequest = makeRequest(candles, "mark_to_market");
+    const disabled = await runKamaRainbowMartinBacktest(
+      disabledRequest,
+      "Kama彩虹馬丁策略",
+      disabledRequest.config,
+      candles,
+      disabledRequest.startDate,
+      disabledRequest.endDate,
+      0,
+      0,
+    );
+
+    expect(enabled.trades).toHaveLength(1);
+    expect(enabled.session.positionMeta).not.toBeNull();
+    expect(enabled.accounting.openPositionCount).toBe(1);
+    expect(disabled.trades).toHaveLength(1);
+    expect(disabled.session.positionMeta).toBeNull();
+    expect(disabled.accounting.openPositionCount).toBe(0);
   });
 
   it("跨分片續跑與單次回測完全等價，中間片不結算也不持久化", async () => {

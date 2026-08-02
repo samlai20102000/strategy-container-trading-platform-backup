@@ -396,6 +396,8 @@ export function applyKamaRainbowMartinFillToState(
     trailingActive: false,
     peakProfitPct: 0,
     triggerProfitPct: null,
+    lastCloseReason: initialAction ? null : runtime.lastCloseReason,
+    reentryPending: false,
     lastActionTimestamp: fill.timestamp,
     lastActionSignature: `${fill.action}:L${targetLayer}:${fill.fillId}`,
     lastDecisionReason: `成交已確認：${longFill ? "多" : "空"} L${targetLayer} @ ${fill.fillPrice} × ${fill.fillQuantity}`,
@@ -432,6 +434,7 @@ export function applyKamaRainbowMartinCloseToState(
       lastActionTimestamp: timestamp,
       lastActionSignature: `close:${closeReason}`,
       lastCloseReason: closeReason,
+      reentryPending: !killed,
       lastDecisionReason: killed ? "KILL 平倉完成，策略維持鎖定" : `腿級平倉完成：${closeReason}`,
     },
   });

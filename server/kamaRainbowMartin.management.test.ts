@@ -239,6 +239,7 @@ describe("Kama 彩虹馬丁腿級 management", () => {
     expect(flat.totalSize).toBe(0);
     expect(flat.kamaRainbowMartinRuntime?.fills).toEqual([]);
     expect(flat.kamaRainbowMartinRuntime?.killed).toBe(true);
+    expect(flat.kamaRainbowMartinRuntime?.reentryPending).toBe(false);
     const released = releaseKamaRainbowMartinKill(flat, 5);
     expect(released.kamaRainbowMartinRuntime?.killed).toBe(false);
   });
@@ -275,9 +276,12 @@ describe("Kama 彩虹馬丁腿級 management", () => {
     expect(partial.totalCost).toBeCloseTo(125, 12);
     expect(partial.currentLayer).toBe(1);
     expect(partial.kamaRainbowMartinRuntime?.fills).toHaveLength(1);
+    expect(partial.kamaRainbowMartinRuntime?.reentryPending).toBe(false);
     const flat = applyKamaRainbowMartinPartialCloseToState(partial, 1.25, "TRAILING_TAKE_PROFIT", 3);
     expect(flat.totalSize).toBe(0);
     expect(flat.currentLayer).toBe(0);
     expect(flat.kamaRainbowMartinRuntime?.fills).toEqual([]);
+    expect(flat.kamaRainbowMartinRuntime?.lastCloseReason).toBe("TRAILING_TAKE_PROFIT");
+    expect(flat.kamaRainbowMartinRuntime?.reentryPending).toBe(true);
   });
 });

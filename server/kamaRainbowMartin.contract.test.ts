@@ -38,6 +38,7 @@ describe("Kama 彩虹馬丁 canonical contract", () => {
     ]);
     expect(config.hardStopLossPct).toBe(5);
     expect(config.trailing).toEqual({ enabled: true, activationPct: 3, callbackPct: 1.5, stepPct: 0.5 });
+    expect(config.reentryEnabled).toBe(false);
     expect(config).not.toHaveProperty("targetProfitPct");
     expect(validateKamaRainbowMartinConfig(config).valid).toBe(true);
   });
@@ -51,6 +52,17 @@ describe("Kama 彩虹馬丁 canonical contract", () => {
     expect(second.kamaLines[0].name).toBe(KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG.kamaLines[0].name);
     expect(second.layerConfigs[0].multiplier).toBe(1.5);
     expect(second.trailing.activationPct).toBe(3);
+  });
+
+  it("舊配置缺少重入欄位時安全預設關閉，明確開啟則正規化保真", () => {
+    const legacy = { ...createKamaRainbowMartinDefaultConfig() } as Record<string, unknown>;
+    delete legacy.reentryEnabled;
+
+    expect(normalizeKamaRainbowMartinConfig(legacy).reentryEnabled).toBe(false);
+    expect(normalizeKamaRainbowMartinConfig({
+      ...legacy,
+      reentryEnabled: "enabled",
+    }).reentryEnabled).toBe(true);
   });
 
   it("依分段乘數逐層累乘，且新增尾段會自動衍生最大加倉層", () => {
