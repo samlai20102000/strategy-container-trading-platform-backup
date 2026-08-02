@@ -54,6 +54,25 @@ function certifiedManifest(
   });
 }
 
+function s1ManifestFrom(
+  source: VersionedStrategyCapabilityManifest,
+): VersionedStrategyCapabilityManifest {
+  return createVersionedCapabilityManifest({
+    strategyKey: source.strategyKey,
+    strategyVersion: source.strategyVersion,
+    strategyLogicHash: source.strategyLogicHash,
+    certification: "CERTIFIED",
+    capabilities: {
+      supportedModes: ["SINGLE_EXCLUSIVE"],
+      martingaleLayers: true,
+      independentLegState: false,
+      hedgeGuard: false,
+      preciseLegClose: false,
+      reason: "方案 B：KRM S1-only",
+    },
+  });
+}
+
 function canonicalStrategy(input: {
   manifest?: VersionedStrategyCapabilityManifest;
   mode?: "SINGLE_EXCLUSIVE" | "MULTI_POSITION" | "HEDGE_GUARDED";
@@ -229,4 +248,53 @@ describe("canonical runtime deployment", () => {
     expect(getBoundStrategyArtifact(runtime.strategy.martinState, manifest.strategyKey)?.artifactScope)
       .toBe("EXECUTION_PROFILE");
   });
+
+  it("舊 KRM S1 sealed profile 對方案 B manifest 只在記憶體 reseal，保留 S1 且不回寫原 row", async () => {
+    const legacyManifest = certifiedManifest("KAMA_RAINBOW_MARTIN_V1");
+    const currentManifest = s1ManifestFrom(legacyManifest);
+    const strategy = canonicalStrategy({ manifest: legacyManifest, mode: "SINGLE_EXCLUSIVE" });
+    const persistedArtifactHash = getBoundStrategyArtifact(
+      strategy.martinState,
+      legacyManifest.strategyKey,
+    )!.artifactHash;
+    mocks.requireStrategyCapabilityManifest.mockResolvedValue(currentManifest);
+
+    const runtime = await hydrateCanonicalRuntimeDeployment(strategy);
+
+    expect(runtime.provenance).toBe("KRM_S1_CAPABILITY_RESEAL");
+    expect(runtime.executionMode).toBe("SINGLE_EXCLUSIVE");
+    expect(runtime.artifact.capabilityManifest.manifestHash).toBe(currentManifest.manifestHash);
+    expect(runtime.strategy.capabilitySnapshot).toEqual(currentManifest);
+    expect(runtime.compatibilityWarnings).toEqual(expect.arrayContaining([
+      "STALE_CAPABILITY_MANIFEST",
+      "RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH",
+    ]));
+    expect(getBoundStrategyArtifact(strategy.martinState, legacyManifest.strategyKey)?.artifactHash)
+      .toBe(persistedArtifactHash);
+  });
+
+  it("KRM S1 reseal 不接受 row capabilitySnapshot 與 sealed artifact 不一致", async () => {
+    const legacyManifest = certifiedManifest("KAMA_RAINBOW_MARTIN_V1");
+    const currentManifest = s1ManifestFrom(legacyManifest);
+    const strategy = canonicalStrategy({ manifest: legacyManifest, mode: "SINGLE_EXCLUSIVE" });
+    strategy.capabilitySnapshot = currentManifest;
+    mocks.requireStrategyCapabilityManifest.mockResolvedValue(currentManifest);
+
+    await expect(hydrateCanonicalRuntimeDeployment(strategy)).rejects.toMatchObject({
+      code: "RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH",
+    } satisfies Partial<CanonicalRuntimeDeploymentError>);
+  });
+
+  it.each(["MULTI_POSITION", "HEDGE_GUARDED"] as const)(
+    "舊 KRM %s sealed profile 在方案 B manifest 下不得啟動或恢復",
+    async (mode) => {
+      const legacyManifest = certifiedManifest("KAMA_RAINBOW_MARTIN_V1");
+      const strategy = canonicalStrategy({ manifest: legacyManifest, mode });
+      mocks.requireStrategyCapabilityManifest.mockResolvedValue(s1ManifestFrom(legacyManifest));
+
+      await expect(hydrateCanonicalRuntimeDeployment(strategy)).rejects.toMatchObject({
+        code: "RUNTIME_ARTIFACT_INCOMPATIBLE",
+      } satisfies Partial<CanonicalRuntimeDeploymentError>);
+    },
+  );
 });

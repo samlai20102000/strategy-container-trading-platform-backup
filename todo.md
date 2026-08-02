@@ -5,14 +5,14 @@
 - [x] 鎖定 KRM M2 正確契約：選擇 M2 時保留 S1 主腿；S1 浮虧後，M2 仍須等待同一 KRM 策略的有效入場條件才建立輔助腿
 - [x] 鎖定 KRM H3 正確契約：選擇 H3 時保留 S1 主腿；S1 達可配置浮虧門檻後，H3 不需等待策略入場條件即建立反向對沖輔助腿
 - [x] 定位 S1＋M2／S1＋H3 現行逐腿退出錯誤，完成 cycle 成本後組合損益、共同止盈、同步平倉與 live 補償狀態機的修正設計
-- [ ] 與使用者確認並版本化最終 canonical 數值：cycle 組合回報分母、共同止盈／trailing 門檻、M2 輔助腿 budget 及 H3 recovery 門檻
+- [x] 與使用者確認最終 canonical 數值：cycle 組合回報分母採 cycle 總成交成本；共同 trailing 採 3%／回撤 1.5%／step 0.5%；M2 budget 上限 30%；H3 與 S1 合計恢復至接近 0% 盈餘時共同平倉（僅保留為凍結設計紀錄，未發布交易邏輯）
 - [x] 分析使用者本次 M2 CSV 的 9 筆交易（4 筆 S1、5 筆 M2）與先前 95 筆 S1 基線，確認交易數驟減及全虧的資料原因
 - [x] 逐段稽核 KRM 回測與實盤的模式候選、角色指派、入場守門、cycle 管理、組合止盈及報告歸因，確認錯誤影響範圍
 - [x] 以零實盤 mutation 測試重現 M2 異常，量化 S1 候選消失、M2 觸發與共同平倉的根因
 - [x] 撰寫 KRM 三模式優化修正報告，列明現況、需求落差、根因、修正資料模型、風控邊界、遷移策略與驗收矩陣
 - [x] 本輪安全驗證未觸發任何實盤下單、撤單或平倉 mutation
 - [x] 本輪只新增稽核文件、唯讀診斷與 characterization test；未修改或發布新的 cycle-close 交易邏輯（專案中先前已存在的 KRM v2 入場／角色修復不屬於本輪）
-- [ ] 使用者確認報告與 canonical 數值後，才實作、回測及發布 KRM cycle-close v2 修正
+- [x] 使用者改採方案 B 精準解耦；停止 KRM cycle-close v2 實作，已備份並清除未發布半成品，三模式在完整重設計與本地驗證前保持凍結
 
 ## 後端核心
 - [x] 資料庫 Schema：api_keys（加密儲存）、strategies、signals、executions/trades、risk_events 表
@@ -2646,3 +2646,20 @@
 - [x] 補齊 M2 單次觸發、H3 閾值觸發、共享資金、cycle 重置、回測／實盤決策等價及未來策略模式歸因契約測試
 - [x] 以用戶提供的 95 筆 S1 與 6 筆 M2 報告作診斷基線，重新回測並交付實際交易筆數與逐筆觸發證據，不預設修復後筆數或收益
 - [x] 完成 TypeScript、完整 Vitest、production build、UI／CSV 驗收、checkpoint 與自動發布
+
+## 2026-08-02 方案 B：KRM S1 單模式精準解耦與三模式凍結
+
+- [x] 將未發布 cycle-close 半成品差異、未追蹤契約檔及 SHA-256 證據保存到專案外事故目錄
+- [x] 清除 `threeModePortfolioKernel.ts`、execution policy、文件與 todo 的未提交半成品並刪除未追蹤 `krmCycleContract.ts`，恢復乾淨 `f810347d` 基線
+- [x] 在乾淨基線執行完整 Vitest：128 個測試檔／1,043 項通過，1 個測試檔／4 項既有跳過
+- [x] 稽核 `2f78786` Maker-First 基線至 `f810347d` 的逐提交／逐檔差異，建立保留、凍結、拒絕與不觸碰清單
+- [x] 將 `KAMA_RAINBOW_MARTIN_V1` 的 BACKTEST／SIMULATION／LIVE runner certification 降級為 S1-only，讓能力清單與 UI 不再宣告 M2／H3 可用
+- [x] 確認回測建立、快照保存／套用／匯入與部署建立／複製／切換／恢復皆依 current capability manifest fail-closed，拒絕 stale KRM M2／H3 artifact；不另加會漂移的 router 特例
+- [x] 在 canonical runtime hydration 加入窄範圍 KRM S1-only admission guard；既有 KRM M2／H3 部署不得啟動或恢復，row snapshot 漂移亦拒絕，且不自動送出任何交易 mutation
+- [x] 保留共用 S1 回測工作生命週期、27,744 根 O(n) 預計算、durable job／Heartbeat、報告與快照參數能力，不回滾非三模式改善
+- [x] 保留全域 Maker-First：post-only 開／加／平倉、緊急退出 2 秒×2 後才可 taker、policyRunId、recovery、posSide、reduceOnly、owned size 與架構守門不得修改或弱化
+- [x] 新增 KRM S1-only capability、UI feed、回測／artifact／runtime fail-closed 與 stale artifact 回歸測試；保留全域 Maker-First 架構守門全數通過
+- [x] 執行 KRM S1 27,744 根歷史回測：95／95 筆 identity hash 一致、無 `this.pnl is not a function`、M2／H3 腿為 0、會計差異與交易 mutation 均為 0
+- [ ] 執行完整 Vitest、TypeScript、production build、桌面／手機 UI、敏感交易 mutation=0 與正式網域唯讀驗證
+- [ ] 交付保留／凍結／刪除／拒絕矩陣、測試證據與穩定 checkpoint；不發布任何 M2／H3 cycle-close 新邏輯
+- [x] 將 `okx-api-auth.test.ts` 的真實 OKX 網路／憑證驗證改為明確 opt-in integration test，讓預設完整 Vitest 可重現且不因外部 HTML／403 回應假失敗，同時保留可手動執行的真實連線驗證

@@ -106,9 +106,9 @@ const BUILT_IN_DESCRIPTORS: Readonly<Record<BuiltInStrategyKey, StrategyRunnerDe
     preciseLegClose: true,
     hedgeGuard: true,
     certifications: {
-      BACKTEST: certified(ALL_MODES, "六線 KAMA、S1 主腿、每 cycle 單一 M2 反向腿與自動 H3 保護由專用 adapter 接入 canonical kernel", ["krm-pure-core", "multi-leg-ledger", "krm-three-mode-contract-v2"]),
-      SIMULATION: certified(ALL_MODES, "KRM guarded executor 已支援腿級模式 envelope", ["advanced-signal-envelope", "leg-scoped-runtime"]),
-      LIVE: certified(ALL_MODES, "KRM guarded executor 已支援腿級模式 envelope", ["advanced-signal-envelope", "leg-scoped-runtime"]),
+      BACKTEST: certified(S1_ONLY, "方案 B：KRM 僅保留 S1；M2／H3 在 cycle-close 完整重設計及本地驗證前凍結", ["scheme-b-s1-only", "krm-pure-core"]),
+      SIMULATION: certified(S1_ONLY, "方案 B：KRM 模擬執行僅允許 S1；M2／H3 runtime admission 已撤銷", ["scheme-b-s1-only", "legacy-s1-runtime"]),
+      LIVE: certified(S1_ONLY, "方案 B：KRM 實盤僅允許 S1；M2／H3 runtime admission 已撤銷", ["scheme-b-s1-only", "legacy-s1-runtime"]),
     },
   }),
   KAMA_3K_BREAKOUT_V25: descriptor({

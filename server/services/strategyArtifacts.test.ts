@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultExecutionPolicy } from "../../shared/executionModes";
+import { getStrategyChannelCapabilities } from "./strategyRunnerDescriptors";
 import {
   assessStrategyArtifactCompatibility,
   buildDisabledSnapshotDeploymentFields,
@@ -233,6 +234,37 @@ describe("StrategyArtifact canonical contract", () => {
       capabilityManifest: manifest,
     })).toThrow(/未認證 HEDGE_GUARDED/);
   });
+
+  it.each(["MULTI_POSITION", "HEDGE_GUARDED"] as const)(
+    "舊 KRM %s sealed profile 對 current S1-only manifest fail closed",
+    (mode) => {
+      const legacyManifest = certifiedManifest("KAMA_RAINBOW_MARTIN_V1");
+      const artifact = buildStrategyArtifactEnvelope({
+        artifactScope: "EXECUTION_PROFILE",
+        strategyKey: legacyManifest.strategyKey,
+        strategyVersion: legacyManifest.strategyVersion,
+        strategyLogicHash: legacyManifest.strategyLogicHash,
+        config: {},
+        executionMode: mode,
+        executionPolicy: createDefaultExecutionPolicy(mode),
+        capabilityManifest: legacyManifest,
+      });
+      const currentManifest = createVersionedCapabilityManifest({
+        strategyKey: legacyManifest.strategyKey,
+        strategyVersion: legacyManifest.strategyVersion,
+        strategyLogicHash: legacyManifest.strategyLogicHash,
+        certification: "CERTIFIED",
+        capabilities: getStrategyChannelCapabilities(legacyManifest.strategyKey, "LIVE"),
+      });
+      const report = assessStrategyArtifactCompatibility({ artifact, targetManifest: currentManifest });
+
+      expect(report.compatible).toBe(false);
+      expect(report.blockers).toEqual(expect.arrayContaining([
+        "STALE_CAPABILITY_MANIFEST",
+        "EXECUTION_MODE_NOT_CERTIFIED",
+      ]));
+    },
+  );
 
   it("從 execution profile 建立 deployment 時保留模式身份但永遠預設停用", () => {
     const manifest = certifiedManifest();

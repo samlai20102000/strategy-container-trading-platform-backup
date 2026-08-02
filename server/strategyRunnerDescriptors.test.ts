@@ -34,17 +34,28 @@ function testCandles(count = 240) {
 }
 
 describe("strategy runner descriptors", () => {
-  it("每一個內建策略都有唯一 descriptor 且回測支援 S1／M2／H3", () => {
+  it("每一個內建策略都有唯一 descriptor，KRM 僅認證 S1，其餘維持既有能力", () => {
     expect(() => assertCompleteBuiltInDescriptorRegistry()).not.toThrow();
     expect(listBuiltInStrategyRunnerDescriptors().map(item => item.strategyKey)).toEqual(BUILT_IN_STRATEGY_KEYS);
     for (const key of BUILT_IN_STRATEGY_KEYS) {
       const descriptor = getStrategyRunnerDescriptor(key);
       expect(descriptor?.contractVersion).toBe(STRATEGY_RUNNER_DESCRIPTOR_VERSION);
-      expect(getStrategyChannelCapabilities(key, "BACKTEST").supportedModes).toEqual([
-        "SINGLE_EXCLUSIVE",
-        "MULTI_POSITION",
-        "HEDGE_GUARDED",
-      ]);
+      expect(getStrategyChannelCapabilities(key, "BACKTEST").supportedModes).toEqual(
+        key === "KAMA_RAINBOW_MARTIN_V1"
+          ? ["SINGLE_EXCLUSIVE"]
+          : ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+      );
+    }
+  });
+
+  it("KRM 的 BACKTEST／SIMULATION／LIVE 三個 channel 全部凍結 M2／H3", () => {
+    for (const channel of ["BACKTEST", "SIMULATION", "LIVE"] as const) {
+      const capabilities = getStrategyChannelCapabilities("KAMA_RAINBOW_MARTIN_V1", channel);
+      expect(capabilities.supportedModes).toEqual(["SINGLE_EXCLUSIVE"]);
+      expect(capabilities.independentLegState).toBe(false);
+      expect(capabilities.preciseLegClose).toBe(false);
+      expect(capabilities.hedgeGuard).toBe(false);
+      expect(capabilities.reason).toContain("方案 B");
     }
   });
 
@@ -87,10 +98,15 @@ describe("strategy runner descriptors", () => {
 
     for (const descriptor of listBuiltInStrategyRunnerDescriptors()) {
       for (const mode of ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"] as const) {
-        const resolved = resolvePortfolioStrategyAdapter(descriptor.strategyKey, mode);
-        expect(resolved.adapter.adapterId).toBe(descriptor.adapterId);
-        expect(resolved.adapter.adapterVersion).toBe(descriptor.adapterVersion);
-        expect(resolved.adapter.supportedModes).toContain(mode);
+        if (descriptor.certifications.BACKTEST.supportedModes.includes(mode)) {
+          const resolved = resolvePortfolioStrategyAdapter(descriptor.strategyKey, mode);
+          expect(resolved.adapter.adapterId).toBe(descriptor.adapterId);
+          expect(resolved.adapter.adapterVersion).toBe(descriptor.adapterVersion);
+          expect(resolved.adapter.supportedModes).toContain(mode);
+        } else {
+          expect(() => resolvePortfolioStrategyAdapter(descriptor.strategyKey, mode))
+            .toThrow("BACKTEST_MODE_NOT_CERTIFIED");
+        }
       }
     }
   });
@@ -107,7 +123,7 @@ describe("strategy runner descriptors", () => {
       expect(strategy?.defaultConfig, `${descriptor.strategyKey} 缺少預設參數快照`).toBeDefined();
       expect(executableIds.has(descriptor.adapterId), `${descriptor.adapterId} 缺少 executable factory`).toBe(true);
 
-      for (const mode of ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"] as const satisfies readonly ExecutionMode[]) {
+      for (const mode of descriptor.certifications.BACKTEST.supportedModes satisfies readonly ExecutionMode[]) {
         const executionPolicy = createDefaultExecutionPolicy(mode);
         const resolved = resolvePortfolioStrategyAdapter(descriptor.strategyKey, mode);
         const runtime = createPortfolioStrategyRuntimeAdapter(resolved, {

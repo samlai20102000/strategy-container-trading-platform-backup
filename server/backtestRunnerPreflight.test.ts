@@ -14,6 +14,7 @@ import {
 import { initStrategyStudio } from "./services/strategyStudio";
 
 const V41_KEY = "20415_KAMA_MARTIN_V41";
+const KRM_KEY = "KAMA_RAINBOW_MARTIN_V1";
 
 function requestFor(mode: "SINGLE_EXCLUSIVE" | "MULTI_POSITION" | "HEDGE_GUARDED"): BacktestRequest {
   const descriptor = getStrategyRunnerDescriptor(V41_KEY)!;
@@ -69,6 +70,41 @@ describe("backtest runner preflight", () => {
       });
     }
   });
+
+  it.each(["MULTI_POSITION", "HEDGE_GUARDED"] as const)(
+    "KRM %s 即使客戶端偽造 advanced capability 仍由 server descriptor fail closed",
+    (mode) => {
+      const request = requestFor(mode);
+      const descriptor = getStrategyRunnerDescriptor(KRM_KEY)!;
+      request.strategyKey = KRM_KEY;
+      request.strategyVersion = String(descriptor.strategyVersion);
+      request.strategyLogicHash = descriptor.logicRevision;
+      request.strategyModeCapabilities = {
+        contractVersion: "strategy-mode-capabilities-v1",
+        supportedModes: ["SINGLE_EXCLUSIVE", "MULTI_POSITION", "HEDGE_GUARDED"],
+        martingaleLayers: true,
+        independentLegState: true,
+        preciseLegClose: true,
+        hedgeGuard: true,
+        reason: "forged-client-payload",
+      };
+
+      expect(() => preflightBacktestRunner(request)).toThrow(BacktestRunnerPreflightError);
+      try {
+        preflightBacktestRunner(request);
+      } catch (error) {
+        expect(error).toMatchObject({
+          code: "BACKTEST_MODE_NOT_CERTIFIED",
+          strategyKey: KRM_KEY,
+          executionMode: mode,
+        });
+        expect(classifyBacktestFailure(error)).toMatchObject({
+          stage: "RUNNER_PREFLIGHT",
+          errorCode: "BACKTEST_MODE_NOT_CERTIFIED",
+        });
+      }
+    },
+  );
 
   it("job execution context 保存 runner identity 與結構化 failure，而非以 legacy 代替", () => {
     const request = requestFor("HEDGE_GUARDED");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeExecutionModePolicy } from "../shared/executionModes";
-import { StrategyKamaRainbowMartin } from "./strategies/builtin/strategyKamaRainbowMartin";
+import type { BaseStrategy } from "./strategies/base";
 import { getStrategyChannelCapabilities } from "./services/strategyRunnerDescriptors";
 import { runAdvancedKamaPortfolioBacktest } from "./services/backtest/advancedKamaPortfolioBacktest";
 import type { OHLCVRow } from "./services/backtest/backtestDatabase";
@@ -9,6 +9,27 @@ import type { BacktestRequest } from "./services/backtest/backtestEngine";
 
 const BAR_COUNT = 27_744;
 const THIRTY_MINUTES_MS = 30 * 60 * 1_000;
+const CERTIFIED_ADVANCED_STRATEGY_KEY = "20415_KAMA_MARTIN_V35";
+const strategy = { name: "V3.5 advanced large-dataset guard" } as BaseStrategy;
+const config = {
+  KAMA_Fast_Length: 3,
+  KAMA_Slow_Length: 3,
+  p2_fastest: 2,
+  p3_slowest: 5,
+  q2_fastest: 10,
+  q3_slowest: 20,
+  enableThreeKFilter: false,
+  enableKamaDirectionLock: true,
+  Base_Lot_Size: { mode: "usdt", value: 100 },
+  Max_Layers: 1,
+  Max_Loss_Pct: 90,
+  Max_Drawdown_Pct: 90,
+  Max_Deviation_Pct: 90,
+  Target_TP_Pct: 90,
+  Callback_Pct: 1,
+  enable_loss_shrink: false,
+  enable_continuous_entry: true,
+};
 
 function createDeterministicCandles(): OHLCVRow[] {
   const start = Date.UTC(2024, 0, 1);
@@ -31,10 +52,9 @@ function createDeterministicCandles(): OHLCVRow[] {
   });
 }
 
-describe("Kama 彩虹馬丁 M2 大型資料回測", () => {
-  it("可線性處理 27,744 根 K 線並跨越舊 10,000 根／56% 停滯點", async () => {
+describe("認證 advanced portfolio runner 大型資料回測", () => {
+  it("V3.5 可線性處理 27,744 根 K 線，保留共用 O(n) 預計算與 checkpoint 基礎設施", async () => {
     const candles = createDeterministicCandles();
-    const strategy = new StrategyKamaRainbowMartin();
     const executionPolicy = normalizeExecutionModePolicy({ mode: "MULTI_POSITION" });
     const checkpoints: BacktestJobCheckpoint[] = [];
     const controller = new AbortController();
@@ -46,26 +66,26 @@ describe("Kama 彩虹馬丁 M2 大型資料回測", () => {
       throwIfCancelled: async () => undefined,
     };
     const request: BacktestRequest = {
-      strategyKey: strategy.key,
+      strategyKey: CERTIFIED_ADVANCED_STRATEGY_KEY,
       symbol: "BTC-USDT-SWAP",
       timeframe: "30m",
       startDate: candles[0].timestamp,
       endDate: candles.at(-1)!.timestamp,
       initialCapital: 10_000,
-      config: strategy.defaultConfig,
+      config,
       commission: 0.0004,
       slippage: 0.0001,
       endPositionPolicy: "mark_to_market",
       executionMode: "MULTI_POSITION",
       executionPolicy,
-      strategyModeCapabilities: getStrategyChannelCapabilities(strategy.key, "BACKTEST", true),
+      strategyModeCapabilities: getStrategyChannelCapabilities(CERTIFIED_ADVANCED_STRATEGY_KEY, "BACKTEST", true),
     };
 
     const startedAt = performance.now();
     const result = await runAdvancedKamaPortfolioBacktest({
       request,
       strategy,
-      config: strategy.defaultConfig,
+      config,
       candles,
       startMs: request.startDate,
       endMs: request.endDate,
@@ -87,7 +107,6 @@ describe("Kama 彩虹馬丁 M2 大型資料回測", () => {
       expect(checkpoints[index].processedBars).toBeGreaterThanOrEqual(checkpoints[index - 1].processedBars);
       expect(checkpoints[index].progress).toBeGreaterThanOrEqual(checkpoints[index - 1].progress);
     }
-    // O(n) 正式路徑應遠低於 Heartbeat 兩分鐘上限；保留 CI／共享 CPU 餘裕。
     expect(elapsedMs).toBeLessThan(30_000);
   }, 45_000);
 });

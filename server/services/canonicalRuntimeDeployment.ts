@@ -5,6 +5,7 @@ import {
   type ExecutionMode,
   type ExecutionPolicy,
 } from "../../shared/executionModes";
+import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "../../shared/strategies/kamaRainbowMartin";
 import { normalizeStrategyExecutionPolicy } from "../../shared/strategies/kamaRainbowMartinExecutionPolicy";
 import { getStrategyById } from "../db";
 import { buildBacktestHash } from "./backtest/backtestContracts";
@@ -58,6 +59,7 @@ export interface CanonicalRuntimeDeployment {
   provenance:
     | "SEALED_EXECUTION_PROFILE"
     | "LEGACY_S1_MEMORY_MIGRATION"
+    | "KRM_S1_CAPABILITY_RESEAL"
     | "REDUCE_ONLY_DRIFT_COMPATIBILITY";
   compatibilityWarnings?: string[];
 }
@@ -81,6 +83,21 @@ function manifestHash(value: unknown): string | undefined {
 
 function runtimeError(code: CanonicalRuntimeErrorCode, detail?: string): never {
   throw new CanonicalRuntimeDeploymentError(code, detail);
+}
+
+function canResealKrmS1CapabilityDowngrade(input: {
+  strategyKey: string;
+  artifact: StrategyArtifactEnvelope;
+  manifest: VersionedStrategyCapabilityManifest;
+  blockers: readonly string[];
+}): boolean {
+  return input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+    && input.artifact.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+    && input.artifact.executionMode === "SINGLE_EXCLUSIVE"
+    && input.artifact.strategyVersion === input.manifest.strategyVersion
+    && input.artifact.strategyLogicHash === input.manifest.strategyLogicHash
+    && input.blockers.length === 1
+    && input.blockers[0] === "STALE_CAPABILITY_MANIFEST";
 }
 
 function legacyS1Migration(
@@ -178,11 +195,18 @@ async function hydrateCanonicalRuntimeDeploymentInternal(
     integrityValid: true,
   });
   const compatibilityWarnings: string[] = [];
+  const resealKrmS1Capability = !compatibility.compatible
+    && canResealKrmS1CapabilityDowngrade({
+      strategyKey,
+      artifact,
+      manifest,
+      blockers: compatibility.blockers,
+    });
   if (!compatibility.compatible) {
     const reduceOnlyCompatible = options.allowReduceOnlyVersionDrift === true
       && compatibility.blockers.length > 0
       && compatibility.blockers.every(blocker => REDUCE_ONLY_COMPATIBLE_ARTIFACT_BLOCKERS.has(blocker));
-    if (!reduceOnlyCompatible) {
+    if (!resealKrmS1Capability && !reduceOnlyCompatible) {
       runtimeError("RUNTIME_ARTIFACT_INCOMPATIBLE", compatibility.blockers.join(","));
     }
     compatibilityWarnings.push(...compatibility.blockers);
@@ -206,31 +230,53 @@ async function hydrateCanonicalRuntimeDeploymentInternal(
     runtimeError("RUNTIME_STRATEGY_VERSION_MISMATCH");
   }
   const rowManifestHash = manifestHash(strategy.capabilitySnapshot);
+  const resealSnapshotMatchesSealedArtifact = resealKrmS1Capability
+    && rowManifestHash === artifact.capabilityManifest.manifestHash;
   if (
     !rowManifestHash
     || rowManifestHash !== artifact.capabilityManifest.manifestHash
     || rowManifestHash !== manifest.manifestHash
   ) {
-    if (options.allowReduceOnlyVersionDrift !== true) {
+    if (!resealSnapshotMatchesSealedArtifact && options.allowReduceOnlyVersionDrift !== true) {
       runtimeError("RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH");
     }
     compatibilityWarnings.push("RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH");
   }
 
+  const runtimeArtifact = resealKrmS1Capability
+    ? buildStrategyArtifactEnvelope({
+        artifactScope: "EXECUTION_PROFILE",
+        strategyKey,
+        strategyVersion: manifest.strategyVersion,
+        strategyLogicHash: manifest.strategyLogicHash,
+        config,
+        executionMode: "SINGLE_EXCLUSIVE",
+        executionPolicy: artifact.executionPolicy,
+        capabilityManifest: manifest,
+        source: artifact.source,
+      })
+    : artifact;
+  const runtimeMartinState = resealKrmS1Capability
+    ? replaceBoundStrategyArtifact(asRecord(strategy.martinState), strategyKey, runtimeArtifact)
+    : strategy.martinState;
+
   return {
     strategy: {
       ...strategy,
-      executionMode: artifact.executionMode,
-      executionPolicy: artifact.executionPolicy,
-      executionPolicyVersion: artifact.executionPolicyVersion,
-      strategyVersion: artifact.strategyVersion,
-      capabilitySnapshot: artifact.capabilityManifest,
+      martinState: runtimeMartinState,
+      executionMode: runtimeArtifact.executionMode,
+      executionPolicy: runtimeArtifact.executionPolicy,
+      executionPolicyVersion: runtimeArtifact.executionPolicyVersion,
+      strategyVersion: runtimeArtifact.strategyVersion,
+      capabilitySnapshot: runtimeArtifact.capabilityManifest,
     },
-    artifact,
+    artifact: runtimeArtifact,
     manifest,
-    executionMode: artifact.executionMode,
-    executionPolicy: artifact.executionPolicy,
-    provenance: compatibilityWarnings.length > 0
+    executionMode: runtimeArtifact.executionMode,
+    executionPolicy: runtimeArtifact.executionPolicy,
+    provenance: resealKrmS1Capability
+      ? "KRM_S1_CAPABILITY_RESEAL"
+      : compatibilityWarnings.length > 0
       ? "REDUCE_ONLY_DRIFT_COMPATIBILITY"
       : "SEALED_EXECUTION_PROFILE",
     compatibilityWarnings: Array.from(new Set(compatibilityWarnings)),

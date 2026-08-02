@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { createAdapter } from "./exchanges/factory";
-import { ENV } from "./_core/env";
 
 // Mock the decrypt function globally for server/lib/crypto.ts
 vi.mock("../server/lib/crypto", async (importOriginal) => {
@@ -11,14 +10,14 @@ vi.mock("../server/lib/crypto", async (importOriginal) => {
   };
 });
 
-describe("OKX API Authentication Test", () => {
-  it("should successfully connect to OKX testnet with provided credentials", async () => {
-    const RUN_OKX_AUTH_TEST = process.env.OKX_API_KEY && process.env.OKX_API_SECRET && process.env.OKX_API_PASSPHRASE;
+const runOkxLiveAuthTest = process.env.RUN_OKX_LIVE_AUTH_TEST === "1";
+const liveAuthIt = runOkxLiveAuthTest ? it : it.skip;
 
-    if (!RUN_OKX_AUTH_TEST) {
-      console.warn("Skipping OKX API authentication test: OKX_API_KEY, OKX_API_SECRET, or OKX_API_PASSPHRASE not set.");
-      return;
-    }
+describe("OKX API live authentication integration", () => {
+  liveAuthIt("connects to OKX testnet only when explicitly enabled", async () => {
+    expect(process.env.OKX_API_KEY, "OKX_API_KEY is required when RUN_OKX_LIVE_AUTH_TEST=1").toBeTruthy();
+    expect(process.env.OKX_API_SECRET, "OKX_API_SECRET is required when RUN_OKX_LIVE_AUTH_TEST=1").toBeTruthy();
+    expect(process.env.OKX_API_PASSPHRASE, "OKX_API_PASSPHRASE is required when RUN_OKX_LIVE_AUTH_TEST=1").toBeTruthy();
 
     // Directly use plain text environment variables for testing
     const adapter = createAdapter({
@@ -32,5 +31,5 @@ describe("OKX API Authentication Test", () => {
     // Attempt to get server time as a lightweight authenticated call
     const serverTime = await adapter.getServerTime();
     expect(serverTime).toBeGreaterThan(0);
-  }, 30000); // 30 seconds timeout for API call
+  }, 30_000);
 });
