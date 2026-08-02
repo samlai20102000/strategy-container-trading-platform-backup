@@ -45,8 +45,6 @@ import ExecutionProfileSummary from "@/components/ExecutionProfileSummary";
 import {
   DEPLOYMENT_MODE_META,
   DEPLOYMENT_SAFETY_COPY,
-  buildDeploymentTransitionKey,
-  canSwitchDeploymentMode,
 } from "@/lib/deploymentWorkbench";
 import {
   getStrategyApiIdentity,
@@ -386,7 +384,6 @@ function StrategiesContent() {
   const [strategySearch, setStrategySearch] = useState("");
   const [strategyFilter, setStrategyFilter] = useState<"all" | "martingale" | "non_martingale" | "running" | "stopped">("all");
   const [strategyPage, setStrategyPage] = useState(1);
-  const [draftModeByStrategyId, setDraftModeByStrategyId] = useState<Record<number, ExecutionMode>>({});
   const [expandedMartinStrategyIds, setExpandedMartinStrategyIds] = useState<Set<number>>(() => new Set());
   const [refreshingMartinStrategyId, setRefreshingMartinStrategyId] = useState<number | null>(null);
   const strategyPageSize = 8;
@@ -766,27 +763,10 @@ function StrategiesContent() {
     onError: (error) => toast.error(`建立部署草稿失敗：${error.message}`),
   });
 
-  const switchDeploymentModeMutation = trpc.deployments.switchMode.useMutation({
-    onSuccess: (result) => {
-      toast.success("模式切換與 flat Preflight 已完成", {
-        description: "部署保持停用；請到部署工作台檢閱最新報告後再明確啟用。",
-      });
-      void utils.strategies.list.invalidate();
-      void utils.deployments.list.invalidate();
-      void utils.deployments.getStatus.invalidate({ deploymentId: result.deployment.id });
-    },
-    onError: (error) => {
-      toast.error(`模式切換未執行：${error.message}`, {
-        description: "任何持倉、能力、revision 或安全 Gate 不明時均維持 fail-closed。",
-      });
-      void utils.strategies.list.invalidate();
-    },
-  });
-
   const createDisabledDraftFromStrategy = (
     strategy: NonNullable<typeof strategies>[number],
-    executionMode: ExecutionMode,
   ) => {
+    const executionMode: ExecutionMode = "SINGLE_EXCLUSIVE";
     const strategyKey = String((strategy as any).strategyKey ?? "").trim();
     if (!strategyKey || strategyKey === "none") {
       toast.error("此策略沒有可封印的 registry strategyKey，無法建立 canonical 部署草稿。");
@@ -824,41 +804,6 @@ function StrategiesContent() {
       reentryCooldownBars: Math.max(0, Math.round(Number((strategy as any).reentryCooldownBars) || 0)),
       tradeMode: (strategy as any).tradeMode === "auto" ? "auto" : "webhook",
       kLinePeriod: Math.max(1, Math.round(Number((strategy as any).kLinePeriod) || 15)),
-    });
-  };
-
-  const switchCanonicalDeploymentMode = (
-    strategy: NonNullable<typeof strategies>[number],
-    executionMode: ExecutionMode,
-  ) => {
-    const currentMode = strategyExecutionMode((strategy as any).executionMode);
-    if (executionMode === currentMode) return;
-    const activationState = strategyActivationState((strategy as any).activationState);
-    if (!canSwitchDeploymentMode(activationState, Boolean(strategy.enabled))) {
-      toast.error("目前生命週期狀態不允許切換模式", {
-        description: "請先停止新曝險並在部署工作台完成排空／停用；系統不會自動平倉或變更交易所設定。",
-      });
-      return;
-    }
-    const expectedRevision = Number((strategy as any).deploymentRevision);
-    const strategyKey = String((strategy as any).strategyKey ?? "").trim();
-    if (!Number.isInteger(expectedRevision) || expectedRevision < 1 || !strategyKey || strategyKey === "none") {
-      toast.error("部署 revision 或 registry strategyKey 不完整，已保持 fail-closed。");
-      return;
-    }
-    const modeMeta = DEPLOYMENT_MODE_META[executionMode];
-    if (!confirm(
-      `將「${strategy.name}」切換為 ${modeMeta.code} · ${modeMeta.label}？\n\n系統會先執行 flat／能力／風險唯讀 Preflight；任一 Gate 不通過即拒絕切換。成功後仍保持停用，絕不自動送單。`,
-    )) return;
-
-    switchDeploymentModeMutation.mutate({
-      deploymentId: strategy.id,
-      expectedRevision,
-      transitionKey: buildDeploymentTransitionKey("strategy-card-mode", strategy.id),
-      executionMode,
-      executionPolicy: createDefaultStrategyExecutionPolicy(strategyKey, executionMode) as unknown as Record<string, unknown>,
-      reasonCode: "OPERATOR_STRATEGY_CARD_MODE_SWITCH",
-      reason: `Operator switched deployment mode from Strategies card to ${executionMode}.`,
     });
   };
 
@@ -1558,88 +1503,27 @@ function StrategiesContent() {
                       strategyVersion={Number((s as any).strategyVersion) || undefined}
                     />
 
-                    <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.025] p-3" data-testid={`strategy-mode-controls-${s.id}`}>
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <p className="text-xs font-semibold text-cyan-200">Execution Mode</p>
-                          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                            {isCanonicalDeploymentRow(s)
-                              ? "直接切換會先執行 flat 與唯讀 Preflight；成功後仍保持停用。"
-                              : "舊策略只選擇新草稿模式，不改動目前策略，也不會自動啟用。"}
-                          </p>
-                        </div>
-                        <Badge variant="outline" className="border-slate-500/35 text-[10px] text-slate-300">
-                          {isCanonicalDeploymentRow(s)
-                            ? `revision ${(s as any).deploymentRevision ?? "—"}`
-                            : "LEGACY 相容"}
-                        </Badge>
-                      </div>
-                      <div className="mt-3 grid grid-cols-3 gap-2">
-                        {EXECUTION_MODES.map((mode) => {
-                          const meta = DEPLOYMENT_MODE_META[mode];
-                          const currentMode = strategyExecutionMode((s as any).executionMode);
-                          const selectedDraftMode = draftModeByStrategyId[s.id] ?? currentMode;
-                          const isActive = isCanonicalDeploymentRow(s)
-                            ? currentMode === mode
-                            : selectedDraftMode === mode;
-                          const activationState = strategyActivationState((s as any).activationState);
-                          const switchAllowed = canSwitchDeploymentMode(activationState, Boolean(s.enabled));
-                          return (
-                            <Button
-                              key={mode}
-                              type="button"
-                              size="sm"
-                              variant={isActive ? "default" : "outline"}
-                              className={isActive ? "h-auto min-h-9 py-1.5" : `h-auto min-h-9 py-1.5 ${meta.accent}`}
-                              disabled={
-                                createDeploymentDraftMutation.isPending
-                                || switchDeploymentModeMutation.isPending
-                                || (isCanonicalDeploymentRow(s) && (isActive || !switchAllowed))
-                              }
-                              title={isCanonicalDeploymentRow(s) && !switchAllowed && !isActive
-                                ? "需先排空並停用部署才可切換模式"
-                                : `${meta.code} · ${meta.label}`}
-                              onClick={() => {
-                                if (isCanonicalDeploymentRow(s)) {
-                                  switchCanonicalDeploymentMode(s, mode);
-                                } else {
-                                  setDraftModeByStrategyId(current => ({ ...current, [s.id]: mode }));
-                                }
-                              }}
-                            >
-                              <span className="flex flex-col items-center leading-tight">
-                                <span>{meta.code}</span>
-                                <span className="text-[9px] font-normal opacity-80">{meta.label}</span>
-                              </span>
-                            </Button>
-                          );
-                        })}
-                      </div>
-                      {!isCanonicalDeploymentRow(s) ? (
+                    {!isCanonicalDeploymentRow(s) ? (
                         <Button
                           type="button"
                           size="sm"
-                          className="mt-3 w-full bg-cyan-600 text-white hover:bg-cyan-500"
+                          className="w-full bg-cyan-600 text-white hover:bg-cyan-500"
                           disabled={createDeploymentDraftMutation.isPending}
-                          onClick={() => createDisabledDraftFromStrategy(
-                            s,
-                            draftModeByStrategyId[s.id] ?? strategyExecutionMode((s as any).executionMode),
-                          )}
+                          onClick={() => createDisabledDraftFromStrategy(s)}
                         >
                           {createDeploymentDraftMutation.isPending
                             ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                             : <Plus className="mr-2 h-3.5 w-3.5" />}
-                          建立 {DEPLOYMENT_MODE_META[draftModeByStrategyId[s.id] ?? strategyExecutionMode((s as any).executionMode)].code} 停用部署草稿
+                          建立 S1 停用部署草稿
                         </Button>
                       ) : (
-                        <Button asChild type="button" size="sm" variant="outline" className="mt-3 w-full border-cyan-500/30 text-cyan-300">
+                        <Button asChild type="button" size="sm" variant="outline" className="w-full border-cyan-500/30 text-cyan-300">
                           <Link href={`/deployments?deploymentId=${s.id}`}>
                             <Radio className="mr-2 h-3.5 w-3.5" />
                             檢閱 Preflight 與生命週期
                           </Link>
                         </Button>
                       )}
-                    </div>
 
 	                    {!s.enabled && s.disabledReason && (
                       <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-400">
@@ -4017,13 +3901,8 @@ function V61ConfigPanel({
  */
 function KrmHeartbeatTraceBadges({ trace }: { trace: KamaRainbowMartinHeartbeatTrace | null }) {
   if (!trace) return null;
-  const modeLabels: Record<string, string> = {
-    SINGLE_EXCLUSIVE: "S1",
-    MULTI_POSITION: "M2",
-    HEDGE_GUARDED: "H3",
-  };
   const fields = [
-    trace.executionMode ? (modeLabels[trace.executionMode] ?? trace.executionMode) : null,
+    trace.executionMode ? "S1" : null,
     trace.reasonCode,
     trace.layerNum == null ? null : `L${trace.layerNum}`,
     trace.cycleId ? `cycle:${trace.cycleId}` : null,

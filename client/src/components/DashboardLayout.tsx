@@ -44,7 +44,7 @@ import { trpc } from "@/lib/trpc";
 const menuItems = [
   { icon: LayoutDashboard, label: "實時控制中心", path: "/" },
   { icon: Settings2, label: "策略交易", path: "/strategies" },
-  { icon: Boxes, label: "三模式部署", path: "/deployments" },
+  { icon: Boxes, label: "S1 部署", path: "/deployments" },
   { icon: ShieldCheck, label: "訂單政策", path: "/order-policy" },
   { icon: FlaskConical, label: "策略工作室", path: "/studio" },
   { icon: History, label: "回測中心", path: "/backtest", hasBadge: true },

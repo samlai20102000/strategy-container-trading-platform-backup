@@ -15,7 +15,6 @@ import { trpc } from "@/lib/trpc";
 import {
   parseKamaRainbowMartinSignalPayload,
   type KamaRainbowMartinSignalTrace,
-  type KamaRainbowMartinTraceMode,
 } from "@shared/observability/kamaRainbowMartinSignalTrace";
 import {
   ChevronDown,
@@ -31,12 +30,6 @@ import { toast } from "sonner";
 const PAGE_SIZE = 25;
 
 export const parseKrmSignalTrace = parseKamaRainbowMartinSignalPayload;
-
-const KRM_MODE_LABELS: Record<KamaRainbowMartinTraceMode, string> = {
-  SINGLE_EXCLUSIVE: "S1 單倉獨佔",
-  MULTI_POSITION: "M2 多倉獨立",
-  HEDGE_GUARDED: "H3 保護對沖",
-};
 
 const KRM_ACTION_LABELS: Record<string, string> = {
   OPEN_LONG: "建立多腿",
@@ -90,7 +83,7 @@ function KrmSignalAuditPanel({ rawPayload }: { rawPayload: string | null }) {
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <KrmAuditField
           label="執行模式"
-          value={trace.executionMode ? KRM_MODE_LABELS[trace.executionMode] : "—（舊記錄未封印模式）"}
+          value="S1 單倉獨佔"
         />
         <KrmAuditField label="馬丁層級" value={trace.layerNum === null ? "—" : `L${trace.layerNum}`} />
         <KrmAuditField label="配置版本" value={trace.configRevision ?? missingIdentity} mono />

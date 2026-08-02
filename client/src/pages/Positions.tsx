@@ -15,16 +15,10 @@ import { toast } from "sonner";
 
 type KrmTradeTrace = NonNullable<RouterOutputs["performance"]["trades"][number]["kamaRainbowMartinTrace"]>;
 
-const KRM_TRADE_MODE_LABELS: Record<string, string> = {
-  SINGLE_EXCLUSIVE: "S1",
-  MULTI_POSITION: "M2",
-  HEDGE_GUARDED: "H3",
-};
-
 function KrmTradeTraceCell({ trace }: { trace: KrmTradeTrace | null }) {
   if (!trace) return <span className="text-muted-foreground">—</span>;
   const fields = [
-    trace.executionMode ? (KRM_TRADE_MODE_LABELS[trace.executionMode] ?? trace.executionMode) : null,
+    "S1",
     trace.reasonCode,
     trace.layerNum == null ? null : `L${trace.layerNum}`,
     trace.cycleId ? `cycle:${trace.cycleId}` : null,

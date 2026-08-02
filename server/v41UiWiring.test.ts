@@ -31,7 +31,9 @@ describe("V4.1 三頁共用 UI 接線契約", () => {
     expect(backtestSource.match(/modeCapabilities: s\.backtestModeCapabilities as StrategyModeCapabilities/g)).toHaveLength(2);
     expect(backtestSource).not.toContain("modeCapabilities: s.modeCapabilities as StrategyModeCapabilities");
     expect(executionModeConfiguratorSource).toContain('context === "backtest" ? "BACKTEST"');
-    expect(executionModeConfiguratorSource).toContain("此處只影響回測");
+    expect(executionModeConfiguratorSource).toContain("回測、快照與部署均採用 S1 單倉獨占政策");
+    expect(executionModeConfiguratorSource).not.toContain("MULTI_POSITION");
+    expect(executionModeConfiguratorSource).not.toContain("HEDGE_GUARDED");
   });
 
   it("策略交易頁用 canonical 空白預設並同時封鎖無效表單及無效快照", () => {

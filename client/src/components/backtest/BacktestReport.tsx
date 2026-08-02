@@ -43,22 +43,10 @@ import {
 } from "@shared/strategies/kamaRainbowMartin";
 import type { ExecutionMode, ExecutionPolicy } from "@shared/executionModes";
 
-const EXECUTION_MODE_META: Record<ExecutionMode, { code: string; label: string; className: string }> = {
-  SINGLE_EXCLUSIVE: {
-    code: "S1",
-    label: "單倉互斥",
-    className: "border-cyan-500/45 bg-cyan-500/10 text-cyan-200",
-  },
-  MULTI_POSITION: {
-    code: "M2",
-    label: "雙向獨立",
-    className: "border-violet-500/45 bg-violet-500/10 text-violet-200",
-  },
-  HEDGE_GUARDED: {
-    code: "H3",
-    label: "保護對沖",
-    className: "border-amber-500/45 bg-amber-500/10 text-amber-200",
-  },
+const S1_EXECUTION_MODE_META = {
+  code: "S1",
+  label: "單倉互斥",
+  className: "border-cyan-500/45 bg-cyan-500/10 text-cyan-200",
 };
 
 export interface ReportTrade {
@@ -192,10 +180,7 @@ function fmtTime(ts: number): string {
   return new Date(ts).toLocaleString("zh-TW", { hour12: false });
 }
 
-function tradeDeploymentMode(trade: ReportTrade): "S1" | "M2" | "H3" {
-  if (trade.deploymentMode) return trade.deploymentMode;
-  if (trade.role === "INDEPENDENT") return "M2";
-  if (trade.role === "HEDGE") return "H3";
+function tradeDeploymentMode(_trade: ReportTrade): "S1" {
   return "S1";
 }
 
@@ -392,8 +377,8 @@ export default function BacktestReport({
             {strategyKey}
           </Badge>
         )}
-        <Badge variant="outline" className={`text-xs font-semibold ${EXECUTION_MODE_META[executionMode].className}`}>
-          {EXECUTION_MODE_META[executionMode].code} · {EXECUTION_MODE_META[executionMode].label}
+        <Badge variant="outline" className={`text-xs font-semibold ${S1_EXECUTION_MODE_META.className}`}>
+          {S1_EXECUTION_MODE_META.code} · {S1_EXECUTION_MODE_META.label}
         </Badge>
         <Badge variant="secondary" className="text-xs font-mono" title={runId}>
           {runId.length > 40 ? runId.slice(0, 40) + "..." : runId}
@@ -781,13 +766,7 @@ export default function BacktestReport({
                   <TableRow key={t.id}>
                     <TableCell className="text-xs whitespace-nowrap">{fmtTime(t.exitTime)}</TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={`text-[10px] font-semibold ${
-                        tradeDeploymentMode(t) === "S1"
-                          ? EXECUTION_MODE_META.SINGLE_EXCLUSIVE.className
-                          : tradeDeploymentMode(t) === "M2"
-                            ? EXECUTION_MODE_META.MULTI_POSITION.className
-                            : EXECUTION_MODE_META.HEDGE_GUARDED.className
-                      }`} title={`${t.role ?? "PRIMARY"} · ${t.cycleId ?? "legacy-s1"} · ${t.legId ?? `legacy-s1:${t.id}`} · ${t.triggerSource ?? "LEGACY"} · ${t.entryReason ?? "LEGACY_ENTRY"}`}>
+                      <Badge variant="outline" className={`text-[10px] font-semibold ${S1_EXECUTION_MODE_META.className}`} title={`${t.role ?? "PRIMARY"} · ${t.cycleId ?? "legacy-s1"} · ${t.legId ?? `legacy-s1:${t.id}`} · ${t.triggerSource ?? "LEGACY"} · ${t.entryReason ?? "LEGACY_ENTRY"}`}>
                         {tradeDeploymentMode(t)}
                       </Badge>
                     </TableCell>

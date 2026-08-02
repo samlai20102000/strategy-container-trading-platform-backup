@@ -3,7 +3,6 @@ import {
   Activity,
   AlertTriangle,
   Archive,
-  ArrowRightLeft,
   Ban,
   Boxes,
   CheckCircle2,
@@ -23,7 +22,6 @@ import {
   Settings2,
   ShieldAlert,
   ShieldCheck,
-  TimerReset,
   Waves,
   XCircle,
 } from "lucide-react";
@@ -32,10 +30,9 @@ import {
   type DeploymentActivationState,
   type ExecutionMode,
   type ExecutionPolicy,
+  type SingleExclusivePolicy,
 } from "@shared/executionModes";
-import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "@shared/strategies/kamaRainbowMartin";
 import {
-  KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT,
   createDefaultStrategyExecutionPolicy,
   normalizeStrategyExecutionPolicy,
 } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
@@ -195,8 +192,6 @@ function RecentModeDecisionsPanel({
 
 const EXECUTION_MODES: ExecutionMode[] = [
   "SINGLE_EXCLUSIVE",
-  "MULTI_POSITION",
-  "HEDGE_GUARDED",
 ];
 
 const ACTIVATION_STATES: DeploymentActivationState[] = [
@@ -319,11 +314,17 @@ function PolicyEditor({
   strategyKey?: string | null;
   onChange: (policy: ExecutionPolicy) => void;
 }) {
-  const isKamaRainbowMartin = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
+  const singlePolicy = (policy.mode === "SINGLE_EXCLUSIVE"
+    ? policy
+    : {
+        ...createDefaultStrategyExecutionPolicy(strategyKey ?? undefined, "SINGLE_EXCLUSIVE"),
+        riskBudget: policy.riskBudget,
+        mode: "SINGLE_EXCLUSIVE",
+      }) as SingleExclusivePolicy;
   const updateRisk = (field: keyof ExecutionPolicy["riskBudget"], value: number) => {
     onChange({
-      ...policy,
-      riskBudget: { ...policy.riskBudget, [field]: value },
+      ...singlePolicy,
+      riskBudget: { ...singlePolicy.riskBudget, [field]: value },
     } as ExecutionPolicy);
   };
 
@@ -337,7 +338,7 @@ function PolicyEditor({
             type="number"
             min={1}
             max={500}
-            value={policy.riskBudget.maxGrossNotionalPct}
+            value={singlePolicy.riskBudget.maxGrossNotionalPct}
             onChange={event => updateRisk("maxGrossNotionalPct", Number(event.target.value))}
           />
         </div>
@@ -348,7 +349,7 @@ function PolicyEditor({
             type="number"
             min={1}
             max={100}
-            value={policy.riskBudget.maxMarginUsagePct}
+            value={singlePolicy.riskBudget.maxMarginUsagePct}
             onChange={event => updateRisk("maxMarginUsagePct", Number(event.target.value))}
           />
         </div>
@@ -359,123 +360,26 @@ function PolicyEditor({
             type="number"
             min={15}
             max={3600}
-            value={policy.riskBudget.capabilityTtlSeconds}
+            value={singlePolicy.riskBudget.capabilityTtlSeconds}
             onChange={event => updateRisk("capabilityTtlSeconds", Number(event.target.value))}
           />
         </div>
       </div>
 
-      {policy.mode === "SINGLE_EXCLUSIVE" && (
-        <div className="space-y-2">
-          <Label>反向信號策略</Label>
-          <Select
-            value={policy.oppositeSignalPolicy}
-            onValueChange={value => onChange({ ...policy, oppositeSignalPolicy: value } as ExecutionPolicy)}
-          >
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="CLOSE_THEN_WAIT">先平倉後等待</SelectItem>
-              <SelectItem value="CLOSE_THEN_REVERSE">先平倉再反向</SelectItem>
-              <SelectItem value="IGNORE">忽略反向信號</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-
-      {policy.mode === "MULTI_POSITION" && (
-        <Alert className="border-violet-500/30 bg-violet-500/10">
-          <Boxes className="h-4 w-4 text-violet-300" />
-          <AlertTitle>M2 固定安全契約</AlertTitle>
-          <AlertDescription>
-            最多兩腿、LONG／SHORT 各一腿，馬丁與出場狀態按 leg 隔離；這些不變量不可由 UI 關閉。
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {policy.mode === "HEDGE_GUARDED" && (
-        <div className="space-y-4 rounded-xl border border-amber-500/25 bg-amber-500/5 p-4">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label>主腿浮虧觸發（%）</Label>
-              <Input
-                type="number"
-                min={0.1}
-                max={100}
-                step={0.1}
-                value={policy.primaryLossTriggerPct}
-                disabled={isKamaRainbowMartin}
-                onChange={event => onChange({
-                  ...policy,
-                  primaryLossTriggerPct: Number(event.target.value),
-                })}
-              />
-              {isKamaRainbowMartin && (
-                <p className="text-xs leading-5 text-amber-200/80">
-                  KRM canonical 契約固定為 {KAMA_RAINBOW_MARTIN_H3_PRIMARY_LOSS_TRIGGER_PCT}%：先於預設 5% 硬止損啟動保護腿。
-                </p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label>對沖比例</Label>
-              <Input
-                type="number"
-                min={0.01}
-                max={1}
-                step={0.01}
-                value={policy.hedgeRatio}
-                onChange={event => onChange({ ...policy, hedgeRatio: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>最大對沖比例</Label>
-              <Input
-                type="number"
-                min={0.01}
-                max={1}
-                step={0.01}
-                value={policy.maxHedgeRatio}
-                onChange={event => onChange({ ...policy, maxHedgeRatio: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>對沖冷卻（秒）</Label>
-              <Input
-                type="number"
-                min={0}
-                max={86400}
-                value={policy.hedgeCooldownSeconds}
-                onChange={event => onChange({ ...policy, hedgeCooldownSeconds: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>最短持有（秒）</Label>
-              <Input
-                type="number"
-                min={0}
-                max={86400}
-                value={policy.minimumHedgeHoldSeconds}
-                onChange={event => onChange({ ...policy, minimumHedgeHoldSeconds: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>解除策略</Label>
-              <Select
-                value={policy.unwindPolicy}
-                onValueChange={value => onChange({ ...policy, unwindPolicy: value } as ExecutionPolicy)}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="CLOSE_LOSER_KEEP_WINNER">平虧損腿、保留獲利腿</SelectItem>
-                  <SelectItem value="CLOSE_HEDGE_ON_RECOVERY">主腿恢復時平保護腿</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <p className="text-xs leading-5 text-amber-200/80">
-            H3 必須同時滿足主腿浮虧門檻與反向信號。保護腿馬丁固定停用，backend 會再次正規化並驗證。
-          </p>
-        </div>
-      )}
+      <div className="space-y-2">
+        <Label>反向信號策略</Label>
+        <Select
+          value={singlePolicy.oppositeSignalPolicy}
+          onValueChange={value => onChange({ ...singlePolicy, oppositeSignalPolicy: value } as ExecutionPolicy)}
+        >
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CLOSE_THEN_WAIT">先平倉後等待</SelectItem>
+            <SelectItem value="CLOSE_THEN_REVERSE">先平倉再反向</SelectItem>
+            <SelectItem value="IGNORE">忽略反向信號</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
     </div>
   );
 }
@@ -632,7 +536,6 @@ export default function DeploymentWorkbench() {
     new URLSearchParams(window.location.search).get("panel") === "quick-start" ? "quick-start" : "manage"
   ));
   const [search, setSearch] = useState("");
-  const [modeFilter, setModeFilter] = useState<ExecutionMode | "ALL">("ALL");
   const [stateFilter, setStateFilter] = useState<DeploymentActivationState | "ALL">("ALL");
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(() => {
@@ -643,7 +546,6 @@ export default function DeploymentWorkbench() {
   const [pendingAction, setPendingAction] = useState<WorkbenchLifecycleAction | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
-  const [modeOpen, setModeOpen] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
   const [quickCreatedId, setQuickCreatedId] = useState<number | null>(null);
   const [quickSymbolSpec, setQuickSymbolSpec] = useState<{
@@ -676,9 +578,9 @@ export default function DeploymentWorkbench() {
 
   const listInput = useMemo(() => ({
     includeArchived,
-    executionMode: modeFilter === "ALL" ? undefined : modeFilter,
+    executionMode: "SINGLE_EXCLUSIVE" as const,
     activationState: stateFilter === "ALL" ? undefined : stateFilter,
-  }), [includeArchived, modeFilter, stateFilter]);
+  }), [includeArchived, stateFilter]);
   const statusInput = useMemo(() => ({ deploymentId: selectedId ?? 0 }), [selectedId]);
   const historyInput = useMemo(() => ({ deploymentId: selectedId ?? 0, limit: 100 }), [selectedId]);
   const quickSnapshotsInput = useMemo(() => ({ sortBy: "createdAt" as const, limit: 100 }), []);
@@ -797,17 +699,11 @@ export default function DeploymentWorkbench() {
     setLatestReport(null);
   };
 
-  const setQuickMode = (executionMode: ExecutionMode) => {
-    resetQuickResult();
-    setQuickForm(form => ({ ...form, executionMode }));
-    setQuickPolicy(createDefaultStrategyExecutionPolicy(quickForm.strategyKey || undefined, executionMode));
-  };
-
   const selectQuickStrategy = (value: string) => {
     resetQuickResult();
     const strategy = quickStrategiesQuery.data?.find(item => String(item.id) === value);
     const strategyKey = strategy?.strategyKey ?? "";
-    const executionMode = asMode(strategy?.executionMode);
+    const executionMode: ExecutionMode = "SINGLE_EXCLUSIVE";
     setQuickForm(form => ({
       ...form,
       sourceStrategyId: value === "__none" ? "" : value,
@@ -829,9 +725,7 @@ export default function DeploymentWorkbench() {
     const snapshot = quickSnapshotsQuery.data?.find(item => String(item.id) === value);
     const settings = snapshot?.backtestSettings as Record<string, unknown> | null | undefined;
     const config = snapshot?.config as Record<string, unknown> | null | undefined;
-    const executionMode = snapshot?.artifact?.executionMode
-      ? asMode(snapshot.artifact.executionMode)
-      : quickForm.executionMode;
+    const executionMode: ExecutionMode = "SINGLE_EXCLUSIVE";
     const sourceSymbol = settings?.symbol ?? config?.symbol ?? config?.Symbol;
     const rawSize = settings?.baseLotSize ?? settings?.tradeAmount;
     setQuickForm(form => ({
@@ -853,7 +747,7 @@ export default function DeploymentWorkbench() {
   const selectQuickDefinition = (strategyKey: string) => {
     resetQuickResult();
     const definition = registryQuery.data?.find(item => item.key === strategyKey);
-    const executionMode = quickForm.executionMode;
+    const executionMode: ExecutionMode = "SINGLE_EXCLUSIVE";
     setQuickForm(form => ({
       ...form,
       sourceStrategyId: "",
@@ -898,8 +792,13 @@ export default function DeploymentWorkbench() {
       strategyKey: quickForm.strategyKey,
       ...(quickForm.sourceKind === "STRATEGY_INSTANCE" ? { sourceStrategyId: Number(quickForm.sourceStrategyId) } : {}),
       ...(quickForm.sourceKind === "PARAMETER_SNAPSHOT" ? { sourceSnapshotId: Number(quickForm.sourceSnapshotId) } : {}),
-      executionMode: quickForm.executionMode,
-      executionPolicy: { ...quickPolicy } as Record<string, unknown>,
+      executionMode: "SINGLE_EXCLUSIVE",
+      executionPolicy: {
+        ...normalizeStrategyExecutionPolicy(quickForm.strategyKey, {
+          ...quickPolicy,
+          mode: "SINGLE_EXCLUSIVE",
+        }),
+      } as Record<string, unknown>,
       positionSize,
       positionMode: quickForm.positionMode,
       leverage,
@@ -960,35 +859,15 @@ export default function DeploymentWorkbench() {
     onError: mutationError,
   });
 
-  const [copyForm, setCopyForm] = useState({ name: "", executionMode: activeMode });
+  const [copyForm, setCopyForm] = useState({ name: "" });
   useEffect(() => {
-    if (activeDeployment) setCopyForm({ name: `${activeDeployment.name} 副本`, executionMode: activeMode });
-  }, [activeDeployment?.id, activeDeployment?.name, activeMode]);
+    if (activeDeployment) setCopyForm({ name: `${activeDeployment.name} 副本` });
+  }, [activeDeployment?.id, activeDeployment?.name]);
   const copyMutation = trpc.deployments.copy.useMutation({
     onSuccess: deployment => {
       toast.success("部署副本已建立並保持停用");
       setCopyOpen(false);
       setSelectedId(deployment.id);
-      refreshDeployment();
-    },
-    onError: mutationError,
-  });
-
-  const [targetMode, setTargetMode] = useState<ExecutionMode>(activeMode);
-  const [targetPolicy, setTargetPolicy] = useState<ExecutionPolicy>(() => (
-    createDefaultStrategyExecutionPolicy(undefined, activeMode)
-  ));
-  const openModeDialog = () => {
-    const nextMode = activeMode === "SINGLE_EXCLUSIVE" ? "MULTI_POSITION" : "SINGLE_EXCLUSIVE";
-    setTargetMode(nextMode);
-    setTargetPolicy(createDefaultStrategyExecutionPolicy(activeDeployment?.strategyKey, nextMode));
-    setModeOpen(true);
-  };
-  const switchModeMutation = trpc.deployments.switchMode.useMutation({
-    onSuccess: result => {
-      setLatestReport(parsePreflightReport(result.report));
-      toast.success("模式切換 preflight 通過，policy 已更新且部署保持停用");
-      setModeOpen(false);
       refreshDeployment();
     },
     onError: mutationError,
@@ -1018,9 +897,9 @@ export default function DeploymentWorkbench() {
               <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300/90">
                 <LockKeyhole className="h-4 w-4" /> Canonical Deployment Control Plane
               </div>
-              <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">三模式部署工作台</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">S1 部署工作台</h1>
               <p className="mt-3 text-sm leading-6 text-slate-300 sm:text-base">
-                以 revision、preflight 與 transition journal 操作 S1／M2／H3。建立、複製與模式切換皆保持停用，只有通過最新唯讀 Gate 後才能明確啟用。
+                以 revision、preflight 與 transition journal 管理 S1 單倉獨占部署。建立與複製皆保持停用，只有通過最新唯讀 Gate 後才能明確啟用。
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1092,14 +971,7 @@ export default function DeploymentWorkbench() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input value={search} onChange={event => setSearch(event.target.value)} placeholder="名稱、商品、策略或 ID" className="pl-9" />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Select value={modeFilter} onValueChange={value => setModeFilter(value as ExecutionMode | "ALL")}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ALL">全部模式</SelectItem>
-                    {EXECUTION_MODES.map(mode => <SelectItem key={mode} value={mode}>{DEPLOYMENT_MODE_META[mode].code} · {DEPLOYMENT_MODE_META[mode].label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+              <div>
                 <Select value={stateFilter} onValueChange={value => setStateFilter(value as DeploymentActivationState | "ALL")}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -1174,7 +1046,6 @@ export default function DeploymentWorkbench() {
                     <div className="flex flex-wrap gap-2">
                       <Button size="sm" variant="outline" onClick={() => setCopyOpen(true)}><Copy className="mr-2 h-4 w-4" />複製</Button>
                       <Button size="sm" variant="outline" onClick={openPolicyDialog} disabled={!canSwitchDeploymentMode(activeState, Boolean(activeDeployment.enabled))}><Settings2 className="mr-2 h-4 w-4" />Policy</Button>
-                      <Button size="sm" variant="outline" onClick={openModeDialog} disabled={!canSwitchDeploymentMode(activeState, Boolean(activeDeployment.enabled))}><ArrowRightLeft className="mr-2 h-4 w-4" />切換模式</Button>
                     </div>
                   </div>
 
@@ -1280,7 +1151,6 @@ export default function DeploymentWorkbench() {
                                 ["Open legs", statusQuery.data?.ledger.openLegCount ?? 0],
                                 ["Pending intents", statusQuery.data?.ledger.pendingIntentCount ?? 0],
                                 ["Reconciliation", statusQuery.data?.ledger.unresolvedReconciliationCount ?? 0],
-                                ["Hedge links", statusQuery.data?.ledger.activeHedgeRelationshipCount ?? 0],
                                 ["Reservations", statusQuery.data?.ledger.activeReservationCount ?? 0],
                               ].map(([label, value]) => (
                                 <div key={String(label)} className="rounded-lg border border-border/50 bg-card/50 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-mono text-xl font-semibold">{value}</p></div>
@@ -1293,18 +1163,10 @@ export default function DeploymentWorkbench() {
                             isLoading={statusQuery.isLoading}
                           />
 
-                          <div className="grid gap-4 lg:grid-cols-3">
-                            {EXECUTION_MODES.map(mode => {
-                              const meta = DEPLOYMENT_MODE_META[mode];
-                              const current = mode === activeMode;
-                              return (
-                                <div key={mode} className={`rounded-xl border p-4 ${current ? meta.accent : "border-border/60 bg-background/20"}`}>
-                                  <div className="flex items-center justify-between"><span className="font-mono text-lg font-bold">{meta.code}</span>{current && <Badge variant="secondary">CURRENT</Badge>}</div>
-                                  <p className="mt-2 font-semibold">{meta.label}</p>
-                                  <p className="mt-1 text-sm leading-6 opacity-80">{meta.shortDescription}</p>
-                                </div>
-                              );
-                            })}
+                          <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4" data-testid="deployment-s1-mode-card">
+                            <div className="flex items-center justify-between"><span className="font-mono text-lg font-bold text-cyan-100">S1</span><Badge variant="secondary">CURRENT</Badge></div>
+                            <p className="mt-2 font-semibold">單倉獨占</p>
+                            <p className="mt-1 text-sm leading-6 text-muted-foreground">同一商品同一時間只允許一個方向的單一倉位。</p>
                           </div>
                         </>
                       )}
@@ -1414,7 +1276,7 @@ export default function DeploymentWorkbench() {
                     <CardTitle className="mt-2 text-lg">帳戶、交易所規格與交易對</CardTitle>
                   </CardHeader>
                   <CardContent className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2 sm:col-span-2"><Label>部署名稱</Label><Input value={quickForm.name} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, name: event.target.value })); }} placeholder="例如：BTC H3 保護部署" /></div>
+                    <div className="space-y-2 sm:col-span-2"><Label>部署名稱</Label><Input value={quickForm.name} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, name: event.target.value })); }} placeholder="例如：BTC S1 趨勢部署" /></div>
                     <div className="space-y-2">
                       <Label>交易所 API 帳戶</Label>
                       <Select value={quickForm.apiKeyId || undefined} onValueChange={apiKeyId => { resetQuickResult(); setQuickSymbolSpec(null); setQuickForm(form => ({ ...form, apiKeyId })); }}>
@@ -1455,19 +1317,13 @@ export default function DeploymentWorkbench() {
 
                 <Card className="border-border/70 bg-card/70">
                   <CardHeader>
-                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-300">Step 3 · Mode & Risk</p>
-                    <CardTitle className="mt-2 text-lg">Execution mode 與風控預算</CardTitle>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-300">Step 3 · S1 & Risk</p>
+                    <CardTitle className="mt-2 text-lg">S1 單倉政策與風控預算</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-5">
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      {EXECUTION_MODES.map(mode => {
-                        const meta = DEPLOYMENT_MODE_META[mode];
-                        return (
-                          <button key={mode} type="button" onClick={() => setQuickMode(mode)} className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] active:scale-[0.98] ${quickForm.executionMode === mode ? meta.accent : "border-border bg-background/30"}`}>
-                            <span className="font-mono text-lg font-bold">{meta.code}</span><p className="mt-1 font-semibold">{meta.label}</p><p className="mt-1 text-xs leading-5 opacity-80">{meta.shortDescription}</p>
-                          </button>
-                        );
-                      })}
+                    <div className="rounded-xl border border-cyan-500/35 bg-cyan-500/10 p-4" data-testid="quick-start-s1-mode">
+                      <div className="flex items-center justify-between"><span className="font-mono text-lg font-bold text-cyan-100">S1</span><Badge variant="outline" className="border-emerald-500/35 text-emerald-300">已鎖定</Badge></div>
+                      <p className="mt-1 font-semibold">單倉獨占</p><p className="mt-1 text-xs leading-5 text-muted-foreground">快速啟動固定建立 S1 停用草稿；仍須通過 Preflight 才能明確啟用。</p>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                       <div className="space-y-2"><Label>基礎倉位</Label><Input type="number" min="0" step="any" value={quickForm.positionSize} onChange={event => { resetQuickResult(); setQuickForm(form => ({ ...form, positionSize: event.target.value })); }} /></div>
@@ -1588,14 +1444,13 @@ export default function DeploymentWorkbench() {
         <DialogContent className="sm:max-w-[680px]">
           <DialogHeader><DialogTitle>建立 canonical deployment</DialogTitle><DialogDescription>{DEPLOYMENT_SAFETY_COPY.defaultDisabled}</DialogDescription></DialogHeader>
           <div className="grid gap-4 py-2 sm:grid-cols-2">
-            <div className="space-y-2 sm:col-span-2"><Label>部署名稱</Label><Input value={createForm.name} onChange={event => setCreateForm(form => ({ ...form, name: event.target.value }))} placeholder="例如：BTC H3 保護部署" /></div>
+            <div className="space-y-2 sm:col-span-2"><Label>部署名稱</Label><Input value={createForm.name} onChange={event => setCreateForm(form => ({ ...form, name: event.target.value }))} placeholder="例如：BTC S1 趨勢部署" /></div>
             <div className="space-y-2"><Label>交易所帳戶</Label><Select value={createForm.apiKeyId} onValueChange={apiKeyId => setCreateForm(form => ({ ...form, apiKeyId }))}><SelectTrigger><SelectValue placeholder="選擇 API key" /></SelectTrigger><SelectContent>{apiKeysQuery.data?.map(key => <SelectItem key={key.id} value={String(key.id)}>{key.label} · {key.exchange.toUpperCase()}{key.isTestnet ? " · Testnet" : ""}</SelectItem>)}</SelectContent></Select></div>
             <div className="space-y-2"><Label>商品</Label><Input value={createForm.symbol} onChange={event => setCreateForm(form => ({ ...form, symbol: event.target.value.toUpperCase() }))} /></div>
             <div className="space-y-2"><Label>策略版本</Label><Select value={createForm.strategyKey} onValueChange={strategyKey => setCreateForm(form => ({ ...form, strategyKey }))}><SelectTrigger><SelectValue placeholder="選擇 registry 策略" /></SelectTrigger><SelectContent>{registryQuery.data?.map(strategy => <SelectItem key={strategy.key} value={strategy.key}>{strategy.name}{strategy.isBuiltIn ? " · 內建" : " · 自訂"}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-2"><Label>Execution mode</Label><Select value={createForm.executionMode} onValueChange={executionMode => setCreateForm(form => ({ ...form, executionMode: executionMode as ExecutionMode }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{EXECUTION_MODES.map(mode => <SelectItem key={mode} value={mode}>{DEPLOYMENT_MODE_META[mode].code} · {DEPLOYMENT_MODE_META[mode].label}</SelectItem>)}</SelectContent></Select></div>
           </div>
           <Alert className="border-cyan-500/25 bg-cyan-500/8"><LockKeyhole className="h-4 w-4 text-cyan-300" /><AlertTitle>安全預設</AlertTitle><AlertDescription>新部署會保存 capability snapshot 與 default policy，狀態固定為 DRAFT／disabled。</AlertDescription></Alert>
-          <DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button><Button disabled={createMutation.isPending || !createForm.name.trim() || !createForm.apiKeyId || !createForm.strategyKey || !createForm.symbol.trim()} onClick={() => createMutation.mutate({ name: createForm.name.trim(), apiKeyId: Number(createForm.apiKeyId), symbol: createForm.symbol.trim(), strategyKey: createForm.strategyKey, executionMode: createForm.executionMode })}>{createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}建立停用草稿</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button><Button disabled={createMutation.isPending || !createForm.name.trim() || !createForm.apiKeyId || !createForm.strategyKey || !createForm.symbol.trim()} onClick={() => createMutation.mutate({ name: createForm.name.trim(), apiKeyId: Number(createForm.apiKeyId), symbol: createForm.symbol.trim(), strategyKey: createForm.strategyKey, executionMode: "SINGLE_EXCLUSIVE" })}>{createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}建立 S1 停用草稿</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1604,9 +1459,8 @@ export default function DeploymentWorkbench() {
           <DialogHeader><DialogTitle>複製部署設定</DialogTitle><DialogDescription>只複製策略配置；持倉、腿、委託、reservation、馬丁 runtime 與 transition history 不會複製。</DialogDescription></DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2"><Label>副本名稱</Label><Input value={copyForm.name} onChange={event => setCopyForm(form => ({ ...form, name: event.target.value }))} /></div>
-            <div className="space-y-2"><Label>副本模式</Label><Select value={copyForm.executionMode} onValueChange={executionMode => setCopyForm(form => ({ ...form, executionMode: executionMode as ExecutionMode }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{EXECUTION_MODES.map(mode => <SelectItem key={mode} value={mode}>{DEPLOYMENT_MODE_META[mode].code} · {DEPLOYMENT_MODE_META[mode].label}</SelectItem>)}</SelectContent></Select></div>
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setCopyOpen(false)}>取消</Button><Button disabled={!activeDeployment || !copyForm.name.trim() || copyMutation.isPending} onClick={() => activeDeployment && copyMutation.mutate({ sourceDeploymentId: activeDeployment.id, name: copyForm.name.trim(), executionMode: copyForm.executionMode })}>{copyMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}建立 DRAFT 副本</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setCopyOpen(false)}>取消</Button><Button disabled={!activeDeployment || !copyForm.name.trim() || copyMutation.isPending} onClick={() => activeDeployment && copyMutation.mutate({ sourceDeploymentId: activeDeployment.id, name: copyForm.name.trim(), executionMode: "SINGLE_EXCLUSIVE" })}>{copyMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}建立 S1 DRAFT 副本</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1618,22 +1472,6 @@ export default function DeploymentWorkbench() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={modeOpen} onOpenChange={setModeOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[800px]">
-          <DialogHeader><DialogTitle>切換 execution mode</DialogTitle><DialogDescription>Backend 會要求 flat、無 pending intents／reconciliation／hedge relationship／reservation，並以目標 policy 執行 fresh preflight。</DialogDescription></DialogHeader>
-          <div className="space-y-5">
-            <div className="grid gap-3 sm:grid-cols-3">
-              {EXECUTION_MODES.map(mode => {
-                const meta = DEPLOYMENT_MODE_META[mode];
-                return <button key={mode} type="button" onClick={() => { setTargetMode(mode); setTargetPolicy(createDefaultStrategyExecutionPolicy(activeDeployment?.strategyKey, mode)); }} className={`rounded-xl border p-4 text-left transition-[transform,border-color,background-color] active:scale-[0.98] ${targetMode === mode ? meta.accent : "border-border bg-background/30"}`}><span className="font-mono text-lg font-bold">{meta.code}</span><p className="mt-1 font-semibold">{meta.label}</p><p className="mt-1 text-xs leading-5 opacity-80">{meta.shortDescription}</p></button>;
-              })}
-            </div>
-            <PolicyEditor policy={targetPolicy} strategyKey={activeDeployment?.strategyKey} onChange={setTargetPolicy} />
-            <Alert className="border-amber-500/25 bg-amber-500/8"><TimerReset className="h-4 w-4 text-amber-300" /><AlertTitle>原子模式切換</AlertTitle><AlertDescription>目標 policy 預檢、revision 更新與 READY_DISABLED 會在同一 optimistic-lock transaction 提交；不會直接進入 ACTIVE。</AlertDescription></Alert>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setModeOpen(false)}>取消</Button><Button disabled={!activeDeployment || targetMode === activeMode || switchModeMutation.isPending} onClick={() => activeDeployment && switchModeMutation.mutate({ deploymentId: activeDeployment.id, expectedRevision: activeRevision, transitionKey: buildDeploymentTransitionKey("switch-mode", activeDeployment.id), executionMode: targetMode, executionPolicy: targetPolicy as unknown as Record<string, unknown> })}>{switchModeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}執行 flat Gate 與模式切換</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
     </DashboardLayout>
   );
 }

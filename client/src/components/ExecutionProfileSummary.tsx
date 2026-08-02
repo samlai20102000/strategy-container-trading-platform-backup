@@ -1,5 +1,4 @@
 import { Badge } from "@/components/ui/badge";
-import { DEPLOYMENT_MODE_META } from "@/lib/deploymentWorkbench";
 import {
   normalizeStrategyExecutionPolicy,
 } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
@@ -20,60 +19,30 @@ export interface ExecutionProfileSummaryProps {
 
 function policyDetail(policy: ExecutionPolicy): string[] {
   const budget = policy.riskBudget;
-  const shared = [
+  return [
     `Gross ≤ ${budget.maxGrossNotionalPct}%`,
     `Margin ≤ ${budget.maxMarginUsagePct}%`,
     `能力 TTL ${budget.capabilityTtlSeconds}s`,
-  ];
-
-  if (policy.mode === "MULTI_POSITION") {
-    return [
-      ...shared,
-      "LONG／SHORT 各一腿",
-      "馬丁與出場狀態按腿隔離",
-    ];
-  }
-  if (policy.mode === "HEDGE_GUARDED") {
-    return [
-      ...shared,
-      `主腿浮虧 ≥ ${policy.primaryLossTriggerPct}%`,
-      `Hedge ratio ${policy.hedgeRatio}（上限 ${policy.maxHedgeRatio}）`,
-      `Cooldown ${policy.hedgeCooldownSeconds}s／最短持有 ${policy.minimumHedgeHoldSeconds}s`,
-      "反向訊號為必要條件；保護腿禁止馬丁",
-    ];
-  }
-  return [
-    ...shared,
-    `反向訊號：${policy.oppositeSignalPolicy}`,
+    "反向訊號：先平後反轉",
     "同一時間僅保留一個方向腿",
   ];
 }
 
 export function ExecutionModeBadge({
-  mode,
   className = "",
 }: {
   mode?: ExecutionMode | null;
   className?: string;
 }) {
-  if (!mode) {
-    return (
-      <Badge variant="outline" className={`border-slate-500/40 text-slate-300 ${className}`}>
-        LEGACY S1
-      </Badge>
-    );
-  }
-  const meta = DEPLOYMENT_MODE_META[mode];
   return (
-    <Badge variant="outline" className={`${meta.accent} ${className}`}>
-      {meta.code} · {meta.label}
+    <Badge variant="outline" className={`border-cyan-500/45 text-cyan-300 ${className}`}>
+      S1 · 單倉互斥
     </Badge>
   );
 }
 
 export default function ExecutionProfileSummary({
   strategyKey,
-  executionMode,
   executionPolicy,
   artifactScope,
   strategyVersion,
@@ -82,12 +51,10 @@ export default function ExecutionProfileSummary({
   compact = false,
   className = "",
 }: ExecutionProfileSummaryProps) {
-  const mode = executionMode ?? "SINGLE_EXCLUSIVE";
   const policy = normalizeStrategyExecutionPolicy(strategyKey, {
     ...(executionPolicy && typeof executionPolicy === "object" ? executionPolicy : {}),
-    mode,
+    mode: "SINGLE_EXCLUSIVE",
   });
-  const meta = DEPLOYMENT_MODE_META[policy.mode];
   const details = policyDetail(policy);
   const isExecutionProfile = artifactScope === "EXECUTION_PROFILE";
   const trusted = integrityValid !== false && compatible !== false;
@@ -116,7 +83,7 @@ export default function ExecutionProfileSummary({
       </div>
       {!compact && (
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          {meta.shortDescription}。Execution policy 由 canonical artifact 封印；建立或套用後仍保持停用，必須重新通過唯讀 Preflight。
+          單方向單腿，反向訊號採先平後反轉。Execution policy 由 canonical artifact 封印；建立或套用後仍保持停用，必須重新通過唯讀 Preflight。
         </p>
       )}
       <div className={`mt-2 grid gap-1 text-[11px] text-muted-foreground ${compact ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>

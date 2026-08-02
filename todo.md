@@ -2663,3 +2663,13 @@
 - [x] 執行完整 Vitest、TypeScript、production build、桌面／手機 UI、敏感交易 mutation=0 與正式網域唯讀驗證
 - [x] 交付保留／凍結／刪除／拒絕矩陣、測試證據與穩定 checkpoint；不發布任何 M2／H3 cycle-close 新邏輯
 - [x] 將 `okx-api-auth.test.ts` 的真實 OKX 網路／憑證驗證改為明確 opt-in integration test，讓預設完整 Vitest 可重現且不因外部 HTML／403 回應假失敗，同時保留可手動執行的真實連線驗證
+
+## 2026-08-02 S1 單模式舊版 UI 恢復
+
+- [x] 盤點所有前端可見的 M2／H3、三模式與模式切換入口，建立最小修改清單
+- [x] 移除部署工作台中的 M2／H3 選項、相關表單欄位、配置面板與模式切換操作，只保留 S1
+- [x] 移除回測、策略、快照、持倉與導覽等其他 UI 中的 M2／H3 可見元素，只保留 S1
+- [x] 保留後端能力、防呆、Maker-First、交易生命週期與其他既有功能，不修改交易資料或觸發交易 mutation
+- [x] 新增或更新 Vitest，鎖定 S1-only UI 且防止 M2／H3 元素回歸
+- [x] 完成 TypeScript、受影響與完整 Vitest、production build、桌面與手機視覺驗證
+- [x] 核對 TODO、保存 checkpoint 並確認新版本已自動發布

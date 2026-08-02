@@ -15,7 +15,7 @@ const workbenchSource = readFileSync(
 );
 
 describe("deploymentWorkbench safety model", () => {
-  it("exposes all three canonical execution modes", () => {
+  it("保留後端相容的三種 canonical execution mode 安全模型", () => {
     expect(Object.values(DEPLOYMENT_MODE_META).map(item => item.code)).toEqual(["S1", "M2", "H3"]);
   });
 
@@ -33,7 +33,7 @@ describe("deploymentWorkbench safety model", () => {
     expect(getWorkbenchLifecycleActions("ARCHIVED")).toEqual([]);
   });
 
-  it("allows mode changes only from disabled flat-source states", () => {
+  it("保留後端模式切換的 disabled flat-source safety helper", () => {
     expect(canSwitchDeploymentMode("READY_DISABLED", false)).toBe(true);
     expect(canSwitchDeploymentMode("PAUSED", false)).toBe(true);
     expect(canSwitchDeploymentMode("ACTIVE", true)).toBe(false);
@@ -60,7 +60,7 @@ describe("deploymentWorkbench safety model", () => {
   });
 });
 
-describe("deploymentWorkbench dual-panel quick start contract", () => {
+describe("deploymentWorkbench S1-only quick start contract", () => {
   it("keeps deployment management and quick start as explicit peer panels", () => {
     expect(workbenchSource).toContain('data-testid="deployment-workbench-panels"');
     expect(workbenchSource).toContain('value="manage"');
@@ -78,13 +78,16 @@ describe("deploymentWorkbench dual-panel quick start contract", () => {
     expect(workbenchSource).toContain("registryQuery.data?.map");
   });
 
-  it("reuses exchange symbol specifications and canonical execution profile UI", () => {
+  it("reuses exchange symbol specifications and the S1 canonical execution profile UI", () => {
     expect(workbenchSource).toContain("<SymbolCombobox");
     expect(workbenchSource).toContain("Min qty");
     expect(workbenchSource).toContain("Qty step");
     expect(workbenchSource).toContain("<ExecutionProfileSummary");
-    expect(workbenchSource).toContain("EXECUTION_MODES.map(mode");
     expect(workbenchSource).toContain("<PolicyEditor");
+    expect(workbenchSource).not.toContain("EXECUTION_MODES.map(mode");
+    expect(workbenchSource).not.toContain("trpc.deployments.switchMode.useMutation");
+    expect(workbenchSource).not.toContain("MULTI_POSITION");
+    expect(workbenchSource).not.toContain("HEDGE_GUARDED");
   });
 
   it("creates a disabled draft, runs readonly preflight and exposes one explicit enable control", () => {

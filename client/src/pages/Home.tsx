@@ -58,11 +58,7 @@ import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "@shared/strategies/kamaRainbow
 
 // ─── Constants ───────────────────────────────────────────────────
 const SIGNAL_PAGE_SIZE = 25;
-const KRM_MODE_LABELS: Record<string, string> = {
-  SINGLE_EXCLUSIVE: "S1 單倉獨佔",
-  MULTI_POSITION: "M2 多倉獨立",
-  HEDGE_GUARDED: "H3 保護對沖",
-};
+const KRM_MODE_LABEL = "S1 單倉獨佔";
 
 // ─── Main Export ─────────────────────────────────────────────────
 export default function Home() {
@@ -2028,7 +2024,7 @@ function PositionDrawer({
                     <div key={leg.legId} className="rounded-md border border-border/70 bg-background/60 p-3 space-y-2">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Badge variant="secondary" className="text-[10px]">
-                          {KRM_MODE_LABELS[leg.executionMode] ?? leg.executionMode}
+                          {KRM_MODE_LABEL}
                         </Badge>
                         <Badge variant="outline" className="text-[10px]">{leg.role}</Badge>
                         <SideBadge side={leg.side} />

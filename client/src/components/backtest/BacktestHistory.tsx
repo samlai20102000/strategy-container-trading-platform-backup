@@ -80,17 +80,8 @@ function runnerLabel(
 
 const PAGE_SIZE = 20;
 
-function executionModeMeta(value: unknown): { code: string; label: string; className: string } {
-  if (value === "MULTI_POSITION") {
-    return { code: "M2", label: "雙向獨立", className: "border-violet-500/45 text-violet-300" };
-  }
-  if (value === "HEDGE_GUARDED") {
-    return { code: "H3", label: "保護對沖", className: "border-amber-500/45 text-amber-300" };
-  }
-  if (value === "SINGLE_EXCLUSIVE") {
-    return { code: "S1", label: "單倉互斥", className: "border-cyan-500/45 text-cyan-300" };
-  }
-  return { code: "舊版", label: "未記錄模式", className: "border-muted-foreground/30 text-muted-foreground" };
+function executionModeMeta(_value: unknown): { code: string; label: string; className: string } {
+  return { code: "S1", label: "單倉互斥", className: "border-cyan-500/45 text-cyan-300" };
 }
 
 function fmtDate(ts: number | Date): string {
