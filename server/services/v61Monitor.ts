@@ -134,10 +134,10 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
   try {
     const positions = await adapter.getPositions(strategy.symbol);
     const expectedSide = state.isLong ? "long" : "short";
-    let pos = positions.find((p: any) => p.size > 0 && p.side === expectedSide);
+    const pos = positions.find((p: any) => p.size > 0 && p.side === expectedSide);
     if (!pos) {
-      // 找不到匹配方向的持倉，用任意持倉獲取價格
-      pos = positions.find((p: any) => p.size > 0);
+      console.warn(`[V61Monitor] 策略 ${strategy.id} 找不到本地方向 ${expectedSide} 的交易所腿，停止本輪 mutation 並保留本地 ownership`);
+      return false;
     }
     if (!pos || pos.markPrice <= 0) return false;
     currentPrice = pos.markPrice;
@@ -149,17 +149,14 @@ export async function checkV61Strategy(strategy: any): Promise<boolean> {
 
     if (candles.length < 10) return false; // 確保有足夠的 K 線數據進行 regime 判斷
 
-    // ===== 自動校準：比對 OKX 實際持倉與本地 martinState =====
+    // 交易所同方向腿是帳戶聚合量，可能包含其他策略；只做唯讀漂移告警。
     const exchangeSize = pos.size;
     const exchangeAvgPrice = pos.entryPrice;
     if (exchangeSize > 0 && exchangeAvgPrice > 0) {
       const sizeDiffPct = Math.abs(exchangeSize - state.totalSize) / exchangeSize * 100;
       const priceDiffPct = Math.abs(exchangeAvgPrice - state.avgPrice) / exchangeAvgPrice * 100;
       if (sizeDiffPct > 1 || priceDiffPct > 1) {
-        console.log(`[V61Monitor] 自動校準策略 #${strategy.id}: 本地 size=${state.totalSize.toFixed(6)}/avg=${state.avgPrice.toFixed(2)} → OKX size=${exchangeSize.toFixed(6)}/avg=${exchangeAvgPrice.toFixed(2)} (差異: size ${sizeDiffPct.toFixed(1)}%, price ${priceDiffPct.toFixed(1)}%)`);
-        state.totalSize = exchangeSize;
-        state.avgPrice = exchangeAvgPrice;
-        await saveStrategyState(strategy.id, state);
+        console.warn(`[V61Monitor] 策略 #${strategy.id} 偵測帳戶聚合腿漂移但不回寫 ownership: 本地 size=${state.totalSize.toFixed(6)}/avg=${state.avgPrice.toFixed(2)}, 交易所同向聚合腿 size=${exchangeSize.toFixed(6)}/avg=${exchangeAvgPrice.toFixed(2)} (差異: size ${sizeDiffPct.toFixed(1)}%, price ${priceDiffPct.toFixed(1)}%)`);
       }
     }
   } catch (e) {
@@ -317,7 +314,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
     if (state.totalSize > 0) {
       const result = await adapter.closePositionSmart(
         strategy.symbol,
-        undefined,
+        state.isLong ? "long" : "short",
         undefined,
         undefined,
         `clOrdId_V61_CLOSE_DISABLE_${strategy.id}_${Date.now()}`,
@@ -325,7 +322,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
           strategyId: strategy.id,
           source: "RISK",
           reasonCode: "v61_max_drawdown",
-        }, "STOP_LOSS"),
+        }, "STOP_LOSS", state.totalSize),
       );
       exchangeCloseResult = result;
       if (!result.success) {
@@ -435,7 +432,7 @@ async function closePosition(
     if (state.totalSize > 0) {
       const result = await adapter.closePositionSmart(
         strategy.symbol,
-        undefined,
+        state.isLong ? "long" : "short",
         undefined,
         undefined,
         `clOrdId_V61_CLOSE_POS_${strategy.id}_${Date.now()}`,
@@ -443,7 +440,7 @@ async function closePosition(
           strategyId: strategy.id,
           source: "RISK",
           reasonCode: emergencyReason ? "v61_zone_stop" : "v61_trailing_take_profit",
-        }, emergencyReason),
+        }, emergencyReason, state.totalSize),
       );
       if (!result.success) {
         console.error(`[V61Monitor] closePosition 平倉失敗:`, result.errorMessage, result.rawResponse);

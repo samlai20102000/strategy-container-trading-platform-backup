@@ -60,7 +60,7 @@ export interface AccountPositionSnapshotOptions {
   forceRefresh?: boolean;
 }
 
-interface LocalPositionState {
+export interface LocalPositionState {
   strategy: Strategy;
   side: "long" | "short" | null;
   size: number;
@@ -96,7 +96,7 @@ export function normalizePositionSymbol(symbol: string): string {
   return symbol.toUpperCase().replace(/-SWAP$/i, "").replace(/[^A-Z0-9]/g, "");
 }
 
-function toLocalPositionState(strategy: Strategy): LocalPositionState {
+export function toLocalPositionState(strategy: Strategy): LocalPositionState {
   const raw = strategy.martinState && typeof strategy.martinState === "object"
     ? strategy.martinState as Record<string, unknown>
     : {};

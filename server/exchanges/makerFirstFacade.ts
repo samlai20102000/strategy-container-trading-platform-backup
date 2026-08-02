@@ -277,7 +277,10 @@ export async function executeMakerFirst(
   const requestedSize = intent.size;
   const resumeState = dependencies.resumeState;
   const policyRunId = normalizePolicyRunId(
-    resumeState?.policyRunId ?? intent.clientOrderId ?? createClientOrderId(0, false),
+    resumeState?.policyRunId
+      ?? intent.policyContext?.intentKey
+      ?? intent.clientOrderId
+      ?? createClientOrderId(0, false),
   );
 
   // Intent Idempotency Lock: Check if this policyRunId is already active
@@ -826,15 +829,73 @@ async function executeClosePositions(
     if (normalizeSymbol(position.symbol) !== normalizeSymbol(symbol)) return false;
     return !posSide || position.side === posSide;
   });
+  const requestedSize = options?.requestedSize;
+  const hasStrategyOwnedSize = requestedSize !== undefined;
+  const rejectClose = (reasonCode: string, message: string): OrderResult => ({
+    success: false,
+    rawResponse: JSON.stringify({
+      policy: MAKER_FIRST_POLICY_VERSION,
+      rejected: reasonCode,
+      requestedSize,
+      posSide,
+    }),
+    errorMessage: message,
+    executionStatus: "cancelled",
+    executedReduceOnly: true,
+    policyAudit: {
+      policyVersion: MAKER_FIRST_POLICY_VERSION,
+      executionClass: options?.executionClass ?? "MAKER_ONLY",
+      emergencyReason: options?.emergencyReason,
+      attempts: 0,
+      fallbackUsed: false,
+      requestedSize: Number.isFinite(requestedSize) ? Number(requestedSize) : 0,
+      filledSize: 0,
+      remainingSize: Number.isFinite(requestedSize) ? Number(requestedSize) : 0,
+      finalOrderType: "none",
+      clientOrderIds: [],
+    },
+  });
+
+  if (hasStrategyOwnedSize && (!Number.isFinite(requestedSize) || Number(requestedSize) <= 0)) {
+    return rejectClose(
+      "INVALID_STRATEGY_CLOSE_SIZE",
+      "策略平倉缺少可證明的正數本地持倉數量，已 fail-closed；不會平整個交易所聚合腿",
+    );
+  }
+  if (hasStrategyOwnedSize && !posSide) {
+    return rejectClose(
+      "STRATEGY_CLOSE_REQUIRES_POS_SIDE",
+      "策略級精確平倉必須指定 long／short 腿，已 fail-closed",
+    );
+  }
+
+  const availableSize = positions.reduce((sum, position) => sum + position.size, 0);
+  const tolerance = Math.max(1e-12, availableSize * 1e-9);
+  if (hasStrategyOwnedSize && Number(requestedSize) > availableSize + tolerance) {
+    return rejectClose(
+      "STRATEGY_CLOSE_SIZE_EXCEEDS_EXCHANGE_LEG",
+      `策略要求平倉 ${requestedSize}，但交易所 ${posSide} 腿只有 ${availableSize}；已零 mutation 拒絕`,
+    );
+  }
+
+  let remainingToAllocate = hasStrategyOwnedSize ? Number(requestedSize) : Number.POSITIVE_INFINITY;
+  const closeLegs = positions.flatMap(position => {
+    const size = hasStrategyOwnedSize
+      ? Math.min(position.size, Math.max(0, remainingToAllocate))
+      : position.size;
+    remainingToAllocate -= size;
+    return size > tolerance ? [{ position, size }] : [];
+  });
   const results: OrderResult[] = [];
-  for (const [positionIndex, position] of positions.entries()) {
-    const legClientOrderId = clientOrderId && positions.length > 1
+  for (const [positionIndex, leg] of closeLegs.entries()) {
+    const { position, size } = leg;
+    const legClientOrderId = clientOrderId && closeLegs.length > 1
       ? `${clientOrderId}:${position.side}:${positionIndex + 1}`
       : clientOrderId;
     results.push(await executeMakerFirst(adapter, identity, {
       symbol,
       side: position.side === "long" ? "sell" : "buy",
-      size: position.size,
+      size,
       clientOrderId: legClientOrderId,
       reduceOnly: true,
       posSide: position.side,
@@ -845,20 +906,24 @@ async function executeClosePositions(
   }
   const aggregatedResult = aggregateCloseResults(results);
 
-  // 強制平倉後驗證：如果 aggregatedResult 聲稱成功，必須重查持倉
+  // 強制平倉後驗證：完整腿要求歸零；策略級部分平倉只要求減少到預期剩餘量。
   if (aggregatedResult.success) {
     const currentPositions = await adapter.getPositions(symbol);
     const remainingTargetPositions = currentPositions.filter(position => {
       if (normalizeSymbol(position.symbol) !== normalizeSymbol(symbol)) return false;
       return !posSide || position.side === posSide;
     });
+    const remainingTargetSize = remainingTargetPositions.reduce((sum, position) => sum + position.size, 0);
+    const requestedCloseSize = hasStrategyOwnedSize
+      ? Number(requestedSize)
+      : availableSize;
+    const expectedRemainingSize = Math.max(0, availableSize - requestedCloseSize);
 
-    // 如果聲稱成功但目標持倉仍存在，則判定為驗證失敗
-    if (remainingTargetPositions.length > 0) {
+    if (remainingTargetSize > expectedRemainingSize + tolerance) {
       return {
         ...aggregatedResult,
         success: false,
-        errorMessage: "平倉聲稱成功但持倉仍存在，驗證失敗",
+        errorMessage: `平倉聲稱成功但持倉仍存在：${posSide ?? "目標"} 腿仍有 ${remainingTargetSize}，高於預期 ${expectedRemainingSize}，驗證失敗`,
         executionStatus: "cancelled",
         policyAudit: {
           policyVersion: MAKER_FIRST_POLICY_VERSION,

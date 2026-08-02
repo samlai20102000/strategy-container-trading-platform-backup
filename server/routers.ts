@@ -57,7 +57,11 @@ import {
   finalizeDeploymentPosition,
   resolveDeploymentPosition,
 } from "./services/deploymentPosition";
-import { getAccountPositionSnapshot } from "./services/strategyPositionSnapshot";
+import {
+  getAccountPositionSnapshot,
+  normalizePositionSymbol,
+  toLocalPositionState,
+} from "./services/strategyPositionSnapshot";
 import { recordExistingTradeExecution } from "./services/tradeExecutionLedger";
 import { applyLifecycleTransition } from "./services/deploymentLifecycleRepository";
 import { evaluateMartingaleStrategyInstance } from "./services/martingaleCapability";
@@ -1621,53 +1625,69 @@ const strategiesRouter = router({
           reason: "owner emergency close all",
         });
         const positions = await adapter.getPositions(strategy.symbol);
-        const activePositions = positions.filter((p) => p.size > 0);
-        if (activePositions.length === 0) {
+        const local = toLocalPositionState(strategy);
+        const ownedExchangePosition = local.hasPosition && local.side
+          ? positions.find(position =>
+            position.size > 0
+            && position.side === local.side
+            && normalizePositionSymbol(position.symbol) === normalizePositionSymbol(strategy.symbol),
+          )
+          : undefined;
+        const activePositions = ownedExchangePosition ? [ownedExchangePosition] : [];
+        if (!local.hasPosition || !local.side || local.size <= 0) {
           skippedCount++;
-          results.push({ strategyId: strategy.id, name: strategy.name, symbol: strategy.symbol, success: true, message: "無持倉，跳過" });
+          results.push({
+            strategyId: strategy.id,
+            name: strategy.name,
+            symbol: strategy.symbol,
+            success: true,
+            message: "無可證明的本策略持倉，未觸碰交易所聚合腿",
+          });
+        } else if (!ownedExchangePosition) {
+          failCount++;
+          results.push({
+            strategyId: strategy.id,
+            name: strategy.name,
+            symbol: strategy.symbol,
+            success: false,
+            message: `本地記錄 ${local.side} ${local.size}，但交易所找不到同方向腿；已保留狀態等待對帳`,
+          });
         } else {
-          let strategyCloseSuccess = true;
-          for (const pos of activePositions) {
-            const posSide = pos.side as "long" | "short";
-            console.log(`[emergencyCloseAll] 策略 ${strategy.id} 平倉 ${strategy.symbol} posSide=${posSide}`);
-            const result = await adapter.closePositionSmart(
-              strategy.symbol,
-              posSide,
-              undefined,
-              undefined,
-              `clOrdId_EMERGENCY_CLOSE_${strategy.id}_${posSide}_${Date.now()}`,
-              closePolicyOptions({
-                strategyId: strategy.id,
-                source: "RISK",
-                reasonCode: "owner_emergency_close_all",
-              }, "KILL_SWITCH"),
-            );
-            if (result.success) {
-              await recordExistingTradeExecution({
-                strategyId: strategy.id,
-                userId: ctx.user.id,
-                exchange: strategy.exchange,
-                symbol: strategy.symbol,
-                side: posSide === "long" ? "sell" : "buy",
-                orderType: "market",
-                orderId: result.orderId,
-                size: String(pos.size),
-                exchangeResult: result,
-                reduceOnly: true,
-                status: "filled",
-                triggerSource: "manual",
-              });
-            } else {
-              strategyCloseSuccess = false;
-              console.error(`[emergencyCloseAll] 策略 ${strategy.id} 平倉失敗 posSide=${posSide}:`, result.rawResponse);
-            }
-          }
-          if (strategyCloseSuccess) {
+          const posSide = local.side;
+          console.log(`[emergencyCloseAll] 策略 ${strategy.id} 精確平倉 ${strategy.symbol} posSide=${posSide} size=${local.size}`);
+          const result = await adapter.closePositionSmart(
+            strategy.symbol,
+            posSide,
+            undefined,
+            undefined,
+            `clOrdId_EMERGENCY_CLOSE_${strategy.id}_${posSide}_${Date.now()}`,
+            closePolicyOptions({
+              strategyId: strategy.id,
+              source: "RISK",
+              reasonCode: "owner_emergency_close_all",
+            }, "KILL_SWITCH", local.size),
+          );
+          if (result.success) {
+            await recordExistingTradeExecution({
+              strategyId: strategy.id,
+              userId: ctx.user.id,
+              exchange: strategy.exchange,
+              symbol: strategy.symbol,
+              side: posSide === "long" ? "sell" : "buy",
+              orderType: result.policyAudit?.finalOrderType === "market" ? "market" : "limit",
+              orderId: result.orderId,
+              size: String(local.size),
+              exchangeResult: result,
+              reduceOnly: true,
+              status: "filled",
+              triggerSource: "manual",
+            });
             successCount++;
-            results.push({ strategyId: strategy.id, name: strategy.name, symbol: strategy.symbol, success: true, message: "已市價平倉" });
+            results.push({ strategyId: strategy.id, name: strategy.name, symbol: strategy.symbol, success: true, message: `已精確平倉 ${posSide} ${local.size}` });
           } else {
             failCount++;
-            results.push({ strategyId: strategy.id, name: strategy.name, symbol: strategy.symbol, success: false, message: "部分方向平倉失敗" });
+            results.push({ strategyId: strategy.id, name: strategy.name, symbol: strategy.symbol, success: false, message: result.errorMessage || "策略自有數量平倉失敗" });
+            console.error(`[emergencyCloseAll] 策略 ${strategy.id} 平倉失敗 posSide=${posSide} size=${local.size}:`, result.rawResponse);
           }
         }
         // 寫入訊號日誌（緊急全平倉）
@@ -1697,21 +1717,25 @@ const strategiesRouter = router({
           }
         }
 
-        // 不論是否有持倉，均暫停策略並重置馬丁狀態，阻斷後續訊號自動開倉
+        // 不論結果均暫停；只有確定成功或原本無本地持倉才清零。失敗時保留 ownership 供重試／對帳。
         const existingMartinState = (strategy.martinState ?? {}) as any;
+        const latestResult = results[results.length - 1];
+        const shouldClearLocalPosition = !local.hasPosition || latestResult?.success === true;
         await db.updateStrategy(strategy.id, ctx.user.id, {
           enabled: false,
           disabledReason: "緊急全平倉",
-          martinState: {
-            ...existingMartinState,
-            lossCount: 0,
-            currentLot: parseFloat(strategy.positionSize ?? '0'),
-            lastEntryPrice: 0,
-            currentLayer: 0,
-            totalSize: 0,
-            avgPrice: 0,
-            isTrailingActivated: false,
-          },
+          martinState: shouldClearLocalPosition
+            ? {
+              ...existingMartinState,
+              lossCount: 0,
+              currentLot: parseFloat(strategy.positionSize ?? '0'),
+              lastEntryPrice: 0,
+              currentLayer: 0,
+              totalSize: 0,
+              avgPrice: 0,
+              isTrailingActivated: false,
+            }
+            : existingMartinState,
         });
       } catch (e: any) {
         failCount++;

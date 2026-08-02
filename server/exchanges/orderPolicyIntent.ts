@@ -29,10 +29,12 @@ export function orderPolicyFields(
 export function closePolicyOptions(
   policyContext: OrderPolicyContext,
   emergencyReason?: ApprovedEmergencyReason,
+  requestedSize?: number,
 ): CloseExecutionOptions {
   return {
     executionClass: emergencyReason ? "EMERGENCY_EXIT" : "MAKER_ONLY",
     emergencyReason,
     policyContext,
+    requestedSize,
   };
 }

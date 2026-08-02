@@ -40,12 +40,18 @@ export type RuntimeAuthorizer = (
   input: RuntimeModeGuardInput,
 ) => Promise<RuntimeModeAuthorization>;
 
-function stableOperationKey(context: RuntimeGuardedAdapterContext, operation: string, details: unknown): string {
+function stableOperationKey(
+  context: RuntimeGuardedAdapterContext,
+  operation: string,
+  details: unknown,
+  externalEventKey?: string,
+): string {
   const digest = createHash("sha256")
     .update(JSON.stringify({ operation, details }))
     .digest("hex")
     .slice(0, 20);
-  return `${context.eventKey}:${operation}:${digest}`.slice(0, 180);
+  const eventKey = externalEventKey?.trim() || context.eventKey;
+  return `${eventKey}:${operation}:${digest}`.slice(0, 180);
 }
 
 function rejectedResult(message: string, decision?: ModeDecision): OrderResult {
@@ -93,6 +99,7 @@ async function authorize(
     operation: string;
     action: "buy" | "sell" | "close";
     details: unknown;
+    externalEventKey?: string;
     requestedQuantity?: number;
     positionSide?: "long" | "short";
     price?: number;
@@ -109,7 +116,7 @@ async function authorize(
       requestedQuantity: input.requestedQuantity,
       positionSide: input.positionSide,
       source: context.source,
-      eventKey: stableOperationKey(context, input.operation, input.details),
+      eventKey: stableOperationKey(context, input.operation, input.details, input.externalEventKey),
     },
     signalId: context.signalId ?? 0,
     cycleId: context.cycleId,
@@ -150,10 +157,20 @@ export function createRuntimeGuardedAdapter(
       if (property === "placeOrder") {
         return async (params: OrderParams): Promise<OrderResult> => {
           const isClose = params.reduceOnly === true;
+          const externalEventKey = params.policyContext?.intentKey
+            ?? (isClose ? params.clientOrderId : undefined);
+          const intentKey = stableOperationKey(context, "placeOrder", {
+            symbol: params.symbol,
+            side: params.side,
+            size: params.size,
+            posSide: params.posSide,
+            reduceOnly: isClose,
+          }, externalEventKey);
           const gate = await authorize(target, context, authorizer, {
             operation: "placeOrder",
             action: isClose ? "close" : params.side,
             details: params,
+            externalEventKey,
             requestedQuantity: params.size,
             positionSide: params.posSide as "long" | "short" | undefined,
             price: params.price,
@@ -193,6 +210,7 @@ export function createRuntimeGuardedAdapter(
               source: context.source,
               reasonCode: context.reason,
               ...params.policyContext,
+              intentKey,
             },
           });
         };
@@ -210,17 +228,26 @@ export function createRuntimeGuardedAdapter(
           const options = property === "closePosition"
             ? (typeof timeoutMsOrOptions === "object" ? timeoutMsOrOptions : undefined)
             : smartOptions;
+          const externalEventKey = options?.policyContext?.intentKey ?? clientOrderIdFromCaller;
+          const intentKey = stableOperationKey(
+            context,
+            String(property),
+            { symbol, posSide },
+            externalEventKey,
+          );
           const policyContext = {
             strategyId: context.strategy.id,
             signalId: context.signalId,
             source: context.source,
             reasonCode: context.reason,
             ...options?.policyContext,
+            intentKey,
           };
           const gate = await authorize(target, context, authorizer, {
             operation: String(property),
             action: "close",
             details: { symbol, posSide, options: { ...options, policyContext } },
+            externalEventKey,
             positionSide: posSide,
           });
           if (!gate.allowed) {
@@ -249,6 +276,12 @@ export function createRuntimeGuardedAdapter(
           }
           const results: OrderResult[] = [];
           for (const leg of legs) {
+            const legIntentKey = stableOperationKey(context, "advancedLegClose", {
+              symbol,
+              legId: leg.legId,
+              side: leg.side,
+              quantity: leg.quantity,
+            }, intentKey);
             results.push(await target.placeOrder({
               symbol,
               side: leg.side === "long" ? "sell" : "buy",
@@ -257,10 +290,10 @@ export function createRuntimeGuardedAdapter(
               size: leg.quantity,
               reduceOnly: true,
               posSide: leg.side,
-              clientOrderId: `clOrdId_RUNTIME_LEG_CLOSE_${context.strategy.id}_${leg.legId || leg.side}_${Date.now()}`,
+              clientOrderId: `clOrdId_RUNTIME_LEG_CLOSE_${context.strategy.id}_${leg.legId || leg.side}`,
               executionClass: options?.executionClass,
               emergencyReason: options?.emergencyReason,
-              policyContext,
+              policyContext: { ...policyContext, intentKey: legIntentKey },
             }));
           }
           return combineCloseResults(results);

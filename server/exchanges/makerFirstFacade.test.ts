@@ -322,6 +322,95 @@ describe("GLOBAL_MAKER_FIRST_B_V1", () => {
     });
   });
 
+  it("同帳戶同商品共享 short 腿時只平策略 requestedSize，並允許交易所聚合腿保留其他策略數量", async () => {
+    const aggregateShort = {
+      symbol: "BTC-USDT-SWAP",
+      side: "short" as const,
+      size: 0.0424,
+      entryPrice: 113_000,
+      markPrice: 112_000,
+      unrealizedPnl: 42.4,
+      leverage: 10,
+    };
+    const remainingShort = { ...aggregateShort, size: 0.0377 };
+    const getPositions = vi.fn()
+      .mockResolvedValueOnce([aggregateShort])
+      .mockResolvedValueOnce([remainingShort]);
+    const rawPlaceOrder = vi.fn(async (params: OrderParams) => ok("close-owned-short", {
+      executionStatus: "filled",
+      filledSize: params.size,
+    }));
+    const { dependencies } = harness();
+    const guarded = createMakerFirstAdapter(
+      makeAdapter({ getPositions, placeOrder: rawPlaceOrder }),
+      { userId: 7, apiKeyId: 3 },
+      FAST_POLICY,
+      dependencies,
+    );
+
+    const result = await guarded.closePositionSmart(
+      "BTCUSDT",
+      "short",
+      undefined,
+      undefined,
+      "strategy-90003-close-short",
+      {
+        executionClass: "MAKER_ONLY",
+        requestedSize: 0.0047,
+        policyContext: { strategyId: 90003, reasonCode: "strategy_owned_close" },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.policyAudit).toMatchObject({ requestedSize: 0.0047, filledSize: 0.0047 });
+    expect(rawPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(rawPlaceOrder.mock.calls[0][0]).toMatchObject({
+      side: "buy",
+      size: 0.0047,
+      reduceOnly: true,
+      posSide: "short",
+      orderType: "limit",
+      postOnly: true,
+    });
+  });
+
+  it("策略 requestedSize 超過交易所指定腿時零 mutation 拒絕，不會退化為整腿平倉", async () => {
+    const getPositions = vi.fn(async () => [{
+      symbol: "BTC-USDT-SWAP",
+      side: "short" as const,
+      size: 0.004,
+      entryPrice: 113_000,
+      markPrice: 112_000,
+      unrealizedPnl: 4,
+      leverage: 10,
+    }]);
+    const rawPlaceOrder = vi.fn(async () => ok("must-not-run"));
+    const { dependencies } = harness();
+    const guarded = createMakerFirstAdapter(
+      makeAdapter({ getPositions, placeOrder: rawPlaceOrder }),
+      { userId: 7, apiKeyId: 3 },
+      FAST_POLICY,
+      dependencies,
+    );
+
+    const result = await guarded.closePositionSmart(
+      "BTCUSDT",
+      "short",
+      undefined,
+      undefined,
+      "strategy-90003-close-too-large",
+      {
+        requestedSize: 0.0047,
+        policyContext: { strategyId: 90003, reasonCode: "strategy_owned_close" },
+      },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain("交易所 short 腿只有 0.004");
+    expect(result.policyAudit).toMatchObject({ attempts: 0, requestedSize: 0.0047, filledSize: 0 });
+    expect(rawPlaceOrder).not.toHaveBeenCalled();
+  });
+
   it("closePositionSmart 第五與第六參數不再錯位，長 caller ID 穩定壓縮且完整保留緊急政策上下文", async () => {
     const longPosition = {
       symbol: "BTC-USDT-SWAP",
@@ -400,6 +489,30 @@ describe("GLOBAL_MAKER_FIRST_B_V1", () => {
     expect(result.success).toBe(false);
     expect(result.errorMessage).toBe("INTENT_ALREADY_ACTIVE");
     expect(dependencies.checkActivePolicyRun).toHaveBeenCalledTimes(1);
+    expect(rawPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it("Runtime intentKey 優先於不穩定 caller ID 作為中央 policyRunId", async () => {
+    const rawPlaceOrder = vi.fn(async () => ok("must-not-run"));
+    const raw = makeAdapter({ placeOrder: rawPlaceOrder });
+    const { dependencies } = harness();
+    dependencies.checkActivePolicyRun = vi.fn(async () => true);
+
+    await executeMakerFirst(raw, { userId: 7, apiKeyId: 9 }, {
+      symbol: "BTCUSDT",
+      side: "buy",
+      size: 0.1238,
+      reduceOnly: true,
+      posSide: "short",
+      clientOrderId: "close-with-changing-timestamp-1700000009999",
+      policyContext: {
+        strategyId: 120011,
+        reasonCode: "trailing_take_profit",
+        intentKey: "runtime-event-120011-short-close",
+      },
+    }, FAST_POLICY, dependencies);
+
+    expect(dependencies.checkActivePolicyRun).toHaveBeenCalledWith("runtime-event-120011-short-close");
     expect(rawPlaceOrder).not.toHaveBeenCalled();
   });
 

@@ -19,7 +19,10 @@ import {
   type StrategyModeEnvelope,
 } from "./executionModeEngine";
 import { recordModeDecision } from "./threeModeLedger";
-import { loadCanonicalRuntimeDeployment } from "./canonicalRuntimeDeployment";
+import {
+  loadCanonicalRuntimeDeployment,
+  loadCanonicalRuntimeDeploymentForReduceOnlyExit,
+} from "./canonicalRuntimeDeployment";
 
 const ACTIVE_LEG_STATES = [
   "PENDING",
@@ -53,10 +56,15 @@ export interface RuntimeModeAuthorization {
   persistenceError?: string;
 }
 
+type CanonicalGuardStrategy = RuntimeModeGuardInput["strategy"] & {
+  __canonicalReduceOnlyCompatibility?: string[];
+};
+
 export interface RuntimeModeGuardDependencies {
   loadCanonicalStrategy: (
     strategy: RuntimeModeGuardInput["strategy"],
-  ) => Promise<RuntimeModeGuardInput["strategy"]>;
+    signal: ModeSignalInput,
+  ) => Promise<CanonicalGuardStrategy>;
   loadRuntimeContext: (
     strategy: RuntimeModeGuardInput["strategy"],
     adapter: ExchangeAdapter,
@@ -149,9 +157,22 @@ export async function loadRuntimeModeContext(
 }
 
 const defaultDependencies: RuntimeModeGuardDependencies = {
-  loadCanonicalStrategy: async strategy => (
-    await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId)
-  ).strategy,
+  loadCanonicalStrategy: async (strategy, signal) => {
+    const normalizedAction = String(signal.action || "").toUpperCase();
+    const reduceOnlyExit = normalizedAction === "CLOSE"
+      || normalizedAction === "CLOSE_ALL"
+      || normalizedAction.startsWith("CLOSE_")
+      || normalizedAction.startsWith("REDUCE_");
+    const deployment = reduceOnlyExit
+      ? await loadCanonicalRuntimeDeploymentForReduceOnlyExit(strategy.id, strategy.userId)
+      : await loadCanonicalRuntimeDeployment(strategy.id, strategy.userId);
+    return deployment.provenance === "REDUCE_ONLY_DRIFT_COMPATIBILITY"
+      ? {
+        ...deployment.strategy,
+        __canonicalReduceOnlyCompatibility: deployment.compatibilityWarnings ?? [],
+      }
+      : deployment.strategy;
+  },
   loadRuntimeContext: loadRuntimeModeContext,
   recordDecision: recordModeDecision,
 };
@@ -183,9 +204,9 @@ export async function authorizeRuntimeModeAction(
   input: RuntimeModeGuardInput,
   dependencies: RuntimeModeGuardDependencies = defaultDependencies,
 ): Promise<RuntimeModeAuthorization> {
-  let strategy: RuntimeModeGuardInput["strategy"];
+  let strategy: CanonicalGuardStrategy;
   try {
-    strategy = await dependencies.loadCanonicalStrategy(input.strategy);
+    strategy = await dependencies.loadCanonicalStrategy(input.strategy, input.signal);
   } catch (error) {
     const detail = error instanceof Error ? error.message.slice(0, 200) : "unknown canonical runtime error";
     const base = evaluateStrategyMode(input.strategy, input.signal, input.signalId, undefined);
@@ -219,7 +240,28 @@ export async function authorizeRuntimeModeAction(
     return { allowed: false, envelope };
   }
   const runtime = await dependencies.loadRuntimeContext(strategy, input.adapter);
-  const envelope = evaluateStrategyMode(strategy, input.signal, input.signalId, runtime);
+  const evaluated = evaluateStrategyMode(strategy, input.signal, input.signalId, runtime);
+  const compatibilityWarnings = strategy.__canonicalReduceOnlyCompatibility;
+  const executable = canExecuteModeDecision(evaluated.decision);
+  const envelope: StrategyModeEnvelope = compatibilityWarnings
+    ? {
+      ...evaluated,
+      decision: {
+        ...evaluated.decision,
+        outcome: executable ? "CLOSE_ONLY" : evaluated.decision.outcome,
+        reasonCode: executable
+          ? "CANONICAL_REDUCE_ONLY_COMPATIBILITY"
+          : evaluated.decision.reasonCode,
+        reduceOnly: true,
+        contextSnapshot: {
+          ...evaluated.decision.contextSnapshot,
+          canonicalRuntimeCompatibility: "REDUCE_ONLY_VERSION_DRIFT",
+          compatibilityWarnings,
+          exposureIncreaseAllowed: false,
+        },
+      },
+    }
+    : evaluated;
   try {
     const inserted = await dependencies.recordDecision({
       userId: strategy.userId,

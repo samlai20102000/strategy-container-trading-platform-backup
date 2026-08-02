@@ -195,6 +195,42 @@ describe("runtime guarded exchange adapter", () => {
     );
   });
 
+  it("相同穩定 closeIntentId 跨監控輪詢 eventKey 變動仍下沉同一 intentKey", async () => {
+    const raw = adapter();
+    const decision: ModeDecision = {
+      ...baseDecision,
+      executionMode: "SINGLE_EXCLUSIVE",
+      outcome: "CLOSE_ONLY",
+      reasonCode: "M1_CLOSE_EXISTING_POSITION",
+      reduceOnly: true,
+      targetSide: "SHORT",
+    };
+    const firstContext = {
+      ...context,
+      strategy: { ...context.strategy, executionMode: "SINGLE_EXCLUSIVE" as const },
+      eventKey: "risk-monitor:1:cycle-100",
+    };
+    const secondContext = {
+      ...firstContext,
+      eventKey: "risk-monitor:1:cycle-101",
+    };
+    const firstGuarded = createRuntimeGuardedAdapter(raw, firstContext, authorizer(decision));
+    const secondGuarded = createRuntimeGuardedAdapter(raw, secondContext, authorizer(decision));
+    const stableCloseIntentId = "close-intent-risk-strategy-1-short-position-a";
+
+    await firstGuarded.closePositionSmart("BTCUSDT", "short", 3_000, 0.02, stableCloseIntentId, {
+      policyContext: { reasonCode: "trailing_take_profit" },
+    });
+    await secondGuarded.closePositionSmart("BTCUSDT", "short", 3_000, 0.02, stableCloseIntentId, {
+      policyContext: { reasonCode: "trailing_take_profit" },
+    });
+
+    const firstOptions = raw.closePositionSmart.mock.calls[0][5];
+    const secondOptions = raw.closePositionSmart.mock.calls[1][5];
+    expect(firstOptions?.policyContext?.intentKey).toBeTruthy();
+    expect(secondOptions?.policyContext?.intentKey).toBe(firstOptions?.policyContext?.intentKey);
+  });
+
   it("advanced reduce-only order 使用 decision 核准腿與數量，不採信超額 caller quantity", async () => {
     const raw = adapter();
     const decision: ModeDecision = {

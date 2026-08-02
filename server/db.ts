@@ -265,6 +265,19 @@ export async function listEnabledStrategies() {
   return db.select().from(strategies).where(eq(strategies.enabled, true));
 }
 
+/**
+ * 風控監控除了啟用策略，也必須繼續處理已停用但仍有待平倉重試的策略。
+ * 否則 stop-loss 首次失敗後策略雖停止開新倉，既有風險卻永遠失去退出 worker。
+ */
+export async function listRiskMonitorCandidates() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(strategies).where(or(
+    eq(strategies.enabled, true),
+    sql`JSON_EXTRACT(${strategies.martinState}, '$.closeRetry') IS NOT NULL`,
+  ));
+}
+
 /** 軟隔離用：查詢同一 API Key + 同一幣對的所有策略（用於 reconcile 對賬） */
 export async function getStrategiesByApiKeyAndSymbol(apiKeyId: number, symbol: string) {
   const db = await getDb();

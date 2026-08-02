@@ -55,8 +55,18 @@ export interface CanonicalRuntimeDeployment {
   manifest: VersionedStrategyCapabilityManifest;
   executionMode: ExecutionMode;
   executionPolicy: ExecutionPolicy;
-  provenance: "SEALED_EXECUTION_PROFILE" | "LEGACY_S1_MEMORY_MIGRATION";
+  provenance:
+    | "SEALED_EXECUTION_PROFILE"
+    | "LEGACY_S1_MEMORY_MIGRATION"
+    | "REDUCE_ONLY_DRIFT_COMPATIBILITY";
+  compatibilityWarnings?: string[];
 }
+
+const REDUCE_ONLY_COMPATIBLE_ARTIFACT_BLOCKERS = new Set([
+  "STRATEGY_VERSION_MISMATCH",
+  "STRATEGY_LOGIC_HASH_MISMATCH",
+  "STALE_CAPABILITY_MANIFEST",
+]);
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -117,8 +127,9 @@ function legacyS1Migration(
   };
 }
 
-export async function hydrateCanonicalRuntimeDeployment(
+async function hydrateCanonicalRuntimeDeploymentInternal(
   strategy: Strategy,
+  options: { allowReduceOnlyVersionDrift?: boolean } = {},
 ): Promise<CanonicalRuntimeDeployment> {
   const strategyKey = strategy.strategyKey?.trim();
   if (!strategyKey) runtimeError("RUNTIME_STRATEGY_KEY_MISSING");
@@ -166,8 +177,15 @@ export async function hydrateCanonicalRuntimeDeployment(
     targetManifest: manifest,
     integrityValid: true,
   });
+  const compatibilityWarnings: string[] = [];
   if (!compatibility.compatible) {
-    runtimeError("RUNTIME_ARTIFACT_INCOMPATIBLE", compatibility.blockers.join(","));
+    const reduceOnlyCompatible = options.allowReduceOnlyVersionDrift === true
+      && compatibility.blockers.length > 0
+      && compatibility.blockers.every(blocker => REDUCE_ONLY_COMPATIBLE_ARTIFACT_BLOCKERS.has(blocker));
+    if (!reduceOnlyCompatible) {
+      runtimeError("RUNTIME_ARTIFACT_INCOMPATIBLE", compatibility.blockers.join(","));
+    }
+    compatibilityWarnings.push(...compatibility.blockers);
   }
 
   const rowMode = strategy.executionMode as ExecutionMode;
@@ -193,7 +211,10 @@ export async function hydrateCanonicalRuntimeDeployment(
     || rowManifestHash !== artifact.capabilityManifest.manifestHash
     || rowManifestHash !== manifest.manifestHash
   ) {
-    runtimeError("RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH");
+    if (options.allowReduceOnlyVersionDrift !== true) {
+      runtimeError("RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH");
+    }
+    compatibilityWarnings.push("RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH");
   }
 
   return {
@@ -209,8 +230,27 @@ export async function hydrateCanonicalRuntimeDeployment(
     manifest,
     executionMode: artifact.executionMode,
     executionPolicy: artifact.executionPolicy,
-    provenance: "SEALED_EXECUTION_PROFILE",
+    provenance: compatibilityWarnings.length > 0
+      ? "REDUCE_ONLY_DRIFT_COMPATIBILITY"
+      : "SEALED_EXECUTION_PROFILE",
+    compatibilityWarnings: Array.from(new Set(compatibilityWarnings)),
   };
+}
+
+export async function hydrateCanonicalRuntimeDeployment(
+  strategy: Strategy,
+): Promise<CanonicalRuntimeDeployment> {
+  return hydrateCanonicalRuntimeDeploymentInternal(strategy);
+}
+
+/**
+ * 僅供明確 reduce-only／close 操作使用。完整性、config、key、mode、policy、
+ * capability revoke 等安全條件仍維持 fail-closed；只容許程式升版造成的 manifest 漂移退出既有風險。
+ */
+export async function hydrateCanonicalRuntimeDeploymentForReduceOnlyExit(
+  strategy: Strategy,
+): Promise<CanonicalRuntimeDeployment> {
+  return hydrateCanonicalRuntimeDeploymentInternal(strategy, { allowReduceOnlyVersionDrift: true });
 }
 
 export async function loadCanonicalRuntimeDeployment(
@@ -223,4 +263,16 @@ export async function loadCanonicalRuntimeDeployment(
     runtimeError("RUNTIME_DEPLOYMENT_NOT_FOUND", String(deploymentId));
   }
   return hydrateCanonicalRuntimeDeployment(strategy);
+}
+
+export async function loadCanonicalRuntimeDeploymentForReduceOnlyExit(
+  deploymentId: number,
+  userId?: number,
+): Promise<CanonicalRuntimeDeployment> {
+  const strategy = await getStrategyById(deploymentId, userId);
+  if (!strategy) runtimeError("RUNTIME_DEPLOYMENT_NOT_FOUND", String(deploymentId));
+  if (userId !== undefined && strategy.userId !== userId) {
+    runtimeError("RUNTIME_DEPLOYMENT_NOT_FOUND", String(deploymentId));
+  }
+  return hydrateCanonicalRuntimeDeploymentForReduceOnlyExit(strategy);
 }

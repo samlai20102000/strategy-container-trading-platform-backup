@@ -49,6 +49,36 @@ function mutationCalls(source: string, method: "placeOrder" | "closePosition" | 
   return calls;
 }
 
+function topLevelArguments(parenthesized: string): string[] {
+  const source = parenthesized.slice(1, -1);
+  const args: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: "'" | '"' | "`" | null = null;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "{" || char === "[") depth += 1;
+    else if (char === ")" || char === "}" || char === "]") depth -= 1;
+    else if (char === "," && depth === 0) {
+      args.push(source.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  args.push(source.slice(start).trim());
+  return args;
+}
+
 describe("Maker-First architecture guard", () => {
   const files = productionTypeScriptFiles(SERVER_ROOT);
 
@@ -75,6 +105,15 @@ describe("Maker-First architecture guard", () => {
     ]);
   });
 
+  it("Runtime Gate 必須把穩定事件鍵下沉至 Maker-First，禁止未來策略以時間戳破壞跨重試冪等", () => {
+    const runtimeAdapter = readFileSync(join(SERVER_ROOT, "exchanges/runtimeGuardedAdapter.ts"), "utf8");
+    const makerFirst = readFileSync(join(SERVER_ROOT, "exchanges/makerFirstFacade.ts"), "utf8");
+    expect(runtimeAdapter).toContain("const intentKey = stableOperationKey");
+    expect(runtimeAdapter).toContain("const legIntentKey = stableOperationKey");
+    expect(runtimeAdapter).toContain("intentKey,");
+    expect(makerFirst).toContain("intent.policyContext?.intentKey");
+  });
+
   it("所有 service／router 下單 mutation 必須攜帶結構化 policy context", () => {
     const auditedRoots = [join(SERVER_ROOT, "services"), join(SERVER_ROOT, "routers.ts"), join(SERVER_ROOT, "routers")];
     const auditedFiles = auditedRoots.flatMap(path => statSync(path).isDirectory() ? productionTypeScriptFiles(path) : [path]);
@@ -93,6 +132,80 @@ describe("Maker-First architecture guard", () => {
             violations.push(`${relative(SERVER_ROOT, path)}#${method}:${index + 1}`);
           }
         });
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it("所有直接 reduce-only placeOrder 必須明確指定 posSide，禁止未來策略誤平反向腿", () => {
+    const auditedRoots = [join(SERVER_ROOT, "services"), join(SERVER_ROOT, "routers.ts"), join(SERVER_ROOT, "routers")];
+    const auditedFiles = auditedRoots.flatMap(path => statSync(path).isDirectory() ? productionTypeScriptFiles(path) : [path]);
+    const violations: string[] = [];
+
+    for (const path of auditedFiles) {
+      const source = readFileSync(path, "utf8");
+      mutationCalls(source, "placeOrder").forEach((call, index) => {
+        if (/reduceOnly\s*:\s*true/.test(call) && !/\bposSide\s*(?::|,)/.test(call)) {
+          violations.push(`${relative(SERVER_ROOT, path)}#placeOrder:${index + 1}`);
+        }
+      });
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it("所有策略級 close 必須傳入 owned requestedSize，且不得再把數量誤塞入 closePositionSmart timeout", () => {
+    const auditedRoots = [join(SERVER_ROOT, "services"), join(SERVER_ROOT, "routers.ts"), join(SERVER_ROOT, "routers")];
+    const auditedFiles = auditedRoots.flatMap(path => statSync(path).isDirectory() ? productionTypeScriptFiles(path) : [path]);
+    const violations: string[] = [];
+
+    for (const path of auditedFiles) {
+      const source = readFileSync(path, "utf8");
+      for (const method of ["closePosition", "closePositionSmart"] as const) {
+        mutationCalls(source, method).forEach((call, index) => {
+          const helperIndex = call.indexOf("closePolicyOptions");
+          if (helperIndex < 0) return;
+          const helperOpen = call.indexOf("(", helperIndex);
+          const helperArgs = topLevelArguments(extractBalanced(call, helperOpen, "(", ")"));
+          if (helperArgs.length < 3 || !helperArgs[2] || helperArgs[2] === "undefined") {
+            violations.push(`${relative(SERVER_ROOT, path)}#${method}:missing-requested-size:${index + 1}`);
+          }
+
+          if (method === "closePositionSmart") {
+            const closeArgs = topLevelArguments(call);
+            if (/requestedSize|totalSize|positionSize|local\.size/i.test(closeArgs[2] ?? "")) {
+              violations.push(`${relative(SERVER_ROOT, path)}#closePositionSmart:size-in-timeout:${index + 1}`);
+            }
+          }
+        });
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it("策略監控器不得把帳戶同向聚合腿自動認領為單一策略 ownership", () => {
+    const monitorFiles = [
+      "services/v35Monitor.ts",
+      "services/v50Monitor.ts",
+      "services/v61Monitor.ts",
+    ];
+    const forbiddenOwnershipWrites = [
+      /state\.totalSize\s*=\s*exchangeSize/,
+      /state\.avgPrice\s*=\s*exchange(?:AvgPrice|EntryPrice)/,
+      /const\s+totalSize\s*=\s*exchangeSize\s*>\s*0/,
+      /\{\s*\.\.\.state\s*,\s*totalSize\s*,\s*avgPrice\s*\}/,
+    ];
+    const violations: string[] = [];
+
+    for (const relativePath of monitorFiles) {
+      const source = readFileSync(join(SERVER_ROOT, relativePath), "utf8");
+      forbiddenOwnershipWrites.forEach((pattern, index) => {
+        if (pattern.test(source)) violations.push(`${relativePath}:forbidden-aggregate-write:${index + 1}`);
+      });
+      if (!source.includes("不回寫 ownership")) {
+        violations.push(`${relativePath}:missing-readonly-drift-contract`);
       }
     }
 

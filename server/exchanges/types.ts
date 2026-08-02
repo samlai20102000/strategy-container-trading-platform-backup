@@ -33,6 +33,8 @@ export interface OrderParams {
     signalId?: number;
     source?: string;
     reasonCode?: string;
+    /** Runtime Gate 依穩定外部事件生成；Maker-First 優先用作跨重試冪等 policyRunId。 */
+    intentKey?: string;
   };
 }
 
@@ -48,6 +50,8 @@ export interface CloseExecutionOptions {
   executionClass?: "MAKER_ONLY" | "EMERGENCY_EXIT";
   emergencyReason?: "STOP_LOSS" | "DAILY_LOSS_LIMIT" | "KILL_SWITCH";
   policyContext?: OrderParams["policyContext"];
+  /** 策略可證明擁有的精確平倉數量；不得以 timeout 或交易所聚合腿大小代替。 */
+  requestedSize?: number;
 }
 
 export type ExchangeTruthSource =

@@ -106,45 +106,36 @@ export async function checkV50Strategy(strategy: any): Promise<void> {
   let currentPrice = 0;
   let exchangeSize = 0;
   let exchangeEntryPrice = 0;
-  let exchangeSide: "long" | "short" = "long";
-  let exchangeUnrealizedPnl = 0;
   try {
     const positions = await adapter.getPositions(strategy.symbol);
-    // 優先匹配與本地策略方向一致的持倉
     const expectedSide = state.isLong ? "long" : "short";
-    let pos = positions.find((p: any) => p.size > 0 && p.side === expectedSide);
+    const pos = positions.find((p: any) => p.size > 0 && p.side === expectedSide);
     if (!pos) {
-      // 如果找不到匹配方向的持倉，可能已被平倉，使用任意持倉獲取價格但不同步數量
-      pos = positions.find((p: any) => p.size > 0);
-      if (!pos || pos.markPrice <= 0) return;
-      // 只用於獲取當前價格，不同步數量/方向
-      currentPrice = pos.markPrice;
-      // 不同步 exchangeSize，保持本地 state 不變
-      exchangeSize = 0;
-    } else {
-      currentPrice = pos.markPrice;
-      exchangeSize = pos.size;
-      exchangeEntryPrice = pos.entryPrice;
-      exchangeSide = pos.side;
-      exchangeUnrealizedPnl = pos.unrealizedPnl;
+      console.warn(`[V50Monitor] 策略 ${strategy.id} 找不到本地方向 ${expectedSide} 的交易所腿，停止本輪 mutation 並保留本地 ownership`);
+      return;
     }
+    if (pos.markPrice <= 0) return;
+    currentPrice = pos.markPrice;
+    exchangeSize = pos.size;
+    exchangeEntryPrice = pos.entryPrice;
   } catch {
     return;
   }
 
   const v50Config = (strategy.martinState as any)?.__v50Config ?? {};
-  // 優先使用交易所真實數據（只在方向匹配時），本地 state 作為 fallback
-  const avgPrice = (exchangeSize > 0 && exchangeEntryPrice > 0) ? exchangeEntryPrice : state.avgPrice;
-  const isLong = exchangeSize > 0 ? exchangeSide === "long" : state.isLong;
-  const totalSize = exchangeSize > 0 ? exchangeSize : state.totalSize;
+  // 交易所同方向腿是帳戶聚合量；策略風控與平倉數量只能使用本地 ownership。
+  const avgPrice = state.avgPrice;
+  const isLong = state.isLong;
+  const totalSize = state.totalSize;
   const currentLayer = state.currentLayer;
   const capital = Number(v50Config.Initial_Capital) || 10000;
 
-  // 同步本地 state（只在方向匹配且數據不一致時）
-  if (exchangeSize > 0 && (Math.abs(totalSize - state.totalSize) > 0.000001 || Math.abs(avgPrice - state.avgPrice) > 0.01)) {
-    console.log(`[V50Monitor] 策略 ${strategy.id} 持倉同步：本地(size=${state.totalSize}, avg=${state.avgPrice}, isLong=${state.isLong}) → 交易所(size=${totalSize}, avg=${avgPrice}, side=${exchangeSide})`);
-    const syncedState = { ...state, totalSize, avgPrice };
-    await saveStrategyState(strategy.id, syncedState);
+  if (exchangeSize > 0 && exchangeEntryPrice > 0) {
+    const sizeDiffPct = Math.abs(exchangeSize - totalSize) / exchangeSize * 100;
+    const priceDiffPct = Math.abs(exchangeEntryPrice - avgPrice) / exchangeEntryPrice * 100;
+    if (sizeDiffPct > 1 || priceDiffPct > 1) {
+      console.warn(`[V50Monitor] 策略 ${strategy.id} 偵測帳戶聚合腿漂移但不回寫 ownership: 本地 size=${totalSize}/avg=${avgPrice}, 交易所同向聚合腿 size=${exchangeSize}/avg=${exchangeEntryPrice}`);
+    }
   }
 
   // 計算浮動盈虧百分比
@@ -152,24 +143,16 @@ export async function checkV50Strategy(strategy: any): Promise<void> {
     ? ((currentPrice - avgPrice) / avgPrice) * 100
     : ((avgPrice - currentPrice) / avgPrice) * 100;
 
-  // 計算浮虧佔本金百分比（優先使用交易所的 unrealizedPnl）
-  let unrealizedLoss = 0;
-  if (exchangeUnrealizedPnl < 0) {
-    // 交易所直接返回的未實現虧損（負數表示虧損）
-    unrealizedLoss = Math.abs(exchangeUnrealizedPnl);
-  } else if (exchangeUnrealizedPnl === 0) {
-    // fallback：手動計算
-    unrealizedLoss = isLong
-      ? Math.max(0, (avgPrice - currentPrice) * totalSize)
-      : Math.max(0, (currentPrice - avgPrice) * totalSize);
-  }
-  // 如果 exchangeUnrealizedPnl > 0 表示盈利，unrealizedLoss = 0
+  // 聚合腿 unrealizedPnl 也可能包含其他策略；按本策略本地成本與數量計算。
+  const unrealizedLoss = isLong
+    ? Math.max(0, (avgPrice - currentPrice) * totalSize)
+    : Math.max(0, (currentPrice - avgPrice) * totalSize);
   const unrealizedLossPct = capital > 0 ? (unrealizedLoss / capital) * 100 : 0;
 
   // === 1. 硬止損 ===
   const maxLossPct = Number(v50Config.Max_Loss_Pct) || 6.0;
   if (unrealizedLossPct >= maxLossPct) {
-    console.log(`[V50Monitor] 策略 ${strategy.id} 觸發硬止損 (${unrealizedLossPct.toFixed(2)}% >= ${maxLossPct}%) | 詳情: size=${totalSize}, avgPrice=${avgPrice}, markPrice=${currentPrice}, isLong=${isLong}, unrealizedLoss=${unrealizedLoss.toFixed(4)}, capital=${capital}, exchangePnl=${exchangeUnrealizedPnl}`);
+    console.log(`[V50Monitor] 策略 ${strategy.id} 觸發硬止損 (${unrealizedLossPct.toFixed(2)}% >= ${maxLossPct}%) | 詳情: ownedSize=${totalSize}, avgPrice=${avgPrice}, markPrice=${currentPrice}, isLong=${isLong}, unrealizedLoss=${unrealizedLoss.toFixed(4)}, capital=${capital}`);
     await closeAndDisable(strategy, adapter, currentPrice, `V5.0 硬止損 (浮虧 ${unrealizedLossPct.toFixed(2)}% 佔本金)`);
     return;
   }
@@ -282,7 +265,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
       // 使用 adapter.closePosition 平倉（平台級別通用，自動處理 posMode/posSide）
       const result = await adapter.closePositionSmart(
         strategy.symbol,
-        undefined,
+        state.isLong ? "long" : "short",
         undefined,
         undefined,
         `clOrdId_V50_CLOSE_DISABLE_${strategy.id}_${Date.now()}`,
@@ -290,7 +273,7 @@ async function closeAndDisable(strategy: any, adapter: ExchangeAdapter, price: n
           strategyId: strategy.id,
           source: "RISK",
           reasonCode: "v50_hard_stop",
-        }, "STOP_LOSS"),
+        }, "STOP_LOSS", state.totalSize),
       );
       exchangeCloseResult = result;
       if (!result.success) {
@@ -386,7 +369,7 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
       // 使用 adapter.closePosition 平倉（平台級別通用，自動處理 posMode/posSide）
       const result = await adapter.closePositionSmart(
         strategy.symbol,
-        undefined,
+        state.isLong ? "long" : "short",
         undefined,
         undefined,
         `clOrdId_V50_CLOSE_TP_${strategy.id}_${Date.now()}`,
@@ -394,7 +377,7 @@ async function closePosition(strategy: any, adapter: ExchangeAdapter, price: num
           strategyId: strategy.id,
           source: "RISK",
           reasonCode: "v50_trailing_take_profit",
-        }),
+        }, undefined, state.totalSize),
       );
       exchangeCloseResult = result;
       if (!result.success) {

@@ -339,17 +339,18 @@ export async function executeSignal(
 
   // 4. 平倉訊號
   if (signal.action === "close") {
-    // 從交易所查詢真實持倉方向（OKX 雙向持倉模式必須指定 posSide）
-    let closePosSide: "long" | "short" | undefined;
-    try {
-      const positions = await adapter.getPositions(strategy.symbol);
-      const activePos = positions.find((p) => p.size > 0);
-      if (activePos) closePosSide = activePos.side as "long" | "short";
-    } catch {
-      // 查詢失敗時嘗試從馬丁狀態推斷
-      const ms = (strategy as any).martinState;
-      if (ms?.isLong === true) closePosSide = "long";
-      else if (ms?.isLong === false) closePosSide = "short";
+    const localState = strategy.martinState as Record<string, unknown> | null;
+    const closeRequestedSize = Number(localState?.totalSize ?? 0);
+    const closePosSide = localState?.isLong === true
+      ? "long"
+      : localState?.isLong === false
+        ? "short"
+        : undefined;
+    if (!Number.isFinite(closeRequestedSize) || closeRequestedSize <= 0 || !closePosSide) {
+      return {
+        status: "rejected",
+        message: "缺少可證明的本策略持倉方向或正數 totalSize；已拒絕聚合平倉，請先完成持倉對帳",
+      };
     }
     console.log(`[executor] 平倉訊號 策略 ${strategy.id} posSide=${closePosSide ?? "unknown"}`);
     const result = await adapter.closePositionSmart(
@@ -363,7 +364,7 @@ export async function executeSignal(
         signalId,
         source: options.source,
         reasonCode: "external_close",
-      }),
+      }, undefined, closeRequestedSize),
     );
     if (result.success) {
       await createTrade({
@@ -471,18 +472,18 @@ export async function executeSignal(
       return { status: "skipped", message: `策略引擎決定觀望：${decision.reason || "HOLD"}` };
     }
     if (decision.action === "CLOSE_ALL") {
-      // 從交易所查詢真實持倉方向（OKX 雙向持倉模式必須指定 posSide）
-      let genericClosePosSide: "long" | "short" | undefined;
-      try {
-        const positions = await adapter.getPositions(strategy.symbol);
-        const activePos = positions.find((p) => p.size > 0);
-        if (activePos) genericClosePosSide = activePos.side as "long" | "short";
-      } catch {
-        const ms = martinState;
-        if (ms?.lastEntryPrice > 0) {
-          // 嘗試從馬丁狀態推斷（僅作 fallback）
-          genericClosePosSide = undefined;
-        }
+      const genericState = strategy.martinState as Record<string, unknown> | null;
+      const genericCloseRequestedSize = Number(genericState?.totalSize ?? 0);
+      const genericClosePosSide = genericState?.isLong === true
+        ? "long"
+        : genericState?.isLong === false
+          ? "short"
+          : undefined;
+      if (!Number.isFinite(genericCloseRequestedSize) || genericCloseRequestedSize <= 0 || !genericClosePosSide) {
+        return {
+          status: "rejected",
+          message: "通用引擎缺少可證明的策略持倉方向或正數 totalSize；已拒絕聚合 CLOSE_ALL",
+        };
       }
       console.log(`[executor] 通用引擎 CLOSE_ALL 策略 ${strategy.id} posSide=${genericClosePosSide ?? "unknown"}`);
       const result = await adapter.closePositionSmart(
@@ -491,12 +492,12 @@ export async function executeSignal(
         undefined,
         undefined,
         `clOrdId_GENERIC_CLOSE_${strategy.id}_${genericClosePosSide}_${Date.now()}`,
-        closePolicyOptions({
-          strategyId: strategy.id,
-          signalId,
-          source: options.source,
-          reasonCode: "generic_engine_close",
-        }),
+      closePolicyOptions({
+        strategyId: strategy.id,
+        signalId,
+        source: options.source,
+        reasonCode: "generic_engine_close",
+      }, undefined, genericCloseRequestedSize),
       );
       if (result.success) {
         await createTrade({
@@ -761,7 +762,7 @@ async function executeSignalRainbowTrendLadder(
         signalId,
         source: closeReason === "KILL" ? "RISK" : "EXECUTOR",
         reasonCode: `rainbow_trend_ladder_${closeReason ?? "MANUAL"}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (!result.success) {
       return { status: "failed", message: result.errorMessage || "新七彩虹階梯策略平倉失敗；KILL 鎖定與本地狀態均保留", exchangeResponse: result.rawResponse };
@@ -1052,7 +1053,7 @@ async function executeSignalRainbow20415(
         signalId,
         source: emergencyReason ? "RISK" : "EXECUTOR",
         reasonCode: `rainbow_20415_${closeReason ?? "MANUAL"}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (!result.success) {
       return { status: "failed", message: result.errorMessage || "20415 平倉失敗", exchangeResponse: result.rawResponse };
@@ -1464,7 +1465,7 @@ async function executeSignalV35(
         signalId,
         source: emergencyReason ? "RISK" : "EXECUTOR",
         reasonCode: `v35_${decision.reason || "close_all"}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (result.success) {
       // 計算 realizedPnl
@@ -1750,7 +1751,7 @@ async function executeSignalV50(
         signalId,
         source: emergencyReason ? "RISK" : "EXECUTOR",
         reasonCode: `v50_${decision.reason || "close_all"}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (result.success) {
       // 計算 realizedPnl
@@ -2012,7 +2013,7 @@ async function executeSignalV61(
         signalId,
         source: emergencyReason ? "RISK" : "EXECUTOR",
         reasonCode: `v61_${decision.reason || "close_all"}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (result.success) {
       // 計算 realizedPnl
@@ -2251,7 +2252,7 @@ async function executeSignalV25(
         signalId,
         source: emergencyReason ? "RISK" : "EXECUTOR",
         reasonCode: `v25_${closeReason}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (!result.success) {
       return {
@@ -2523,7 +2524,7 @@ async function executeSignalV70(
         signalId,
         source: emergencyReason ? "RISK" : "EXECUTOR",
         reasonCode: `v70_${decision.reason || "close_all"}`,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     if (result.success) {
       const exitPrice = result.filledPrice || 0;
@@ -2724,16 +2725,15 @@ async function handleDailyLossBreach(
   const { createRiskEvent } = await import("../db");
   let positionClosed = false;
   try {
-    // 從交易所查詢真實持倉方向（OKX 雙向持倉模式必須指定 posSide）
-    let dailyLossPosSide: "long" | "short" | undefined;
-    try {
-      const positions = await adapter.getPositions(strategy.symbol);
-      const activePos = positions.find((p) => p.size > 0);
-      if (activePos) dailyLossPosSide = activePos.side as "long" | "short";
-    } catch {
-      const ms = (strategy as any).martinState;
-      if (ms?.isLong === true) dailyLossPosSide = "long";
-      else if (ms?.isLong === false) dailyLossPosSide = "short";
+    const dailyLossState = strategy.martinState as Record<string, unknown> | null;
+    const dailyLossRequestedSize = Number(dailyLossState?.totalSize ?? 0);
+    const dailyLossPosSide = dailyLossState?.isLong === true
+      ? "long"
+      : dailyLossState?.isLong === false
+        ? "short"
+        : undefined;
+    if (!Number.isFinite(dailyLossRequestedSize) || dailyLossRequestedSize <= 0 || !dailyLossPosSide) {
+      throw new Error("DAILY_LOSS_CLOSE_OWNERSHIP_UNPROVEN");
     }
     console.log(`[executor] 每日虧損平倉 策略 ${strategy.id} posSide=${dailyLossPosSide ?? "unknown"}`);
     const result = await adapter.closePositionSmart(
@@ -2746,7 +2746,7 @@ async function handleDailyLossBreach(
         strategyId: strategy.id,
         source: "RISK",
         reasonCode: "daily_loss_limit",
-      }, "DAILY_LOSS_LIMIT"),
+      }, "DAILY_LOSS_LIMIT", dailyLossRequestedSize),
     );
     positionClosed = result.success;
     if (result.success) {

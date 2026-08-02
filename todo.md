@@ -2568,3 +2568,16 @@
 - [x] 補齊 one-way／hedge、long／short、部分成交、重複平倉、孤兒倉、不同策略同 symbol 及 V4.0 移動止盈的 Vitest 防回歸測試
 - [x] 執行 TypeScript、受影響及完整 Vitest、production build；確認測試不會連到 OKX 或送出任何真實／模擬訂單
 - [x] 驗證策略卡、訊號日誌及異常倉位提示的桌面／行動版 UI，複核 todo 後建立 checkpoint 並自動發布
+- [x] 建立 2026-08-02 第二次事故證據矩陣：訊號日誌中 V4.0 與 20415 七彩紅馬反覆限價平倉失敗、策略卡 short 0.1238 BTC、OKX 仍持有同量空單
+- [x] 唯讀核對兩條策略的 ID、API 帳戶、execution mode、position mode、signals、trades、order policy events、持倉快照與最新失敗原文
+- [x] 查明為何昨晚共用修復後第二條策略仍走到同類失敗，區分舊部署版本、不同 caller、限價策略設定、政策層拒絕、Maker 等待與交易所拒單
+- [x] 盤點所有現有策略及策略工作室新策略的開倉、加倉、減倉、平倉入口，確認全部只能經統一 execution contract 與 Maker-First facade
+- [x] 建立全策略統一限價成交契約：尊重策略 orderType、Maker-only／TTL／撤單／重掛／明確市價兜底政策，不得靜默把限價改成市價
+- [x] 建立全策略統一平倉契約：精確 symbol／posSide／reduceOnly／size、部分成交續平、後驗歸零、穩定 intent、冪等、退避與可查詢 reasonCode
+- [x] 修復繞過共用 facade、舊簽名或錯誤 caller 的所有入口，並為未來策略加入編譯期／註冊期認證防呆
+- [x] 優化訊號日誌與策略卡：顯示真實失敗層級、交易所錯誤、限價等待／撤單／重掛進度與持倉歸屬，不再只顯示「失敗／不適用」
+- [x] 補齊 OKX／Bybit、one-way／hedge、long／short、limit／market、partial fill、TTL、fallback、重複命令與新策略 adapter 認證 Vitest
+- [x] 執行受影響與全套 Vitest、TypeScript、production build、桌面／手機 UI 驗證，測試不得連線或主動送出任何真實／模擬訂單
+- [x] 唯讀後驗確認修復後不再新增同類失敗，複核 todo 後建立 checkpoint 並自動發布事故修復
+- [x] P0 修復同帳戶同商品同向共享腿：`closePositionSmart` 不得把策略數量塞入 timeout 或默認平整個交易所聚合腿；所有策略須經 `CloseExecutionOptions.requestedSize` 精確 reduce-only 平倉，缺少可證明本地數量時 fail-closed
+- [x] P0 移除 V3.5／V5.0／V6.1 對交易所聚合腿的策略自動認領：不得把 exchangeSize／聚合均價覆寫單一策略 `totalSize`／`avgPrice`，只允許唯讀漂移告警並持續使用本地 ownership 數據

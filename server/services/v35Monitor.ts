@@ -214,18 +214,14 @@ export async function checkV35Strategy(strategy: Strategy): Promise<boolean> {
     }
     currentPrice = pos.markPrice;
 
-    // ===== 自動校準：比對 OKX 實際持倉與本地 martinState =====
+    // 交易所同方向腿是帳戶聚合量，可能同時包含多條策略；只做唯讀漂移告警，禁止認領回寫。
     const exchangeSize = pos.size; // OKX 實際持倉量（已正確轉換 ctVal）
     const exchangeAvgPrice = pos.entryPrice; // OKX 實際開倉均價
     if (exchangeSize > 0 && exchangeAvgPrice > 0) {
       const sizeDiffPct = Math.abs(exchangeSize - state.totalSize) / exchangeSize * 100;
       const priceDiffPct = Math.abs(exchangeAvgPrice - state.avgPrice) / exchangeAvgPrice * 100;
-      // 如果持倉量或均價差異超過 1%，自動用 OKX 數據校準
       if (sizeDiffPct > 1 || priceDiffPct > 1) {
-        console.log(`[V35Monitor] 自動校準策略 #${strategy.id}: 本地 size=${state.totalSize.toFixed(6)}/avg=${state.avgPrice.toFixed(2)} → OKX size=${exchangeSize.toFixed(6)}/avg=${exchangeAvgPrice.toFixed(2)} (差異: size ${sizeDiffPct.toFixed(1)}%, price ${priceDiffPct.toFixed(1)}%)`);
-        state.totalSize = exchangeSize;
-        state.avgPrice = exchangeAvgPrice;
-        await saveStrategyState(strategy.id, state);
+        console.warn(`[V35Monitor] 策略 #${strategy.id} 偵測帳戶聚合腿漂移但不回寫 ownership: 本地 size=${state.totalSize.toFixed(6)}/avg=${state.avgPrice.toFixed(2)}, 交易所同向聚合腿 size=${exchangeSize.toFixed(6)}/avg=${exchangeAvgPrice.toFixed(2)} (差異: size ${sizeDiffPct.toFixed(1)}%, price ${priceDiffPct.toFixed(1)}%)`);
       }
     }
   } catch (e: unknown) {
@@ -769,7 +765,7 @@ async function executeFullClose(
         strategyId: strategy.id,
         source: "RISK",
         reasonCode: triggerSource,
-      }, emergencyReason),
+      }, emergencyReason, state.totalSize),
     );
     exchangeCloseResult = result;
     positionClosed = result.success;

@@ -25,6 +25,7 @@ vi.mock("./strategyCapabilityRegistry", () => ({
 import {
   CanonicalRuntimeDeploymentError,
   hydrateCanonicalRuntimeDeployment,
+  hydrateCanonicalRuntimeDeploymentForReduceOnlyExit,
   loadCanonicalRuntimeDeployment,
 } from "./canonicalRuntimeDeployment";
 
@@ -160,6 +161,51 @@ describe("canonical runtime deployment", () => {
 
     await expect(hydrateCanonicalRuntimeDeployment(strategy)).rejects.toMatchObject({
       code: "RUNTIME_ARTIFACT_INCOMPATIBLE",
+    } satisfies Partial<CanonicalRuntimeDeploymentError>);
+  });
+
+  it("舊 sealed profile 僅可用 reduce-only 相容路徑退出既有風險", async () => {
+    const strategy = canonicalStrategy();
+    mocks.requireStrategyCapabilityManifest.mockResolvedValue(
+      certifiedManifest(strategy.strategyKey!, 2),
+    );
+
+    const runtime = await hydrateCanonicalRuntimeDeploymentForReduceOnlyExit(strategy);
+
+    expect(runtime.provenance).toBe("REDUCE_ONLY_DRIFT_COMPATIBILITY");
+    expect(runtime.compatibilityWarnings).toEqual(expect.arrayContaining([
+      "STRATEGY_VERSION_MISMATCH",
+      "STRATEGY_LOGIC_HASH_MISMATCH",
+      "STALE_CAPABILITY_MANIFEST",
+      "RUNTIME_CAPABILITY_SNAPSHOT_MISMATCH",
+    ]));
+    await expect(hydrateCanonicalRuntimeDeployment(strategy)).rejects.toMatchObject({
+      code: "RUNTIME_ARTIFACT_INCOMPATIBLE",
+    } satisfies Partial<CanonicalRuntimeDeploymentError>);
+  });
+
+  it("reduce-only 相容路徑不接受 artifact 完整性或 policy 漂移", async () => {
+    const tampered = canonicalStrategy();
+    const tamperedState = tampered.martinState as Record<string, unknown>;
+    const artifact = getBoundStrategyArtifact(tamperedState, tampered.strategyKey!);
+    tampered.martinState = {
+      ...tamperedState,
+      __strategyArtifact: { ...artifact, artifactHash: "tampered" },
+    };
+    mocks.requireStrategyCapabilityManifest.mockResolvedValue(tampered.capabilitySnapshot);
+    await expect(hydrateCanonicalRuntimeDeploymentForReduceOnlyExit(tampered)).rejects.toMatchObject({
+      code: "RUNTIME_ARTIFACT_HASH_MISMATCH",
+    } satisfies Partial<CanonicalRuntimeDeploymentError>);
+
+    const policyDrift = canonicalStrategy();
+    const currentPolicy = createDefaultExecutionPolicy("MULTI_POSITION");
+    policyDrift.executionPolicy = {
+      ...currentPolicy,
+      riskBudget: { ...currentPolicy.riskBudget, maxMarginUsagePct: 35 },
+    };
+    mocks.requireStrategyCapabilityManifest.mockResolvedValue(policyDrift.capabilitySnapshot);
+    await expect(hydrateCanonicalRuntimeDeploymentForReduceOnlyExit(policyDrift)).rejects.toMatchObject({
+      code: "RUNTIME_EXECUTION_POLICY_MISMATCH",
     } satisfies Partial<CanonicalRuntimeDeploymentError>);
   });
 
