@@ -40,8 +40,9 @@ describe("V4.1 三頁共用 UI 接線契約", () => {
     expect(strategiesSource).toContain("const nextConfig = prev.v4_1 ?? createV41DefaultConfig()");
     expect(strategiesSource).toContain("const v41SubmitBlocked = snapshotImportSource?.strategyKey === V41_STRATEGY_KEY");
     expect(strategiesSource).toContain("disabled={saving || v41SubmitBlocked || kamaRainbowMartinSubmitBlocked}");
-    expect(strategiesSource).toContain("startsDisabled: variables.strategyKey === V41_STRATEGY_KEY");
-    expect(strategiesSource).toContain("V4.1 新策略預設停用，目前不會自動下單");
+    expect(strategiesSource).not.toContain("startsDisabled");
+    expect(strategiesSource).toContain("新策略目前預設停用，不會自動下單");
+    expect(strategiesSource).toContain("由策略卡片直接啟用");
   });
 
   it("參數快照庫顯示 AND/OR 與 n/3，詳情保持唯讀且驗證警告不封鎖瀏覽", () => {
@@ -54,7 +55,7 @@ describe("V4.1 三頁共用 UI 接線契約", () => {
     expect(snapshotsSource).toContain("validationIssues={viewV41Display.validation.issues}");
   });
 
-  it("參數快照複製流程明示 V4.1 新實例預設停用", () => {
-    expect(snapshotsSource).toContain("V4.1 快照複製為新策略後預設停用，必須人工覆核後才可啟用");
+  it("參數快照複製流程明示 V4.1 新實例預設停用且可直接啟用", () => {
+    expect(snapshotsSource).toContain("V4.1 快照複製為新策略後預設停用；人工覆核後可由策略卡片直接啟用");
   });
 });

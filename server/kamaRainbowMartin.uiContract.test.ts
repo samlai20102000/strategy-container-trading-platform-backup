@@ -16,6 +16,17 @@ describe("Kama 彩虹馬丁自動重入與 S1 UI 契約", () => {
     expect(panel).toContain("updateConfig({ reentryEnabled })");
   });
 
+  it("策略卡僅對 KRM 顯示已保存的自動重入開關狀態，建立成功引導不再要求 preflight", () => {
+    const strategies = readSource("client/src/pages/Strategies.tsx");
+
+    expect(strategies).toContain("自動重入：");
+    expect(strategies).toContain("s.reentryEnabled === true ? \"開啟\" : \"關閉\"");
+    expect(strategies).toContain("s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY");
+    expect(strategies).toContain("由策略卡片直接啟用");
+    expect(strategies).not.toContain("V4.1 新策略預設停用");
+    expect(strategies).not.toContain("startsDisabled");
+  });
+
   it("從側欄與全部回測策略配置移除指定 S1 UI，但保留部署路由與底層風控元件", () => {
     const dashboard = readSource("client/src/components/DashboardLayout.tsx");
     const backtest = readSource("client/src/pages/Backtest.tsx");

@@ -266,7 +266,7 @@ describe("StrategyArtifact canonical contract", () => {
     },
   );
 
-  it("從 execution profile 建立 deployment 時保留模式身份但永遠預設停用", () => {
+  it("從 execution profile 建立一般策略時保留模式身份、預設停用且可由策略卡直接啟用", () => {
     const manifest = certifiedManifest();
     const artifact = buildStrategyArtifactEnvelope({
       artifactScope: "EXECUTION_PROFILE",
@@ -281,8 +281,8 @@ describe("StrategyArtifact canonical contract", () => {
 
     expect(buildDisabledSnapshotDeploymentFields(artifact)).toEqual({
       enabled: false,
-      activationState: "DISABLED",
-      disabledReason: "快照導入後預設停用；必須通過部署 preflight 後才可啟用",
+      activationState: "LEGACY",
+      disabledReason: "快照導入後預設停用；請確認參數、API 與風控設定後，由策略卡片直接啟用",
       strategyVersion: artifact.strategyVersion,
       executionMode: "HEDGE_GUARDED",
       executionPolicy: artifact.executionPolicy,

@@ -2685,3 +2685,14 @@
 - [x] 新增 Vitest 契約與整合回歸：開啟可平倉後重入、關閉不再重入、條件不符不重入、舊快照預設關閉、所有快照／策略映射保真、S1 UI 隱藏而底層 profile 不變
 - [x] 執行 TypeScript、受影響與完整 Vitest、production build、桌面／手機視覺與 console／network 驗收；全程不觸發實盤下單、撤單或平倉
 - [x] 核對 TODO、保存 checkpoint 並確認新版本已自動發布
+
+## 2026-08-03 策略直接啟用與自動重新入市狀態標籤
+- [x] 依使用者圖片逐段追蹤快照導入、一般新建、策略建立成功 Modal、啟用切換、artifact／capability manifest 與 preflight 守門資料流
+- [x] 定義快照導入與一般新建的一致契約：建立後維持停用，但不再要求 S1 部署 preflight；使用者可直接在策略卡主動啟用交易
+- [x] 移除 `ARTIFACT_INCOMPATIBLE`、`STRATEGY_LOGIC_HASH_MISMATCH`、`STALE_CAPABILITY_MANIFEST` 對快照導入／一般新建策略的過時部署阻擋與誤導提示
+- [x] 保留直接啟用前的必要安全校驗：有效 API 帳戶、交易所／交易對、策略配置、倉位與風控參數；不得繞過 enabled 狀態或自動替使用者啟用
+- [x] 更新策略建立成功 Modal 與快照導入提示，清楚說明建立後可直接由策略卡啟用，不再要求部署 preflight
+- [x] 在策略列表卡片顯示 KAMA 彩虹馬丁「自動重新入市：已啟用／未啟用」視覺標籤，值必須來自實際 canonical 配置且其他策略不得誤顯示
+- [x] 新增快照導入、一般新建、直接啟用、安全校驗、舊 artifact 相容與策略卡標籤的 Vitest 回歸測試
+- [x] 執行 TypeScript、受影響與完整 Vitest、production build、桌面／手機視覺及 console／network 驗收；全程不觸發實盤下單、撤單、平倉或策略啟停
+- [x] 核對 TODO、保存 checkpoint 並確認新版本已自動發布

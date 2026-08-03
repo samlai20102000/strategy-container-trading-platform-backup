@@ -348,7 +348,8 @@ export class RegistryManager {
       instance.martinState && typeof instance.martinState === "object"
         ? (instance.martinState as Record<string, unknown>)
         : { lossCount: 0, currentLot: Number(instance.positionSize), lastEntryPrice: 0 };
-    const runtimeArtifact = hydrated.artifact.artifactScope === "EXECUTION_PROFILE"
+    const isLegacyCardStrategy = instance.activationState === "LEGACY";
+    const runtimeArtifact = !isLegacyCardStrategy && hydrated.artifact.artifactScope === "EXECUTION_PROFILE"
       ? hydrated.artifact
       : buildStrategyArtifactEnvelope({
           artifactScope: "EXECUTION_PROFILE",
@@ -373,8 +374,10 @@ export class RegistryManager {
         artifact: runtimeArtifact,
       }),
       enabled: false,
-      activationState: "DISABLED",
-      disabledReason: "快照配置已更新；必須重新通過部署 preflight 後才可啟用",
+      activationState: isLegacyCardStrategy ? "LEGACY" : "DISABLED",
+      disabledReason: isLegacyCardStrategy
+        ? "快照配置已更新並預設停用；請確認參數、API 與風控設定後，由策略卡片直接啟用"
+        : "Canonical deployment 的快照配置已更新；必須重新通過部署 preflight 後才可啟用",
       capabilitySnapshot: runtimeArtifact.capabilityManifest as unknown as Record<string, unknown>,
       strategyVersion: runtimeArtifact.strategyVersion,
       executionMode: runtimeArtifact.executionMode,
@@ -391,7 +394,12 @@ export class RegistryManager {
       } : {}),
     });
 
-    return { success: true, message: "參數已套用並將策略安全設為停用；請重新通過部署 preflight 後再啟用" };
+    return {
+      success: true,
+      message: isLegacyCardStrategy
+        ? "參數已套用並將策略安全設為停用；確認設定後可由策略卡片直接啟用"
+        : "Canonical deployment 參數已套用並安全設為停用；請重新通過部署 preflight 後再啟用",
+    };
   }
 
   // ============================================================

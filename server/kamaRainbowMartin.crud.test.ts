@@ -94,7 +94,7 @@ function existingKrmStrategy(overrides: Partial<Strategy> = {}): Strategy {
       [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
     },
     enabled: false,
-    activationState: "DISABLED",
+    activationState: "LEGACY",
     ...overrides,
   } as Strategy;
 }
@@ -119,7 +119,7 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
     });
   });
 
-  it("建立時只寫入 KRM 私有 canonical config、保存自動重入並強制策略 disabled", async () => {
+  it("建立時只寫入 KRM 私有 canonical config、保存自動重入並以 LEGACY 狀態預設停用", async () => {
     const result = await appRouter.createCaller(createContext()).strategies.create(validCreateInput());
 
     expect(mocks.getApiKeyById).toHaveBeenCalledWith(7, 41);
@@ -131,7 +131,7 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
       symbol: "BTC-USDT-SWAP",
       strategyKey: KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
       enabled: false,
-      activationState: "DISABLED",
+      activationState: "LEGACY",
       executionMode: "SINGLE_EXCLUSIVE",
       positionSize: "100",
       positionMode: "usdt",
@@ -151,7 +151,7 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
       success: true,
       id: 123,
       enabled: false,
-      activationState: "DISABLED",
+      activationState: "LEGACY",
     });
   });
 
@@ -211,6 +211,36 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
     })).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(mocks.getStrategyById).toHaveBeenCalledWith(88, 77);
+    expect(mocks.updateStrategy).not.toHaveBeenCalled();
+  });
+
+  it("允許 LEGACY 一般策略由策略卡片直接啟用", async () => {
+    mocks.getStrategyById.mockResolvedValue(existingKrmStrategy());
+
+    const result = await appRouter.createCaller(createContext()).strategies.toggle({
+      id: 88,
+      enabled: true,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.updateStrategy).toHaveBeenCalledWith(88, 41, {
+      enabled: true,
+      disabledReason: null,
+    });
+  });
+
+  it("canonical deployment 仍拒絕 legacy toggle 啟用", async () => {
+    mocks.getStrategyById.mockResolvedValue(existingKrmStrategy({
+      activationState: "DISABLED",
+    }));
+
+    await expect(appRouter.createCaller(createContext()).strategies.toggle({
+      id: 88,
+      enabled: true,
+    })).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+
     expect(mocks.updateStrategy).not.toHaveBeenCalled();
   });
 

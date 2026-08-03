@@ -619,7 +619,6 @@ function StrategiesContent() {
     exchange: string;
     webhookUrl: string | null;
     strategyKey: string | null;
-    startsDisabled: boolean;
   } | null>(null);
 
   const createMutation = trpc.strategies.create.useMutation({
@@ -633,7 +632,6 @@ function StrategiesContent() {
         exchange: r.exchange,
         webhookUrl: r.webhookUrl,
         strategyKey: variables.strategyKey ?? null,
-        startsDisabled: variables.strategyKey === V41_STRATEGY_KEY || variables.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
       });
     },
     onError: (e) => toast.error(e.message),
@@ -649,7 +647,6 @@ function StrategiesContent() {
         exchange: selectedKey?.exchange ?? "",
         webhookUrl: null,
         strategyKey: snapshotImportSource?.strategyKey ?? null,
-        startsDisabled: snapshotImportSource?.strategyKey === V41_STRATEGY_KEY || snapshotImportSource?.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
       });
       setSnapshotImportSource(null);
       toast.success(r.message);
@@ -1358,6 +1355,17 @@ function StrategiesContent() {
                         <Badge variant="outline" className="text-[10px]">
                           {s.symbol}
                         </Badge>
+                        {s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+                          <Badge
+                            variant="outline"
+                            className={s.reentryEnabled === true
+                              ? "border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300"
+                              : "border-zinc-500/30 bg-zinc-500/10 text-[10px] text-zinc-400"}
+                            title="此狀態來自策略已保存的自動重新入市設定"
+                          >
+                            自動重入：{s.reentryEnabled === true ? "開啟" : "關閉"}
+                          </Badge>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         {s.enabled ? (
@@ -2827,9 +2835,7 @@ function StrategiesContent() {
             </DialogTitle>
             <DialogDescription>
               「{successInfo?.name}」（{successInfo?.exchange.toUpperCase()} · {successInfo?.symbol}）
-              {successInfo?.startsDisabled
-                ? "已建立並保持停用；完成參數複核後才可手動啟用。"
-                : "已建立並啟用，請依下列步驟完成 TradingView 串接。"}
+              已建立並保持停用；完成參數、API、交易對與風控複核後，可由策略卡片直接啟用。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -2877,17 +2883,9 @@ function StrategiesContent() {
                 複製 Alert 訊息範本
               </Button>
             </div>
-            <div className={successInfo?.startsDisabled
-              ? "rounded-lg border border-amber-500/25 bg-amber-500/5 p-3"
-              : "rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3"}
-            >
-              <p className={successInfo?.startsDisabled
-                ? "text-xs leading-relaxed text-amber-300"
-                : "text-xs leading-relaxed text-emerald-400"}
-              >
-                {successInfo?.startsDisabled
-                  ? "安全狀態：V4.1 新策略預設停用，目前不會自動下單。請先檢查入場邏輯、快照身份與回測證據，再由策略卡片主動啟用。"
-                  : "步驟 3：完成後，TradingView 觸發警示時即自動下單。可至「訊號日誌」頁面即時確認每筆訊號的接收與執行狀態。"}
+            <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3">
+              <p className="text-xs leading-relaxed text-amber-300">
+                安全狀態：新策略目前預設停用，不會自動下單。確認上述設定後，請回到策略卡片開啟策略；啟用後 TradingView 觸發警示時才會執行交易。
               </p>
             </div>
           </div>

@@ -1040,7 +1040,7 @@ export default function ParameterSnapshots() {
                   <Badge variant="outline">{countEnabledV41EntryConditions(selectedV41Display.config)}/3 條件</Badge>
                 </div>
                 <p className="mt-2 text-muted-foreground">{summarizeV41EntryConfig(selectedV41Display.config)}</p>
-                <p className="mt-2 text-amber-200">V4.1 快照複製為新策略後預設停用，必須人工覆核後才可啟用。</p>
+                <p className="mt-2 text-amber-200">V4.1 快照複製為新策略後預設停用；人工覆核後可由策略卡片直接啟用，不需另跑 deployment preflight。</p>
               </div>
             )}
             {selectedKamaRainbowMartinDisplay && (

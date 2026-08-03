@@ -156,6 +156,66 @@ async function requireCompatibleSnapshotArtifact(snapshot: Record<string, unknow
   return { ...hydrated, compatibility, targetManifest };
 }
 
+const DIRECT_IMPORT_FATAL_ARTIFACT_BLOCKERS = new Set([
+  "ARTIFACT_HASH_MISMATCH",
+  "STRATEGY_KEY_MISMATCH",
+  "TARGET_CAPABILITY_REVOKED",
+]);
+
+/**
+ * 一般策略卡的快照匯入契約：保留來源診斷，但把完整且同策略的舊 artifact
+ * 重新綁定到現行 capability manifest，並收斂成 PARAMETERS_ONLY／S1。
+ * 只有完整性、策略身份或能力撤銷錯誤會阻擋；canonical deployment 仍使用
+ * requireCompatibleSnapshotArtifact 的嚴格 preflight 契約。
+ */
+async function requireImportableSnapshotArtifact(
+  snapshot: Record<string, unknown>,
+  config: Record<string, unknown>,
+) {
+  const strategyKey = typeof snapshot.strategyKey === "string" ? snapshot.strategyKey : "";
+  if (!strategyKey) throw new Error("快照缺少策略引擎身份");
+  const targetManifest = await requireStrategyCapabilityManifest(strategyKey);
+  const hydrated = hydrateStrategyArtifactFromSnapshotRow(snapshot, targetManifest);
+  const sourceCompatibility = assessStrategyArtifactCompatibility({
+    artifact: hydrated.artifact,
+    targetManifest,
+    integrityValid: hydrated.integrityValid,
+  });
+  const fatalBlockers = sourceCompatibility.blockers.filter((blocker) =>
+    DIRECT_IMPORT_FATAL_ARTIFACT_BLOCKERS.has(blocker),
+  );
+  if (fatalBlockers.length > 0) {
+    throw new Error(`策略 artifact 不相容：${fatalBlockers.join(", ")}`);
+  }
+
+  const artifact = buildStrategyArtifactEnvelope({
+    artifactScope: "PARAMETERS_ONLY",
+    strategyKey,
+    strategyVersion: targetManifest.strategyVersion,
+    strategyLogicHash: targetManifest.strategyLogicHash,
+    config,
+    capabilityManifest: targetManifest,
+    source: {
+      origin: "PARAMETER_SNAPSHOT",
+      ...(typeof snapshot.id === "number" ? { sourceSnapshotId: snapshot.id } : {}),
+      parentArtifactHash: hydrated.artifact.artifactHash,
+    },
+  });
+  const compatibility = assessStrategyArtifactCompatibility({
+    artifact,
+    targetManifest,
+    integrityValid: true,
+  });
+  assertStrategyArtifactCompatible(compatibility);
+  return {
+    ...hydrated,
+    artifact,
+    compatibility,
+    sourceCompatibility,
+    targetManifest,
+  };
+}
+
 export function normalizeSnapshotConfigForStrategy(
   strategyKey: string,
   rawConfig: Record<string, unknown>,
@@ -779,13 +839,19 @@ export const backtestRouter = router({
       const snapshotKey = snapshot.strategyKey;
       if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法安全套用");
       assertRegisteredStrategy(snapshotKey);
-      const artifactBundle = await requireCompatibleSnapshotArtifact(
-        snapshot as unknown as Record<string, unknown>,
-      );
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
         (snapshot.config as Record<string, unknown>) || {},
       );
+      const isLegacyCardStrategy = strategy.activationState === "LEGACY";
+      const artifactBundle = isLegacyCardStrategy
+        ? await requireImportableSnapshotArtifact(
+            snapshot as unknown as Record<string, unknown>,
+            config,
+          )
+        : await requireCompatibleSnapshotArtifact(
+            snapshot as unknown as Record<string, unknown>,
+          );
 
       if (!strategy.strategyKey || strategy.strategyKey !== snapshotKey) {
         throw new Error(
@@ -831,8 +897,10 @@ export const backtestRouter = router({
         .set({
           martinState: updatedState,
           enabled: false,
-          activationState: "DISABLED",
-          disabledReason: "快照配置已更新；必須重新通過部署 preflight 後才可啟用",
+          activationState: isLegacyCardStrategy ? "LEGACY" : "DISABLED",
+          disabledReason: isLegacyCardStrategy
+            ? "快照配置已更新並預設停用；請確認參數、API 與風控設定後，由策略卡片直接啟用"
+            : "Canonical deployment 的快照配置已更新；必須重新通過部署 preflight 後才可啟用",
           capabilitySnapshot: artifactBundle.artifact.capabilityManifest as unknown as Record<string, unknown>,
           strategyVersion: artifactBundle.artifact.strategyVersion,
           ...(artifactBundle.artifact.artifactScope === "EXECUTION_PROFILE" ? {
@@ -893,10 +961,12 @@ export const backtestRouter = router({
       return {
         success: true,
         enabled: false,
-        activationState: "DISABLED" as const,
+        activationState: isLegacyCardStrategy ? "LEGACY" as const : "DISABLED" as const,
         artifact: artifactBundle.artifact,
         compatibility: artifactBundle.compatibility,
-        message: "參數已套用並將策略安全設為停用；請重新通過部署 preflight 後再啟用",
+        message: isLegacyCardStrategy
+          ? "參數已套用並將策略安全設為停用；確認設定後可由策略卡片直接啟用"
+          : "Canonical deployment 參數已套用並安全設為停用；請重新通過部署 preflight 後再啟用",
       };
     }),
 
@@ -936,13 +1006,13 @@ export const backtestRouter = router({
       const snapshotKey = snapshot.strategyKey;
       if (!snapshotKey) throw new Error("快照缺少策略引擎身份，無法建立自動交易策略");
       assertRegisteredStrategy(snapshotKey);
-      const artifactBundle = await requireCompatibleSnapshotArtifact(
-        snapshot as unknown as Record<string, unknown>,
-      );
-
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
         (snapshot.config as Record<string, unknown>) || {},
+      );
+      const artifactBundle = await requireImportableSnapshotArtifact(
+        snapshot as unknown as Record<string, unknown>,
+        config,
       );
       const v41Config = snapshotKey === V41_STRATEGY_KEY
         ? assertValidV41Config(config)
@@ -1058,10 +1128,10 @@ export const backtestRouter = router({
         strategyKey: snapshotKey,
         positionMode: deploymentPosition.mode,
         enabled: false,
-        activationState: "DISABLED" as const,
+        activationState: "LEGACY" as const,
         artifact: artifactBundle.artifact,
         compatibility: artifactBundle.compatibility,
-        message: `已從快照建立停用策略「${input.name}」；原引擎鎖定為 ${snapshotKey}，必須通過部署 preflight 後才可啟用`,
+        message: `已從快照建立停用策略「${input.name}」；引擎鎖定為 ${snapshotKey}，確認參數、API 與風控設定後可由策略卡片直接啟用`,
       };
     }),
 
@@ -1147,13 +1217,16 @@ export const backtestRouter = router({
       const nextLadderRange = ladderConfig?.Martin_Layers.find(
         (range) => range.enabled && range.layer > 1 && range.layer <= ladderConfig.Max_Layers,
       );
+      const isLegacyCardStrategy = instance.activationState === "LEGACY";
 
       await db.update(strategies)
         .set({
           martinState: updatedState,
           enabled: false,
-          activationState: "DISABLED",
-          disabledReason: "策略配置已更新；必須重新通過部署 preflight 後才可啟用",
+          activationState: isLegacyCardStrategy ? "LEGACY" : "DISABLED",
+          disabledReason: isLegacyCardStrategy
+            ? "策略配置已更新並預設停用；請確認參數、API 與風控設定後，由策略卡片直接啟用"
+            : "Canonical deployment 的策略配置已更新；必須重新通過部署 preflight 後才可啟用",
           capabilitySnapshot: capabilityManifest as unknown as Record<string, unknown>,
           strategyVersion: capabilityManifest.strategyVersion,
           martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig
@@ -1209,9 +1282,11 @@ export const backtestRouter = router({
       return {
         success: true,
         enabled: false,
-        activationState: "DISABLED" as const,
+        activationState: isLegacyCardStrategy ? "LEGACY" as const : "DISABLED" as const,
         artifact: directArtifact,
-        message: "參數已套用並將策略安全設為停用；請重新通過部署 preflight 後再啟用",
+        message: isLegacyCardStrategy
+          ? "參數已套用並將策略安全設為停用；確認設定後可由策略卡片直接啟用"
+          : "Canonical deployment 參數已套用並安全設為停用；請重新通過部署 preflight 後再啟用",
         instanceId: input.targetInstanceId,
       };
     }),

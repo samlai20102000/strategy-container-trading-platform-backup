@@ -53,7 +53,7 @@ export interface StrategyArtifactEnvelope {
 
 export interface DisabledSnapshotDeploymentFields {
   enabled: false;
-  activationState: "DISABLED";
+  activationState: "LEGACY";
   disabledReason: string;
   strategyVersion: number;
   executionMode: ExecutionMode;
@@ -63,16 +63,17 @@ export interface DisabledSnapshotDeploymentFields {
 }
 
 /**
- * 從快照建立 deployment 的唯一安全投影。artifact 可攜帶 M2／H3 policy，
- * 但投影本身永遠不具啟用權；啟用只能由部署 preflight 狀態機另行完成。
+ * 從快照建立一般策略實例的安全投影。實例一律預設停用，
+ * 但維持 LEGACY 卡片控制契約，可在人工核對參數、API 與風控後直接啟用。
+ * Canonical deployment 仍由 deployments 專用生命週期與 preflight 管理。
  */
 export function buildDisabledSnapshotDeploymentFields(
   artifact: StrategyArtifactEnvelope,
-  reason = "快照導入後預設停用；必須通過部署 preflight 後才可啟用",
+  reason = "快照導入後預設停用；請確認參數、API 與風控設定後，由策略卡片直接啟用",
 ): DisabledSnapshotDeploymentFields {
   return {
     enabled: false,
-    activationState: "DISABLED",
+    activationState: "LEGACY",
     disabledReason: reason,
     strategyVersion: artifact.strategyVersion,
     executionMode: artifact.executionMode,
