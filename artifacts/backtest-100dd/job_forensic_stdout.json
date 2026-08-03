@@ -1,0 +1,69 @@
+{
+  "jobId": "job_1785770356467_b7fe7008",
+  "minimumEquity": {
+    "equity": -5253.88,
+    "price": 111225.8,
+    "timestamp": 1747922400000,
+    "index": 490,
+    "timestampIso": "2025-05-22T14:00:00.000Z",
+    "runningPeak": 11401.08,
+    "runningPeakIndex": 456,
+    "drawdownUsdt": 11401.08,
+    "drawdownPct": 100
+  },
+  "firstNonPositiveEquity": {
+    "equity": -3242.48,
+    "price": 110700,
+    "timestamp": 1747897200000,
+    "index": 489,
+    "timestampIso": "2025-05-22T07:00:00.000Z",
+    "runningPeak": 11401.08,
+    "runningPeakIndex": 456,
+    "drawdownUsdt": 11401.08,
+    "drawdownPct": 100
+  },
+  "maximumDrawdown": {
+    "equity": -3242.48,
+    "price": 110700,
+    "timestamp": 1747897200000,
+    "index": 489,
+    "timestampIso": "2025-05-22T07:00:00.000Z",
+    "runningPeak": 11401.08,
+    "runningPeakIndex": 456,
+    "drawdownUsdt": 11401.08,
+    "drawdownPct": 100
+  },
+  "maximumDrawdownPeak": {
+    "equity": 11401.08,
+    "price": 101601.2,
+    "timestamp": 1747072800000,
+    "index": 456,
+    "timestampIso": "2025-05-12T18:00:00.000Z",
+    "runningPeak": 11401.08,
+    "runningPeakIndex": 456,
+    "drawdownUsdt": 0,
+    "drawdownPct": 0
+  },
+  "activeClosedTradeRecordsAtEvent": [
+    {
+      "cycleId": "cycle:KAMA_RAINBOW_MARTIN_V1:29",
+      "entryPrice": 107090.42,
+      "entryReason": "全部啟用 KAMA 下降且無交叉／接觸，產生空頭候選",
+      "entryTime": 1744531200000,
+      "exitPrice": 105111.71,
+      "exitReason": "階梯移動止盈：浮盈 1.8575% ≤ 觸發線 2.0000%",
+      "exitTime": 1748793600000,
+      "id": 29,
+      "martinLayer": 11,
+      "pnl": 7241.75,
+      "pnlPct": 1.85,
+      "side": "short",
+      "size": 3.8238715736209605,
+      "entryTimeIso": "2025-04-13T08:00:00.000Z",
+      "exitTimeIso": "2025-06-01T16:00:00.000Z",
+      "entryNotional": 409500.0128451296,
+      "markGrossPnlAtEvent": -13802.570354710753
+    }
+  ],
+  "outputDir": "/home/ubuntu/策略容器化自動交易平台-的副本/artifacts/backtest-100dd"
+}

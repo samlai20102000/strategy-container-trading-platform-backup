@@ -15,6 +15,7 @@ import {
   BacktestDataQualityGuardError,
 } from "./backtestReadinessRegistry";
 import type { BacktestAdmissionAssessment } from "../../../shared/backtest/backtestReadiness";
+import { BacktestRiskIntegrityGuardError } from "./backtestRiskIntegrity";
 
 export type BacktestRunnerPreflightErrorCode =
   | "STRATEGY_NOT_REGISTERED"
@@ -219,6 +220,17 @@ export function preflightBacktestRunner(request: BacktestRequest): BacktestRunne
 }
 
 export function classifyBacktestFailure(error: unknown): BacktestFailureMetadata {
+  if (error instanceof BacktestRiskIntegrityGuardError) {
+    return {
+      stage: "EXECUTION",
+      errorCode: error.code,
+      details: {
+        runId: error.runId,
+        strategyKey: error.strategyKey,
+        assessment: error.assessment,
+      },
+    };
+  }
   if (error instanceof BacktestDataQualityGuardError) {
     return {
       stage: "DATA_LOAD",

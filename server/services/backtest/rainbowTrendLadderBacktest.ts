@@ -24,6 +24,7 @@ import {
 } from "./performanceCalculator";
 import type { BacktestRequest, BacktestResult } from "./backtestEngine";
 import type { BacktestJobControl } from "./backtestJobControl";
+import { downsampleEquityCurve as downsample } from "./equityCurveDownsample";
 import {
   V25_END_OF_DATA_EXIT_REASON,
   assertSingleEquityLedger,
@@ -87,17 +88,6 @@ function makeRunId(strategyKey: string, symbol: string): string {
   const key = strategyKey.replace(/[^A-Za-z0-9]/g, "").slice(0, 20);
   const normalizedSymbol = symbol.replace(/[^A-Za-z0-9]/g, "");
   return `bt_${key}_${Date.now()}_${random}_${normalizedSymbol}`;
-}
-
-function downsample(points: EquityPoint[], maxPoints: number): EquityPoint[] {
-  if (points.length <= maxPoints) return points;
-  const step = points.length / maxPoints;
-  const result: EquityPoint[] = [];
-  for (let index = 0; index < maxPoints; index += 1) {
-    result.push(points[Math.floor(index * step)]);
-  }
-  result.push(points[points.length - 1]);
-  return result;
 }
 
 /**

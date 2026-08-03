@@ -2722,3 +2722,24 @@
 - [x] 修正 Strategies.tsx 殘留的 M2/H3 可見 Ledger 標籤，維持 S1-only UI 契約
 - [x] 更新 V4.1 回測 UI source-contract，使其同時鎖定 readiness 與 V4.1 fail-closed 守門
 - [x] 清理完整 Vitest 遺留的未追蹤 TestUnitStrategy 暫存檔，避免測試 fixture 進入發布版本
+
+## 2026-08-03 最新回測 100% 最大回撤法證排查與最終優化
+
+- [x] 以 `testing2.xlsx` 與 run `bt_KAMARAINBOWMARTINV1_1785770363974_tx4...` 建立不可變事故證據基線
+- [x] 逐表解析交易、摘要、參數與權益資料；Excel 可獨立重算交易層指標，逐 K 夏普與最大回撤則以原 job 權益資料及同設定重播交叉驗證
+- [x] 從逐筆交易與持倉事件重建已實現／未實現損益及逐時權益帳本，找出 11,450.29 USDT 回撤來源
+- [x] 稽核 KRM runner、共用會計、績效計算、資料庫持久化與 UI 顯示，證明唯一根因且排除上一輪錯誤假設
+- [x] 建立禁止不可能指標組合與異常權益點靜默發布的資料品質守門及診斷證據
+- [x] 修正全部 runner 的權益降採樣，使最低權益、首次破產、最大回撤峰谷與破產後恢復點永遠保留，避免共用守門漏掉瞬時風險事件
+- [x] 實施適用全部 9 個策略及未來 runner 的共用 P0 fail-closed 修正，不以單一策略硬編碼掩蓋問題
+- [x] 以同一個真實 KRM job 完成原結果重播與修正後 integrity assessment，並以九策略 source contract、聚焦 oracle 及 1,129 個全專案測試驗證共用守門
+- [x] 執行 Vitest、TypeScript、production build 與結果發布鏈路驗收；全程只讀歷史資料且未觸發實盤交易 mutation
+- [x] 產出含根因、證據、數值對帳、影響範圍、修正方案、限制與驗收矩陣的 13 頁完整 Word 報告，並完成全頁視覺 QC
+- [x] 核對 TODO、準備保存可回復 checkpoint 並交付最終結果
+
+### 報告列明、未納入本次 P0 安全修正的後續 P1／P2 工作
+
+- [ ] 將 KRM、Rainbow 與 legacy KAMA S1 runner 的每次開倉／加倉接入共用 runtime order-admission、margin、maintenance liquidation 與 bankruptcy kernel，讓合法回測在第 6／7 層即拒單而不是事後 fail closed
+- [ ] 在歷史 job 讀取層即時套用 risk-integrity assessment，將舊有破產後恢復結果標成 INVALID，而非等待使用者重新執行
+- [ ] 完成 runtime kernel 遷移後，以九策略固定資料集逐一重跑正常、拒單、清算、破產 terminal 與切片連續性案例，保存完整 risk event ledger
+- [ ] 在報告 UI／Excel 直接呈現 observed gross notional、used margin、risk violations、liquidation 與 bankrupt 狀態，避免只顯示策略 KPI

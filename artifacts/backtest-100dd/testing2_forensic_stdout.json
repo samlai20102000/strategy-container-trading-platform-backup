@@ -1,0 +1,177 @@
+{
+  "source": {
+    "path": "/home/ubuntu/upload/testing2.xlsx",
+    "sha256": "fec9203b1185bc14dc445fb5ba3544705dc533adc52a8f69aaa41a7debfe5424",
+    "sheet_names": [
+      "backtest_bt_KAMARAINBOWMARTINV1"
+    ],
+    "sheet": "backtest_bt_KAMARAINBOWMARTINV1",
+    "rows": 91,
+    "columns": 25,
+    "time_start": "2025-01-07T20:00:00",
+    "time_end": "2026-07-29T14:30:00"
+  },
+  "ui_observation": {
+    "displayed_total_return_pct": 208.59,
+    "displayed_total_return_usdt": 20859.08,
+    "displayed_max_drawdown_pct": 100.0,
+    "displayed_max_drawdown_usdt": 11450.29,
+    "initial_capital_inferred_from_return": 10000.03835275,
+    "displayed_drawdown_implied_trough_if_peak_equals_usdt_drawdown": 0.0
+  },
+  "independent_trade_recalculation": {
+    "initial_capital": 10000.0,
+    "trade_count": 91,
+    "winning_trades": 90,
+    "losing_trades": 1,
+    "breakeven_trades": 0,
+    "win_rate_pct": 98.9010989,
+    "pnl_sum_usdt": 20861.23,
+    "final_realized_equity": 30861.23,
+    "total_return_pct": 208.6123,
+    "gross_profit": 20863.05,
+    "gross_loss_abs": 1.82,
+    "profit_factor": 11463.21428571,
+    "max_drawdown_closed_trade_equity_pct": 0.01809188,
+    "max_drawdown_closed_trade_equity_usdt": 1.82,
+    "closed_trade_drawdown_row": {
+      "時間": "2025-01-23T22:30:00",
+      "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:8",
+      "盈虧": -1.82,
+      "已實現權益": 10057.94,
+      "已實現回撤_USDT": 1.819999999999709,
+      "已實現回撤_%": 0.01809188290774043
+    }
+  },
+  "exposure_forensics": {
+    "maximum_martin_layer": 11,
+    "maximum_quantity": 6.63316292712,
+    "maximum_entry_notional_usdt": 409500.01953073,
+    "maximum_entry_notional_to_initial_capital": 40.95000195,
+    "maximum_entry_notional_row": {
+      "時間": "2026-02-03T10:30:00",
+      "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:59",
+      "方向": "買升",
+      "入場價": 76720.14,
+      "出場價": 77767.12,
+      "數量": 5.3375817553348,
+      "盈虧": 5258.54,
+      "馬丁層數": 11,
+      "入場名義價值": 409500.0195307316,
+      "入場名義價值_相對初始資金倍數": 40.95000195307316,
+      "入場名義價值_相對當時已實現權益倍數": 21.45314646294116
+    },
+    "maximum_layer_row": {
+      "時間": "2025-06-02T00:00:00",
+      "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:29",
+      "方向": "買跌",
+      "入場價": 107090.42,
+      "出場價": 105111.71,
+      "數量": 3.82387157362096,
+      "盈虧": 7241.75,
+      "馬丁層數": 11,
+      "入場名義價值": 409500.01284512953
+    },
+    "top_10_notional": [
+      {
+        "時間": "2026-02-03T10:30:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:59",
+        "方向": "買升",
+        "數量": 5.3375817553348,
+        "馬丁層數": 11,
+        "入場名義價值": 409500.0195307316,
+        "盈虧": 5258.54
+      },
+      {
+        "時間": "2025-06-02T00:00:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:29",
+        "方向": "買跌",
+        "數量": 3.82387157362096,
+        "馬丁層數": 11,
+        "入場名義價值": 409500.01284512953,
+        "盈虧": 7241.75
+      },
+      {
+        "時間": "2026-06-08T12:30:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:85",
+        "方向": "買升",
+        "數量": 6.63316292712003,
+        "馬丁層數": 11,
+        "入場名義價值": 409499.9715964868,
+        "盈虧": 5723.94
+      },
+      {
+        "時間": "2026-04-20T15:00:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:80",
+        "方向": "買跌",
+        "數量": 0.334581056567822,
+        "馬丁層數": 7,
+        "入場名義價值": 25500.001543620714,
+        "盈虧": 323.32
+      },
+      {
+        "時間": "2025-03-05T08:00:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:17",
+        "方向": "買升",
+        "數量": 0.0740279714283063,
+        "馬丁層數": 5,
+        "入場名義價值": 6300.000231624009,
+        "盈虧": 138.87
+      },
+      {
+        "時間": "2025-03-01T15:30:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:15",
+        "方向": "買升",
+        "數量": 0.077951071325517,
+        "馬丁層數": 5,
+        "入場名義價值": 6300.000127953291,
+        "盈虧": 300.07
+      },
+      {
+        "時間": "2025-08-04T01:30:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:33",
+        "方向": "買跌",
+        "數量": 0.0533041246277442,
+        "馬丁層數": 5,
+        "入場名義價值": 6300.000097639437,
+        "盈虧": 213.8
+      },
+      {
+        "時間": "2025-12-02T05:00:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:53",
+        "方向": "買跌",
+        "數量": 0.0692727714532002,
+        "馬丁層數": 5,
+        "入場名義價值": 6299.99973071243,
+        "盈虧": 329.39
+      },
+      {
+        "時間": "2026-02-11T22:00:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:65",
+        "方向": "買跌",
+        "數量": 0.0446722204433323,
+        "馬丁層數": 4,
+        "入場名義價值": 3100.0001474439614,
+        "盈虧": 60.7
+      },
+      {
+        "時間": "2025-03-31T22:30:00",
+        "Cycle ID": "cycle:KAMA_RAINBOW_MARTIN_V1:23",
+        "方向": "買跌",
+        "數量": 0.0364313211744155,
+        "馬丁層數": 4,
+        "入場名義價值": 3100.000137471317,
+        "盈虧": 55.24
+      }
+    ]
+  },
+  "consistency_checks": {
+    "pnl_sum_matches_ui_total_return_usdt": false,
+    "trade_count_matches_ui_91": true,
+    "wins_matches_ui_90": true,
+    "losses_matches_ui_1": true,
+    "closed_trade_equity_can_explain_100pct_drawdown": false,
+    "xlsx_contains_intrabar_equity_curve": false,
+    "diagnostic": "交易檔僅包含平倉交易。若已實現權益回撤遠低於 100%，則畫面 100% 必定來自另一份逐 K 線的 mark-to-market equityCurve；需取得持久化 equityCurve 才能定位首次歸零時間、當時方向、數量、價格與未實現虧損。"
+  }
+}

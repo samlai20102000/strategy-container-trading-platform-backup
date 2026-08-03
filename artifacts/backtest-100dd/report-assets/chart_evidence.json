@@ -1,0 +1,18 @@
+{
+  "equity": {
+    "pointCount": 2001,
+    "drawdownPeak": 11401.08,
+    "drawdownTroughRaw": -3242.48,
+    "maxDrawdownPct": 100.0,
+    "maxDrawdownUSDTWithFiniteLiabilityFloor": 11401.08,
+    "minimumEquity": -5253.88,
+    "firstNonPositiveTimestamp": 1747897200000
+  },
+  "layerRisk": {
+    "layerCount": 12,
+    "firstMarginBreachLayer": 6,
+    "firstGrossBreachLayer": 7,
+    "finalGrossNotional": 419517.33956096,
+    "finalMarginRequired": 419517.33956096
+  }
+}

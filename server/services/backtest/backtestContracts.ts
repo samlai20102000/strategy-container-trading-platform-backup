@@ -480,13 +480,12 @@ export function buildOpenPositionSnapshot(
     0,
   );
   const entryFees = entryNotional * commission;
-  const exitNotional = markPrice * position.totalSize;
-  const exitFees = exitNotional * commission;
   const unrealizedGrossPnl = position.side === "long"
     ? (markPrice - position.avgPrice) * position.totalSize
     : (position.avgPrice - markPrice) * position.totalSize;
-  // 未實現盈虧 = 毛利 - 出場費用（入場費用已在平倉時計算，不應重複扣除）
-  const unrealizedPnlValue = roundBacktestMoney(unrealizedGrossPnl - exitFees);
+  // 開倉時 runner 尚未從 realized equity 扣除 entry fee，因此持倉估值必須扣除已發生的入場費。
+  // exit fee 只有在 force-close／實際平倉時才進入 closed-trade PnL；不得用它取代 entry fee。
+  const unrealizedPnlValue = roundBacktestMoney(unrealizedGrossPnl - entryFees);
   return {
     side: position.side,
     entryTime: position.entryTime,

@@ -22,6 +22,7 @@ import {
   type PerformanceMetrics,
   type TradeRecord,
 } from "./performanceCalculator";
+import { downsampleEquityCurve as downsample } from "./equityCurveDownsample";
 import { getTimeframeMilliseconds } from "./timeframeParser";
 import type {
   ExecutionMode,
@@ -121,6 +122,10 @@ import {
 } from "./advancedKamaPortfolioBacktest";
 import { preflightBacktestRunner } from "./backtestRunnerPreflight";
 import {
+  assertBacktestRiskIntegrity,
+  type BacktestRiskIntegrityAssessment,
+} from "./backtestRiskIntegrity";
+import {
   assessBacktestDataQuality,
   BacktestDataQualityGuardError,
 } from "./backtestReadinessRegistry";
@@ -185,6 +190,8 @@ export interface BacktestResult {
   execution?: BacktestVersionedExecutionContext;
   modeResults?: BacktestModeResults;
   legAccounting?: BacktestLegAccounting;
+  /** 所有 runner 在發布 canonical artifact 前必經的有限責任／風險政策守門證據。 */
+  riskIntegrity?: BacktestRiskIntegrityAssessment;
   /** cycle 與重新入市事件證據；只有支援並實際產生此證據的 runner 才回傳。 */
   reentryDiagnostics?: BacktestReentryDiagnostics;
 }
@@ -1408,8 +1415,22 @@ export class BacktestEngine {
       comparisonGroupId,
       runner,
     };
+    const hasRuntimeRiskEvidence = Boolean(result.legAccounting);
     const legAccounting = result.legAccounting
       ?? buildLegacyS1LegAccounting(result, request, accounting);
+    const riskIntegrity = assertBacktestRiskIntegrity({
+      runId: result.runId,
+      strategyKey: result.strategyKey,
+      initialCapital: request.initialCapital,
+      leverage: result.environment?.leverage ?? 1,
+      executionPolicy,
+      trades: result.trades,
+      equityCurve: result.equityCurve,
+      accounting,
+      legAccounting,
+      modeResults: result.modeResults,
+      hasRuntimeRiskEvidence,
+    });
     const fairnessBlockers = explicitStrategyLogicHash
       ? []
       : ["STRATEGY_LOGIC_HASH_NOT_EXPLICIT"];
@@ -1427,6 +1448,9 @@ export class BacktestEngine {
       .reduce((sum, leg) => sum + leg.realizedPnl, 0);
     const mergedFairnessBlockers = Array.from(new Set([
       ...fairnessBlockers,
+      ...(riskIntegrity.enforcement === "POSTHOC_ONLY"
+        ? ["S1_RISK_POLICY_POSTCHECK_ONLY"]
+        : []),
       ...(result.modeResults?.fairnessBlockers ?? []),
     ]));
     const modeResults: BacktestModeResults = {
@@ -1470,6 +1494,7 @@ export class BacktestEngine {
       execution,
       legAccounting,
       modeResults,
+      riskIntegrity,
       dataQuality,
       engineSemantics: createContinuousEngineSemantics(),
       environment: result.environment
@@ -3379,18 +3404,6 @@ function equityWithUnrealized(
     0,
   );
   return roundBacktestMoney(realized + unrealizedGross - entryFees);
-}
-
-/** 權益曲線降採樣（保留首尾） */
-function downsample(points: EquityPoint[], maxPoints: number): EquityPoint[] {
-  if (points.length <= maxPoints) return points;
-  const step = points.length / maxPoints;
-  const out: EquityPoint[] = [];
-  for (let i = 0; i < maxPoints; i++) {
-    out.push(points[Math.floor(i * step)]);
-  }
-  out.push(points[points.length - 1]);
-  return out;
 }
 
 export const backtestEngine = new BacktestEngine();

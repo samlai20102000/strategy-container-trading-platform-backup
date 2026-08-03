@@ -1,0 +1,59 @@
+{
+  "source": {
+    "jobId": "job_1785770356467_b7fe7008",
+    "runId": "bt_KAMARAINBOWMARTINV1_1785770363974_tx4",
+    "equityPointCount": 2001,
+    "tradeCount": 91
+  },
+  "assessment": {
+    "version": "backtest-risk-integrity-v1",
+    "passed": false,
+    "enforcement": "POSTHOC_ONLY",
+    "validEquityPointCount": 2001,
+    "invalidEquityPointCount": 0,
+    "globalPositiveEquityPeak": 33852.83,
+    "minimumEquity": -5253.88,
+    "minimumEquityTimestamp": 1747922400000,
+    "firstNonPositiveEquityTimestamp": 1747897200000,
+    "recoveredAfterInsolvency": true,
+    "bankruptcyDeclared": false,
+    "marginLiquidationCount": 0,
+    "observedEntryNotionalPeak": 409500.01953073207,
+    "grossNotionalLimitAtGlobalPeak": 33852.83,
+    "observedEntryMarginPeak": 409500.01953073207,
+    "marginLimitAtGlobalPeak": 13541.132000000001,
+    "violations": [
+      {
+        "code": "EQUITY_BELOW_ZERO",
+        "message": "有限責任回測的權益不得低於 0",
+        "timestamp": 1747922400000,
+        "actual": -5253.88,
+        "limit": 0
+      },
+      {
+        "code": "BANKRUPTCY_STATE_MISSING",
+        "message": "權益耗盡但 accounting／legAccounting 未宣告 bankrupt",
+        "timestamp": 1747897200000,
+        "actual": -3242.48,
+        "limit": 0
+      },
+      {
+        "code": "POST_INSOLVENCY_RECOVERY",
+        "message": "權益耗盡後仍恢復正值，表示模擬器在破產後繼續交易或保留未清算部位",
+        "timestamp": 1747897200000
+      },
+      {
+        "code": "GROSS_NOTIONAL_POLICY_BREACH",
+        "message": "S1 成交名義本金即使以全期間最高權益計算仍超過 executionPolicy 上限",
+        "actual": 409500.01953073207,
+        "limit": 33852.83
+      },
+      {
+        "code": "MARGIN_USAGE_POLICY_BREACH",
+        "message": "S1 成交保證金即使以全期間最高權益計算仍超過 executionPolicy 上限",
+        "actual": 409500.01953073207,
+        "limit": 13541.132000000001
+      }
+    ]
+  }
+}

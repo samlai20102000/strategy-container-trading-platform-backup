@@ -1,0 +1,589 @@
+{
+  "job": {
+    "jobId": "job_1785770356467_b7fe7008",
+    "strategyKey": "KAMA_RAINBOW_MARTIN_V1",
+    "symbol": "BTC-USDT",
+    "timeframe": "30m",
+    "initialCapital": 10000,
+    "startDate": 1735689600000,
+    "startDateIso": "2025-01-01T00:00:00.000Z",
+    "endDate": 1785628799000,
+    "endDateIso": "2026-08-01T23:59:59.000Z",
+    "createdAt": "2026-08-03T15:19:16.000Z",
+    "completedAt": "2026-08-03T15:19:24.000Z",
+    "config": {
+      "Position_Size_Mode": "usdt",
+      "Position_Size_Value": 100,
+      "backtestEndPositionPolicy": "mark_to_market",
+      "gapPct": 2,
+      "hardStopLossPct": 8,
+      "kamaLines": [
+        {
+          "color": "#00E5FF",
+          "enabled": true,
+          "erPeriod": 2,
+          "fastEma": 2,
+          "id": "KAMA_1",
+          "name": "KAMA 10",
+          "slowEma": 2
+        },
+        {
+          "color": "#FFB000",
+          "enabled": true,
+          "erPeriod": 50,
+          "fastEma": 2,
+          "id": "KAMA_2",
+          "name": "KAMA 20",
+          "slowEma": 10
+        },
+        {
+          "color": "#A78BFA",
+          "enabled": true,
+          "erPeriod": 50,
+          "fastEma": 3,
+          "id": "KAMA_3",
+          "name": "KAMA 30",
+          "slowEma": 10
+        },
+        {
+          "color": "#A78BFA",
+          "enabled": true,
+          "erPeriod": 50,
+          "fastEma": 4,
+          "id": "KAMA_4",
+          "name": "KAMA 40",
+          "slowEma": 10
+        },
+        {
+          "color": "#A78BFA",
+          "enabled": true,
+          "erPeriod": 50,
+          "fastEma": 5,
+          "id": "KAMA_5",
+          "name": "KAMA 50",
+          "slowEma": 10
+        },
+        {
+          "color": "#A78BFA",
+          "enabled": true,
+          "erPeriod": 50,
+          "fastEma": 6,
+          "id": "KAMA_6",
+          "name": "KAMA 60",
+          "slowEma": 10
+        }
+      ],
+      "layerConfigs": [
+        {
+          "gapPct": 2,
+          "layerEnd": 3,
+          "layerStart": 1,
+          "multiplier": 2
+        },
+        {
+          "gapPct": 2,
+          "layerEnd": 6,
+          "layerStart": 4,
+          "multiplier": 2
+        },
+        {
+          "gapPct": 2,
+          "layerEnd": 15,
+          "layerStart": 7,
+          "multiplier": 2
+        }
+      ],
+      "maxLayers": 15,
+      "multiplier": 2,
+      "reentryEnabled": true,
+      "timeframe": "M30",
+      "trailing": {
+        "activationPct": 3,
+        "callbackPct": 1.5,
+        "enabled": true,
+        "stepPct": 0.5
+      },
+      "version": "kamaRainbowMartin.v2"
+    },
+    "metrics": {
+      "annualizationPeriodsPerYear": 17520,
+      "avgDailyReturn": 0.361,
+      "avgLoss": -1.82,
+      "avgLossPct": -0.53,
+      "avgWin": 231.81,
+      "avgWinPct": 3.55,
+      "breakEvenTrades": 0,
+      "calmarRatio": 1.317,
+      "endTime": 1785627000000,
+      "invalidEquityPointCount": 0,
+      "invalidTradeCount": 0,
+      "losingTrades": 1,
+      "martinTriggerCount": 50,
+      "maxDrawdown": 100,
+      "maxDrawdownUSDT": 11450.29,
+      "maxLoss": -1.82,
+      "maxMartinLayer": 11,
+      "maxWin": 7241.75,
+      "metricSpec": {
+        "calmarAnnualization": "arithmetic_total_return_per_elapsed_day_times_365",
+        "costTreatment": "fees_and_slippage_in_runner_equity_funding_when_supported",
+        "drawdownConvention": "positive_peak_to_trough_percentage",
+        "openPositionTreatment": "controlled_by_end_position_policy",
+        "profitFactorBasis": "positive_net_closed_trade_pnl_over_absolute_negative_net_closed_trade_pnl",
+        "riskFreeRateAnnualPct": 2,
+        "sharpeAnnualization": "calendar_time_inferred_from_positive_equity_timestamp_intervals",
+        "sharpeReturnSeries": "simple_returns_between_equity_points",
+        "totalReturnBasis": "final_equity_after_costs_and_end_policy",
+        "version": "backtest-performance-v2",
+        "winRateDenominator": "all_valid_closed_trades_including_breakeven"
+      },
+      "profitFactor": 11463.214,
+      "profitFactorState": "finite",
+      "sharpeRatio": -0.113,
+      "startTime": 1735689600000,
+      "totalDays": 577.98,
+      "totalReturn": 208.59,
+      "totalReturnUSDT": 20859.08,
+      "totalTrades": 91,
+      "winRate": 98.9,
+      "winningTrades": 90
+    },
+    "accounting": {
+      "balanced": true,
+      "expectedFinalEquity": 30859.08,
+      "finalEquity": 30859.08,
+      "initialCapital": 10000,
+      "openPosition": {
+        "averageEntryPrice": 63217.17825498491,
+        "entryFees": 0.12,
+        "entryNotional": 300,
+        "entryTime": 1785315600000,
+        "markPrice": 62788.9,
+        "side": "long",
+        "size": 0.004745545566585675,
+        "unrealizedGrossPnl": -2.03,
+        "unrealizedPnl": -2.15
+      },
+      "openPositionCount": 1,
+      "realizedPnl": 20861.23,
+      "reconciled": true,
+      "reconciliationDifference": 0,
+      "syntheticForceCloseCount": 0,
+      "tolerance": 0.02,
+      "unrealizedPnl": -2.15
+    },
+    "dataQuality": {
+      "candleCount": 27744,
+      "duplicateCandlesRemoved": 0,
+      "duplicateTimestampCount": 0,
+      "firstTimestamp": 1735689600000,
+      "inputCandles": 27744,
+      "intervalContract": "[start,end)",
+      "invalidCandleCount": 0,
+      "invalidCandlesRemoved": 0,
+      "lastTimestamp": 1785627000000,
+      "outOfRangeCandlesRemoved": 0,
+      "outOfRangeCount": 0,
+      "readinessGuard": {
+        "duplicateRatio": 0,
+        "gapCount": 0,
+        "gapRatio": 0,
+        "minimumClosedBars": 51,
+        "passed": true,
+        "reasonCodes": [
+          "READY"
+        ],
+        "rejectionRatio": 0,
+        "returnedCandles": 27744,
+        "warnings": []
+      },
+      "requestedEndMs": 1785628799000,
+      "requestedStartMs": 1735689600000,
+      "returnedCandles": 27744,
+      "sortedAscending": true,
+      "unclosedCandleCount": 0,
+      "unclosedCandlesRemoved": 0
+    },
+    "executionContext": {
+      "comparisonGroupId": "btcmp_bfd7a59b59fee9af2ca2c75d",
+      "configHash": "f97fec569df1a383e281d583773e1b71edd5760d1ecfef0459febb1ebf032723",
+      "dataHash": "0bcb2635",
+      "engineVersion": "3.0.0-three-mode",
+      "executionMode": "SINGLE_EXCLUSIVE",
+      "executionPolicy": {
+        "failClosedOnCapabilityStale": true,
+        "maxOpenLegs": 1,
+        "mode": "SINGLE_EXCLUSIVE",
+        "oppositeSignalPolicy": "CLOSE_THEN_WAIT",
+        "requireFlatForModeChange": true,
+        "riskBudget": {
+          "capabilityTtlSeconds": 60,
+          "maxGrossNotionalPct": 100,
+          "maxMarginUsagePct": 40
+        },
+        "version": "execution-policy-v1"
+      },
+      "executionPolicyVersion": "execution-policy-v1",
+      "intrabarEventPolicy": "risk_first",
+      "intrabarEventPolicyVersion": "risk-first-v1",
+      "policyHash": "b23426e7652eb12c31623b1e6c375ca204a40a88633609befdf597c057b8a1e0",
+      "riskModelVersion": "gross-margin-liquidation-v2",
+      "runner": {
+        "descriptorVersion": "strategy-runner-descriptor-v1",
+        "executionPath": "S1_STRATEGY_ENGINE",
+        "logicRevision": "kama-rainbow-martin-v1-three-mode-cycle-contract-v3",
+        "runnerId": "kama-rainbow-martin-portfolio",
+        "runnerVersion": 3,
+        "strategyVersion": 1
+      },
+      "simulatedAdapterVersion": "simulated-exchange-v1",
+      "strategyLogicHash": "37cd71ed119e0a2b193fca25b301321204472bd2b4bd811b1ec50a271f063360",
+      "strategyVersion": "1"
+    },
+    "engineSemantics": {
+      "dataSlicing": "half_open",
+      "defaultEndPositionPolicy": "mark_to_market",
+      "finalizationScope": "global_end_only",
+      "sessionMode": "continuous",
+      "version": "3.0.0-three-mode"
+    },
+    "environment": {
+      "candleCount": 27744,
+      "commission": 0.0004,
+      "dataHash": "0bcb2635",
+      "endDate": 1785628799000,
+      "engineVersion": "3.0.0-three-mode",
+      "initialCapital": 10000,
+      "leverage": 1,
+      "slippage": 0.0001,
+      "startDate": 1735689600000,
+      "symbol": "BTC-USDT-SWAP",
+      "timeframe": "30m"
+    }
+  },
+  "counts": {
+    "trades": 91,
+    "equityPoints": 2001,
+    "nonPositiveEquityPoints": 5
+  },
+  "pathForensics": {
+    "minimumEquity": {
+      "equity": -5253.88,
+      "price": 111225.8,
+      "timestamp": 1747922400000,
+      "index": 490,
+      "timestampIso": "2025-05-22T14:00:00.000Z",
+      "runningPeak": 11401.08,
+      "runningPeakIndex": 456,
+      "drawdownUsdt": 11401.08,
+      "drawdownPct": 100
+    },
+    "firstNonPositiveEquity": {
+      "equity": -3242.48,
+      "price": 110700,
+      "timestamp": 1747897200000,
+      "index": 489,
+      "timestampIso": "2025-05-22T07:00:00.000Z",
+      "runningPeak": 11401.08,
+      "runningPeakIndex": 456,
+      "drawdownUsdt": 11401.08,
+      "drawdownPct": 100
+    },
+    "maximumDrawdown": {
+      "equity": -3242.48,
+      "price": 110700,
+      "timestamp": 1747897200000,
+      "index": 489,
+      "timestampIso": "2025-05-22T07:00:00.000Z",
+      "runningPeak": 11401.08,
+      "runningPeakIndex": 456,
+      "drawdownUsdt": 11401.08,
+      "drawdownPct": 100
+    },
+    "maximumDrawdownPeak": {
+      "equity": 11401.08,
+      "price": 101601.2,
+      "timestamp": 1747072800000,
+      "index": 456,
+      "timestampIso": "2025-05-12T18:00:00.000Z",
+      "runningPeak": 11401.08,
+      "runningPeakIndex": 456,
+      "drawdownUsdt": 0,
+      "drawdownPct": 0
+    },
+    "independentlyCalculatedMaximumDrawdownPct": 100,
+    "independentlyCalculatedMaximumDrawdownUsdt": 11401.08,
+    "activeClosedTradeRecordsAtEvent": [
+      {
+        "cycleId": "cycle:KAMA_RAINBOW_MARTIN_V1:29",
+        "entryPrice": 107090.42,
+        "entryReason": "全部啟用 KAMA 下降且無交叉／接觸，產生空頭候選",
+        "entryTime": 1744531200000,
+        "exitPrice": 105111.71,
+        "exitReason": "階梯移動止盈：浮盈 1.8575% ≤ 觸發線 2.0000%",
+        "exitTime": 1748793600000,
+        "id": 29,
+        "martinLayer": 11,
+        "pnl": 7241.75,
+        "pnlPct": 1.85,
+        "side": "short",
+        "size": 3.8238715736209605,
+        "entryTimeIso": "2025-04-13T08:00:00.000Z",
+        "exitTimeIso": "2025-06-01T16:00:00.000Z",
+        "entryNotional": 409500.0128451296,
+        "markGrossPnlAtEvent": -13802.570354710753
+      }
+    ],
+    "nearestTradeRecord": {
+      "cycleId": "cycle:KAMA_RAINBOW_MARTIN_V1:29",
+      "entryPrice": 107090.42,
+      "entryReason": "全部啟用 KAMA 下降且無交叉／接觸，產生空頭候選",
+      "entryTime": 1744531200000,
+      "exitPrice": 105111.71,
+      "exitReason": "階梯移動止盈：浮盈 1.8575% ≤ 觸發線 2.0000%",
+      "exitTime": 1748793600000,
+      "id": 29,
+      "martinLayer": 11,
+      "pnl": 7241.75,
+      "pnlPct": 1.85,
+      "side": "short",
+      "size": 3.8238715736209605,
+      "entryTimeIso": "2025-04-13T08:00:00.000Z",
+      "exitTimeIso": "2025-06-01T16:00:00.000Z",
+      "distanceMs": 896400000
+    },
+    "windowAroundFirstInsolvencyOrMinimum": [
+      {
+        "equity": 9979.1,
+        "price": 103022.8,
+        "timestamp": 1747647000000,
+        "index": 479,
+        "timestampIso": "2025-05-19T09:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 1421.9799999999996,
+        "drawdownPct": 12.472327183038797
+      },
+      {
+        "equity": 7670.18,
+        "price": 105331.1,
+        "timestamp": 1747672200000,
+        "index": 480,
+        "timestampIso": "2025-05-19T16:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 3730.8999999999996,
+        "drawdownPct": 32.72409280524301
+      },
+      {
+        "equity": 7466.73,
+        "price": 105534.5,
+        "timestamp": 1747697400000,
+        "index": 481,
+        "timestampIso": "2025-05-19T23:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 3934.3500000000004,
+        "drawdownPct": 34.5085728720437
+      },
+      {
+        "equity": 7577.56,
+        "price": 105423.7,
+        "timestamp": 1747722600000,
+        "index": 482,
+        "timestampIso": "2025-05-20T06:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 3823.5199999999995,
+        "drawdownPct": 33.53647198335596
+      },
+      {
+        "equity": 8597.93,
+        "price": 104403.6,
+        "timestamp": 1747747800000,
+        "index": 483,
+        "timestampIso": "2025-05-20T13:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 2803.1499999999996,
+        "drawdownPct": 24.586705820852057
+      },
+      {
+        "equity": 6164.57,
+        "price": 106882.3,
+        "timestamp": 1747773000000,
+        "index": 484,
+        "timestampIso": "2025-05-20T20:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 5236.51,
+        "drawdownPct": 45.92994698747838
+      },
+      {
+        "equity": 6344.69,
+        "price": 106790.3,
+        "timestamp": 1747798200000,
+        "index": 485,
+        "timestampIso": "2025-05-21T03:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 5056.39,
+        "drawdownPct": 44.35009665750964
+      },
+      {
+        "equity": 7304.65,
+        "price": 106300,
+        "timestamp": 1747823400000,
+        "index": 486,
+        "timestampIso": "2025-05-21T10:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 4096.43,
+        "drawdownPct": 35.93019257824698
+      },
+      {
+        "equity": 6106.22,
+        "price": 106912.1,
+        "timestamp": 1747846800000,
+        "index": 487,
+        "timestampIso": "2025-05-21T17:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 5294.86,
+        "drawdownPct": 46.441740607030205
+      },
+      {
+        "equity": 753.91,
+        "price": 109655.3,
+        "timestamp": 1747872000000,
+        "index": 488,
+        "timestampIso": "2025-05-22T00:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 10647.17,
+        "drawdownPct": 93.38738084462173
+      },
+      {
+        "equity": -3242.48,
+        "price": 110700,
+        "timestamp": 1747897200000,
+        "index": 489,
+        "timestampIso": "2025-05-22T07:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 11401.08,
+        "drawdownPct": 100
+      },
+      {
+        "equity": -5253.88,
+        "price": 111225.8,
+        "timestamp": 1747922400000,
+        "index": 490,
+        "timestampIso": "2025-05-22T14:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 11401.08,
+        "drawdownPct": 100
+      },
+      {
+        "equity": -3461.68,
+        "price": 110757.3,
+        "timestamp": 1747947600000,
+        "index": 491,
+        "timestampIso": "2025-05-22T21:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 11401.08,
+        "drawdownPct": 100
+      },
+      {
+        "equity": -3510.26,
+        "price": 110770,
+        "timestamp": 1747972800000,
+        "index": 492,
+        "timestampIso": "2025-05-23T04:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 11401.08,
+        "drawdownPct": 100
+      },
+      {
+        "equity": -3739.79,
+        "price": 110830,
+        "timestamp": 1747998000000,
+        "index": 493,
+        "timestampIso": "2025-05-23T11:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 11401.08,
+        "drawdownPct": 100
+      },
+      {
+        "equity": 3130.25,
+        "price": 109034.1,
+        "timestamp": 1748023200000,
+        "index": 494,
+        "timestampIso": "2025-05-23T18:00:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 8270.83,
+        "drawdownPct": 72.54426773603903
+      },
+      {
+        "equity": 9663.65,
+        "price": 107326.2,
+        "timestamp": 1748046600000,
+        "index": 495,
+        "timestampIso": "2025-05-24T00:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 1737.4300000000003,
+        "drawdownPct": 15.239170324214902
+      },
+      {
+        "equity": 8801.03,
+        "price": 107551.7,
+        "timestamp": 1748071800000,
+        "index": 496,
+        "timestampIso": "2025-05-24T07:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 2600.0499999999993,
+        "drawdownPct": 22.805295638658787
+      },
+      {
+        "equity": 3563.67,
+        "price": 108920.8,
+        "timestamp": 1748097000000,
+        "index": 497,
+        "timestampIso": "2025-05-24T14:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 7837.41,
+        "drawdownPct": 68.74269806018377
+      },
+      {
+        "equity": 4085.45,
+        "price": 108784.4,
+        "timestamp": 1748122200000,
+        "index": 498,
+        "timestampIso": "2025-05-24T21:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 7315.63,
+        "drawdownPct": 64.16611408743734
+      },
+      {
+        "equity": 6340.15,
+        "price": 108195,
+        "timestamp": 1748147400000,
+        "index": 499,
+        "timestampIso": "2025-05-25T04:30:00.000Z",
+        "runningPeak": 11401.08,
+        "runningPeakIndex": 456,
+        "drawdownUsdt": 5060.93,
+        "drawdownPct": 44.38991744641736
+      }
+    ]
+  }
+}
