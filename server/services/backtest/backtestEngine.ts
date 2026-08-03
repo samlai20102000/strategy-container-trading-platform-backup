@@ -120,6 +120,10 @@ import {
   runAdvancedKamaPortfolioBacktest,
 } from "./advancedKamaPortfolioBacktest";
 import { preflightBacktestRunner } from "./backtestRunnerPreflight";
+import {
+  assessBacktestDataQuality,
+  BacktestDataQualityGuardError,
+} from "./backtestReadinessRegistry";
 import type { BacktestJobControl } from "./backtestJobControl";
 
 export interface BacktestRequest {
@@ -417,10 +421,18 @@ export class BacktestEngine {
       onProgress,
     );
     const candles = continuousData.candles;
-
-    if (candles.length < 120) {
-      throw new Error(
-        `歷史數據不足（僅 ${candles.length} 根 K 線），至少需要 120 根。請縮短時間框架或調整日期區間。`,
+    const dataQualityAssessment = assessBacktestDataQuality({
+      quality: continuousData.quality,
+      candles,
+      minimumClosedBars: runnerPreflight.readiness.effectiveMinimumClosedBars,
+      timeframeMs: getTimeframeMilliseconds(effectiveRequest.timeframe),
+    });
+    continuousData.quality.readinessGuard = dataQualityAssessment;
+    if (!dataQualityAssessment.passed) {
+      throw new BacktestDataQualityGuardError(
+        request.strategyKey,
+        effectiveRequest.timeframe,
+        dataQualityAssessment,
       );
     }
 

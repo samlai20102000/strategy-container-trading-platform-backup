@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { calculatePerformance, type EquityPoint, type TradeRecord } from "./performanceCalculator";
+import {
+  BACKTEST_PERFORMANCE_METRIC_DESCRIPTIONS_ZH_TW,
+  BACKTEST_PERFORMANCE_METRIC_SPEC,
+} from "../../../shared/backtest/performanceMetricSpec";
 
 const DAY_MS = 86_400_000;
 
@@ -106,5 +110,12 @@ describe("calculatePerformance metric spec v2", () => {
       winRateDenominator: "all_valid_closed_trades_including_breakeven",
       riskFreeRateAnnualPct: 2,
     });
+  });
+
+  it("publishes a complete Traditional Chinese UI explanation from the same v2 contract", () => {
+    expect(BACKTEST_PERFORMANCE_METRIC_DESCRIPTIONS_ZH_TW).toHaveLength(8);
+    expect(BACKTEST_PERFORMANCE_METRIC_DESCRIPTIONS_ZH_TW.every(item => item.metric && item.description)).toBe(true);
+    expect(BACKTEST_PERFORMANCE_METRIC_DESCRIPTIONS_ZH_TW.find(item => item.metric === "夏普比率")?.description)
+      .toContain(`${BACKTEST_PERFORMANCE_METRIC_SPEC.riskFreeRateAnnualPct}%`);
   });
 });

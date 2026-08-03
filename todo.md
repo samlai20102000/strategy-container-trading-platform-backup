@@ -2711,3 +2711,14 @@
 - [x] 【依指示跳過】最後一輪完整 Vitest、正式建置、桌面／手機與 console／network 驗收；先前 TypeScript 與聚焦測試結果記錄於成果報告
 - [x] 【以現有成果封存取代】核對 TODO、保存 checkpoint 並自動發布，交付目前計算口徑、7/9 初步準備度及已知限制摘要
 - [x] 依使用者指示停止其餘未完成擴充，保留上述未完成項目為歷史，並整理目前已完成成果與已知限制
+
+## 2026-08-03 回測可信度剩餘工作續作
+- [x] 完成全部 9 個內建策略的準備度稽核，建立唯一、機器可讀的策略能力與 fail-closed 理由矩陣
+- [x] 在後端回測執行入口加入策略準備度、配置、資料需求、時間框架與執行模式的 fail-closed 守門
+- [x] 在回測中心顯示逐策略準備度、資料品質、不支援能力、阻擋理由及績效指標 v2 口徑
+- [x] 為全部 9 個策略建立基礎 oracle；對 KRM、馬丁類及多模式投組補齊費用、未平倉、重新入市、負權益等深入案例
+- [x] 執行 TypeScript、完整 Vitest、正式建置、1440×900 桌面 UI、console 與 network 驗收；本輪不納入手機驗收
+- [x] 核對 TODO、更新成果報告、保存 checkpoint 並確認版本已自動發布
+- [x] 修正 Strategies.tsx 殘留的 M2/H3 可見 Ledger 標籤，維持 S1-only UI 契約
+- [x] 更新 V4.1 回測 UI source-contract，使其同時鎖定 readiness 與 V4.1 fail-closed 守門
+- [x] 清理完整 Vitest 遺留的未追蹤 TestUnitStrategy 暫存檔，避免測試 fixture 進入發布版本

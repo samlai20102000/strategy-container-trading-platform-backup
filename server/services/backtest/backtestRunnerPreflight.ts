@@ -10,9 +10,17 @@ import {
   type ResolvedPortfolioStrategyAdapter,
 } from "./portfolioStrategyAdapterRegistry";
 import type { BacktestRunnerIdentity } from "./backtestContracts";
+import {
+  assessBacktestAdmission,
+  BacktestDataQualityGuardError,
+} from "./backtestReadinessRegistry";
+import type { BacktestAdmissionAssessment } from "../../../shared/backtest/backtestReadiness";
 
 export type BacktestRunnerPreflightErrorCode =
   | "STRATEGY_NOT_REGISTERED"
+  | "BACKTEST_STRATEGY_NOT_AUDITED"
+  | "BACKTEST_STRATEGY_NOT_READY"
+  | "BACKTEST_TIMEFRAME_NOT_SUPPORTED"
   | "BACKTEST_MODE_POLICY_MISMATCH"
   | "BACKTEST_MODE_CAPABILITY_NOT_CERTIFIED"
   | "RUNNER_DESCRIPTOR_MISSING"
@@ -28,6 +36,7 @@ export interface BacktestRunnerPreflightResult {
   executionPolicy: ExecutionPolicy;
   runner: BacktestRunnerIdentity;
   resolvedPortfolioAdapter: ResolvedPortfolioStrategyAdapter | null;
+  readiness: BacktestAdmissionAssessment;
 }
 
 export interface BacktestFailureMetadata {
@@ -132,11 +141,41 @@ export function preflightBacktestRunner(request: BacktestRequest): BacktestRunne
       );
     }
     assertRequestedCapabilities(request, policy);
+    const readiness = assessBacktestAdmission({
+      strategyKey: request.strategyKey,
+      timeframe: request.timeframe,
+      executionMode: policy.mode,
+      config: request.config,
+    });
+    if (!readiness.allowed) {
+      const reasonCode: BacktestRunnerPreflightErrorCode = readiness.reasonCodes.includes("BACKTEST_STRATEGY_NOT_AUDITED")
+        ? "BACKTEST_STRATEGY_NOT_AUDITED"
+        : readiness.reasonCodes.includes("BACKTEST_TIMEFRAME_NOT_SUPPORTED")
+          ? "BACKTEST_TIMEFRAME_NOT_SUPPORTED"
+          : readiness.reasonCodes.includes("BACKTEST_MODE_NOT_CERTIFIED")
+            ? "BACKTEST_MODE_NOT_CERTIFIED"
+            : "BACKTEST_STRATEGY_NOT_READY";
+      throw new BacktestRunnerPreflightError(
+        reasonCode,
+        request.strategyKey,
+        policy.mode,
+        {
+          reasonCodes: readiness.reasonCodes,
+          warnings: readiness.warnings,
+          requestedTimeframe: readiness.requestedTimeframe,
+          supportedModes: readiness.readiness?.supportedModes ?? [],
+          allowedTimeframes: readiness.readiness?.allowedTimeframes ?? [],
+          effectiveMinimumClosedBars: readiness.effectiveMinimumClosedBars,
+        },
+        readiness.reasonCodes.join(","),
+      );
+    }
 
     if (policy.mode === "SINGLE_EXCLUSIVE") {
       const descriptor = getStrategyRunnerDescriptor(request.strategyKey);
       return {
         executionPolicy: policy,
+        readiness,
         resolvedPortfolioAdapter: null,
         runner: descriptor
           ? {
@@ -163,6 +202,7 @@ export function preflightBacktestRunner(request: BacktestRequest): BacktestRunne
     assertExecutablePortfolioStrategyAdapter(resolvedPortfolioAdapter, policy.mode);
     return {
       executionPolicy: policy,
+      readiness,
       resolvedPortfolioAdapter,
       runner: {
         runnerId: resolvedPortfolioAdapter.adapter.adapterId,
@@ -179,6 +219,17 @@ export function preflightBacktestRunner(request: BacktestRequest): BacktestRunne
 }
 
 export function classifyBacktestFailure(error: unknown): BacktestFailureMetadata {
+  if (error instanceof BacktestDataQualityGuardError) {
+    return {
+      stage: "DATA_LOAD",
+      errorCode: error.code,
+      details: {
+        strategyKey: error.strategyKey,
+        timeframe: error.timeframe,
+        assessment: error.assessment,
+      },
+    };
+  }
   if (error instanceof BacktestRunnerPreflightError) {
     return { stage: "RUNNER_PREFLIGHT", errorCode: error.code, details: error.details };
   }

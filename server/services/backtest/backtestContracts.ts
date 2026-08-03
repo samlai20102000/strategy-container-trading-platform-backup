@@ -6,6 +6,7 @@ import type {
   PositionSide,
 } from "../../../shared/executionModes";
 import type { OHLCVRow } from "./backtestDatabase";
+import type { BacktestDataQualityAssessment } from "../../../shared/backtest/backtestReadiness";
 
 export const BACKTEST_ENGINE_VERSION = "3.0.0-three-mode";
 export const BACKTEST_SIMULATED_ADAPTER_VERSION = "simulated-exchange-v1";
@@ -89,6 +90,8 @@ export interface BacktestDataQuality {
   firstTimestamp: number | null;
   lastTimestamp: number | null;
   sortedAscending: boolean;
+  /** 正式 readiness 資料品質守門證據；舊結果可能沒有此欄位。 */
+  readinessGuard?: BacktestDataQualityAssessment;
 }
 
 export type BacktestReentryTrigger =

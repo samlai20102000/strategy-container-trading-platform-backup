@@ -228,7 +228,7 @@ function KamaRainbowMartinReentryEvidence({
   } as const;
   const sourceLabels = {
     s1_runtime: "S1 成交狀態",
-    position_ledger: "M2/H3 成交 Ledger",
+    position_ledger: "逐腿成交 Ledger",
     no_execution_evidence: "尚無成交證據",
   } as const;
   const event = summary?.lastEntryEvent ?? null;

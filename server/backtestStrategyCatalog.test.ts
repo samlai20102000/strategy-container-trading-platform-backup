@@ -16,5 +16,24 @@ describe("KRM backtest catalog capability projection", () => {
     expect(krm?.backtestModeCapabilities.independentLegState).toBe(false);
     expect(krm?.backtestModeCapabilities.preciseLegClose).toBe(false);
     expect(krm?.backtestModeCapabilities.hedgeGuard).toBe(false);
+    expect(krm?.readiness?.strategyKey).toBe(KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
+    expect(krm?.readiness?.readiness).toBe("READY");
+    expect(krm?.readiness?.supportedModes).toEqual(["SINGLE_EXCLUSIVE"]);
+  });
+
+  it("projects the complete audited 9/9 readiness matrix into the fallback catalog", async () => {
+    await initStrategyStudio();
+    const catalog = await getBacktestStrategyCatalog();
+    const audited = catalog.filter(entry => entry.readiness !== null);
+
+    expect(audited).toHaveLength(9);
+    expect(new Set(audited.map(entry => entry.readiness?.strategyKey)).size).toBe(9);
+    for (const entry of audited) {
+      expect(entry.readiness?.contractVersion).toBe("backtest-readiness-v1");
+      expect(entry.readiness?.strategyKey).toBe(entry.key);
+      expect(entry.readiness?.minimumClosedBars).toBeGreaterThan(0);
+      expect(entry.readiness?.dataRequirements.length).toBeGreaterThan(0);
+      expect(entry.readiness?.baselineOracleTargets.length).toBeGreaterThan(0);
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { listRegisteredStrategies } from "../strategyStudio";
 import { requireStrategyCapabilityManifest } from "../strategyCapabilityRegistry";
+import { getBacktestReadinessEntry } from "./backtestReadinessRegistry";
 
 /**
  * 回測中心的唯一策略 fallback 目錄。
@@ -15,6 +16,7 @@ export async function getBacktestStrategyCatalog() {
       defaultConfig: strategy.defaultConfig,
       backtestCapabilityManifest,
       backtestModeCapabilities: backtestCapabilityManifest.capabilities,
+      readiness: getBacktestReadinessEntry(strategy.key),
     };
   }));
 }

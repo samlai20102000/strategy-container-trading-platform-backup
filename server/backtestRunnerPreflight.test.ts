@@ -5,6 +5,7 @@ import {
   classifyBacktestFailure,
   preflightBacktestRunner,
 } from "./services/backtest/backtestRunnerPreflight";
+import { BacktestDataQualityGuardError } from "./services/backtest/backtestReadinessRegistry";
 import { buildBacktestJobExecutionContext } from "./services/backtest/backtestJobManager";
 import type { BacktestRequest } from "./services/backtest/backtestEngine";
 import {
@@ -105,6 +106,71 @@ describe("backtest runner preflight", () => {
       }
     },
   );
+
+  it("不支援的 timeframe 在資料載入前由 readiness fail closed", () => {
+    const request = requestFor("SINGLE_EXCLUSIVE");
+    request.timeframe = "2m";
+    expect(() => preflightBacktestRunner(request)).toThrow(BacktestRunnerPreflightError);
+    try {
+      preflightBacktestRunner(request);
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "BACKTEST_TIMEFRAME_NOT_SUPPORTED",
+        strategyKey: V41_KEY,
+      });
+      expect(classifyBacktestFailure(error)).toMatchObject({
+        stage: "RUNNER_PREFLIGHT",
+        errorCode: "BACKTEST_TIMEFRAME_NOT_SUPPORTED",
+      });
+    }
+  });
+
+  it("preflight 回傳伺服器權威最低已收盤 K 線需求", () => {
+    const request = requestFor("SINGLE_EXCLUSIVE");
+    const descriptor = getStrategyRunnerDescriptor(KRM_KEY)!;
+    request.strategyKey = KRM_KEY;
+    request.strategyVersion = String(descriptor.strategyVersion);
+    request.strategyLogicHash = descriptor.logicRevision;
+    request.strategyModeCapabilities = getStrategyChannelCapabilities(KRM_KEY, "BACKTEST");
+    request.config = {
+      kamaLines: [{ enabled: true, erPeriod: 360 }],
+    };
+    expect(preflightBacktestRunner(request).readiness).toMatchObject({
+      allowed: true,
+      effectiveMinimumClosedBars: 361,
+    });
+  });
+
+  it("資料品質守門錯誤分類為 DATA_LOAD 並保留 reason code 與 assessment", () => {
+    const error = new BacktestDataQualityGuardError(
+      V41_KEY,
+      "15m",
+      {
+        passed: false,
+        reasonCodes: ["BACKTEST_DATA_INSUFFICIENT"],
+        warnings: [],
+        minimumClosedBars: 120,
+        returnedCandles: 80,
+        rejectionRatio: 0,
+        duplicateRatio: 0,
+        gapCount: 0,
+        gapRatio: 0,
+      },
+    );
+    expect(classifyBacktestFailure(error)).toMatchObject({
+      stage: "DATA_LOAD",
+      errorCode: "BACKTEST_DATA_INSUFFICIENT",
+      details: {
+        strategyKey: V41_KEY,
+        timeframe: "15m",
+        assessment: {
+          passed: false,
+          returnedCandles: 80,
+          minimumClosedBars: 120,
+        },
+      },
+    });
+  });
 
   it("job execution context 保存 runner identity 與結構化 failure，而非以 legacy 代替", () => {
     const request = requestFor("HEDGE_GUARDED");

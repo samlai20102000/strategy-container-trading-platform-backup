@@ -95,6 +95,11 @@ import {
   createDefaultStrategyExecutionPolicy,
   normalizeStrategyExecutionPolicy,
 } from "@shared/strategies/kamaRainbowMartinExecutionPolicy";
+import { describeBacktestReadinessReason } from "@shared/backtest/backtestReadiness";
+import {
+  BACKTEST_PERFORMANCE_METRIC_DESCRIPTIONS_ZH_TW,
+  BACKTEST_PERFORMANCE_METRIC_SPEC,
+} from "@shared/backtest/performanceMetricSpec";
 
 type JobPhase = "idle" | "running" | "done" | "failed" | "cancelled";
 
@@ -171,6 +176,9 @@ export default function Backtest() {
   const backtestStrategiesQuery = trpc.backtest.getStrategies.useQuery();
   // ❗ 穩定化引用：避免每次渲染都產生新陣列導致 useEffect/useMemo 無限觸發
   const strategiesData = useMemo(() => {
+    const readinessByKey = new Map(
+      (backtestStrategiesQuery.data ?? []).map(strategy => [strategy.key, strategy.readiness] as const),
+    );
     if (registryQuery.data && registryQuery.data.length > 0) {
       return registryQuery.data.map(s => ({
         key: s.key,
@@ -180,6 +188,7 @@ export default function Backtest() {
         modeCapabilities: s.backtestModeCapabilities as StrategyModeCapabilities,
         strategyVersion: String(s.backtestCapabilityManifest.strategyVersion),
         strategyLogicHash: s.backtestCapabilityManifest.strategyLogicHash,
+        readiness: readinessByKey.get(s.key) ?? null,
       }));
     }
     if (backtestStrategiesQuery.data) {
@@ -191,6 +200,7 @@ export default function Backtest() {
         modeCapabilities: s.backtestModeCapabilities as StrategyModeCapabilities,
         strategyVersion: String(s.backtestCapabilityManifest.strategyVersion),
         strategyLogicHash: s.backtestCapabilityManifest.strategyLogicHash,
+        readiness: s.readiness,
       }));
     }
     return undefined;
@@ -361,8 +371,45 @@ export default function Backtest() {
   const utils = trpc.useUtils();
 
   const timeframe = `${tfValue}${tfUnit}`;
+  const readinessInput = useMemo(() => ({
+    strategyKey,
+    timeframe,
+    executionMode: executionPolicy.mode,
+    config: configJson,
+  }), [configJson, executionPolicy.mode, strategyKey, timeframe]);
+  const readinessQuery = trpc.backtest.getReadiness.useQuery(readinessInput, {
+    enabled: Boolean(strategyKey),
+    retry: false,
+  });
+  const readinessAssessment = readinessQuery.data;
+  const selectedReadiness = readinessAssessment?.readiness ?? selectedStrategy?.readiness ?? null;
+  const readinessWarnings = useMemo(() => [
+    ...(readinessAssessment?.warnings ?? []),
+    ...(selectedReadiness?.auditNotes ?? []),
+  ].filter((message, index, all) => message && all.indexOf(message) === index), [readinessAssessment?.warnings, selectedReadiness?.auditNotes]);
+  const readinessReasons = useMemo(() => {
+    if (readinessQuery.isError) return ["無法取得權威回測準備度，已依 fail-closed 原則阻擋執行"];
+    return (readinessAssessment?.reasonCodes ?? [])
+      .filter(code => code !== "READY")
+      .map(code => describeBacktestReadinessReason(code));
+  }, [readinessAssessment?.reasonCodes, readinessQuery.isError]);
+  const readinessLevel = !strategyKey || readinessQuery.isError || readinessAssessment?.allowed === false
+    ? "blocked"
+    : readinessQuery.isLoading || !readinessAssessment
+      ? "checking"
+      : readinessWarnings.length > 0 || selectedReadiness?.logicParity === "FORK_RISK"
+        ? "warning"
+        : "ready";
+  const readinessBlocked = readinessLevel === "blocked" || readinessLevel === "checking";
+  const readinessButtonTitle = readinessLevel === "checking"
+    ? "正在取得權威回測準備度"
+    : readinessReasons[0];
 
   const handleRun = async () => {
+    if (!readinessAssessment) return toast.error("尚未取得權威回測準備度，請稍候再試");
+    if (!readinessAssessment.allowed) {
+      return toast.error(`回測已阻擋：${readinessReasons.join("；") || "未通過準備度預檢"}`);
+    }
     const capital = Number(initialCapital);
     if (!symbol.trim()) return toast.error("請選擇交易對");
     if (!capital || capital <= 0) return toast.error("初始資金必須大於 0");
@@ -1005,17 +1052,43 @@ export default function Backtest() {
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-2">
-                <Label className="text-xs">策略</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs">策略</Label>
+                  <Badge
+                    variant="outline"
+                    className={`text-[10px] ${readinessLevel === "ready"
+                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
+                      : readinessLevel === "warning"
+                        ? "border-amber-500/50 bg-amber-500/10 text-amber-400"
+                        : readinessLevel === "checking"
+                          ? "border-slate-500/50 bg-slate-500/10 text-slate-300"
+                          : "border-red-500/50 bg-red-500/10 text-red-400"}`}
+                  >
+                    {readinessLevel === "ready" ? "就緒" : readinessLevel === "warning" ? "注意" : readinessLevel === "checking" ? "檢查中" : "阻擋"}
+                  </Badge>
+                </div>
                 <Select value={strategyKey} onValueChange={setStrategyKey}>
                   <SelectTrigger className="w-full max-w-full overflow-hidden [&>span]:truncate [&>span]:block [&>span]:max-w-[calc(100%-1.5rem)] [&>span]:text-left">
                     <SelectValue placeholder="選擇策略" />
                   </SelectTrigger>
                   <SelectContent>
-                    {(strategiesQuery.data ?? []).map((s) => (
-                      <SelectItem key={s.key} value={s.key}>
-                        {s.name}
-                      </SelectItem>
-                    ))}
+                    {(strategiesQuery.data ?? []).map((s) => {
+                      const optionLevel = !s.readiness || s.readiness.readiness === "BLOCKED"
+                        ? "阻擋"
+                        : s.readiness.logicParity === "FORK_RISK" || s.readiness.auditNotes.length > 0
+                          ? "注意"
+                          : "就緒";
+                      return (
+                        <SelectItem key={s.key} value={s.key} textValue={s.name}>
+                          <span className="flex w-full min-w-0 items-center justify-between gap-3">
+                            <span className="truncate">{s.name}</span>
+                            <span className={`shrink-0 text-[10px] ${optionLevel === "就緒" ? "text-emerald-500" : optionLevel === "注意" ? "text-amber-500" : "text-red-500"}`}>
+                              {optionLevel}
+                            </span>
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -1160,6 +1233,113 @@ export default function Backtest() {
                 </div>
               )}
             </div>
+
+            <div
+              data-testid="backtest-readiness-card"
+              className={`rounded-lg border p-4 ${readinessLevel === "ready"
+                ? "border-emerald-500/35 bg-emerald-500/[0.05]"
+                : readinessLevel === "warning"
+                  ? "border-amber-500/40 bg-amber-500/[0.06]"
+                  : readinessLevel === "checking"
+                    ? "border-slate-500/35 bg-slate-500/[0.05]"
+                    : "border-red-500/40 bg-red-500/[0.06]"}`}
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {readinessLevel === "ready" ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                    ) : readinessLevel === "warning" || readinessLevel === "checking" ? (
+                      <AlertTriangle className={`h-4 w-4 ${readinessLevel === "warning" ? "text-amber-400" : "text-slate-300"}`} />
+                    ) : (
+                      <XCircle className="h-4 w-4 text-red-400" />
+                    )}
+                    <p className="text-sm font-semibold text-foreground">策略回測準備度</p>
+                    {selectedReadiness && (
+                      <>
+                        <Badge variant="outline" className="font-mono text-[10px]">{selectedReadiness.contractVersion}</Badge>
+                        <Badge variant="outline" className="text-[10px]">風險 {selectedReadiness.riskLevel}</Badge>
+                        <Badge variant="outline" className="text-[10px]">{selectedReadiness.logicParity}</Badge>
+                      </>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    {readinessLevel === "checking"
+                      ? "正在以伺服器執行入口的同一份契約檢查策略、模式、時間框架與配置。"
+                      : selectedReadiness?.logicAssessment ?? "此策略尚未納入權威回測稽核，無法安全執行。"}
+                  </p>
+                </div>
+                <Badge className={`w-fit ${readinessLevel === "ready" ? "bg-emerald-600" : readinessLevel === "warning" ? "bg-amber-600" : readinessLevel === "checking" ? "bg-slate-600" : "bg-red-600"}`}>
+                  {readinessLevel === "ready" ? "可執行" : readinessLevel === "warning" ? "可執行，需注意" : readinessLevel === "checking" ? "預檢中" : "禁止執行"}
+                </Badge>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-md border border-border/60 bg-background/45 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">最低資料量</p>
+                  <p className="mt-1 font-mono text-sm font-semibold text-foreground">
+                    {readinessAssessment?.effectiveMinimumClosedBars ?? selectedReadiness?.minimumClosedBars ?? "—"} 根已收盤 K 線
+                  </p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">依目前 canonical 配置動態計算。</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/45 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">支援模式</p>
+                  <p className="mt-1 break-words font-mono text-xs text-foreground">{selectedReadiness?.supportedModes.join("、") || "尚未認證"}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">目前選擇：{executionPolicy.mode}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/45 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">時間框架</p>
+                  <p className="mt-1 font-mono text-xs text-foreground">建議 {selectedReadiness?.recommendedTimeframes.join("、") || "—"}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">目前選擇：{timeframe}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/45 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">資料品質守門</p>
+                  <p className="mt-1 text-xs text-foreground">嚴格遞增；拒收率 ≤1%；重複與缺口率各 ≤5%</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">實際品質於完成報告內列出。</p>
+                </div>
+              </div>
+
+              {selectedReadiness?.dataRequirements.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {selectedReadiness.dataRequirements.map(requirement => (
+                    <Badge key={requirement} variant="secondary" className="text-[10px] font-normal">{requirement}</Badge>
+                  ))}
+                </div>
+              ) : null}
+
+              {readinessReasons.length > 0 && (
+                <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 p-3" role="alert">
+                  <p className="text-xs font-semibold text-red-300">阻擋理由</p>
+                  <ul className="mt-1 space-y-1 text-xs text-red-200/90">
+                    {readinessReasons.map(reason => <li key={reason}>• {reason}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {readinessWarnings.length > 0 && (
+                <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+                  <p className="text-xs font-semibold text-amber-300">限制與注意事項</p>
+                  <ul className="mt-1 space-y-1 text-xs text-amber-100/80">
+                    {readinessWarnings.map(warning => <li key={warning}>• {warning}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <details data-testid="performance-metric-spec" className="group rounded-lg border border-violet-500/30 bg-violet-500/[0.04]">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
+                <span>績效指標 v2 計算口徑</span>
+                <Badge variant="outline" className="border-violet-500/50 font-mono text-[10px] text-violet-300">{BACKTEST_PERFORMANCE_METRIC_SPEC.version}</Badge>
+              </summary>
+              <div className="grid gap-3 border-t border-violet-500/20 p-4 lg:grid-cols-2">
+                {BACKTEST_PERFORMANCE_METRIC_DESCRIPTIONS_ZH_TW.map(item => (
+                  <div key={item.metric} className="rounded-md border border-border/60 bg-background/45 p-3">
+                    <p className="text-xs font-semibold text-violet-300">{item.metric}</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{item.description}</p>
+                  </div>
+                ))}
+              </div>
+            </details>
 
             <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/[0.04] p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1639,8 +1819,10 @@ export default function Backtest() {
             <div className="flex items-center gap-3 flex-wrap">
               <Button
                 onClick={handleRun}
-                disabled={runMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}
-                title={v41Validation && !v41Validation.valid ? "V4.1 至少啟用一個方向條件，且所有 canonical 參數必須有效" : undefined}
+                disabled={runMutation.isPending || readinessBlocked || Boolean(v41Validation && !v41Validation.valid)}
+                title={v41Validation && !v41Validation.valid
+                  ? "V4.1 至少啟用一個方向條件，且所有 canonical 參數必須有效"
+                  : readinessButtonTitle}
                 className="bg-blue-600 hover:bg-blue-700 text-white"
               >
                 <Play className="w-4 h-4 mr-1" />

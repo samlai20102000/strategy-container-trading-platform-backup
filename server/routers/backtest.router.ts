@@ -68,6 +68,7 @@ import {
 import { deriveV41StrategyColumns } from "../services/v41StrategyConfig";
 import { bindKamaRainbowMartinStrategyConfig } from "../services/kamaRainbowMartinStrategyConfig";
 import { getBacktestStrategyCatalog } from "../services/backtest/backtestStrategyCatalog";
+import { assessBacktestAdmission } from "../services/backtest/backtestReadinessRegistry";
 
 const executionModeSchema = z.enum([
   "SINGLE_EXCLUSIVE",
@@ -381,6 +382,16 @@ export const backtestRouter = router({
 
   /** 策略清單（內建 + 自訂，含 defaultConfig 供表單動態生成） */
   getStrategies: protectedProcedure.query(() => getBacktestStrategyCatalog()),
+
+  /** 與回測執行入口共用的權威準備度／模式／時間框架預檢。 */
+  getReadiness: protectedProcedure
+    .input(z.object({
+      strategyKey: z.string().min(1),
+      timeframe: z.string().min(2),
+      executionMode: executionModeSchema,
+      config: z.record(z.string(), z.unknown()).default({}),
+    }))
+    .query(({ input }) => assessBacktestAdmission(input)),
 
   /** 支援的時間框架清單 */
   getTimeframes: protectedProcedure.query(() => getSupportedTimeframes()),

@@ -23,7 +23,8 @@ describe("V4.1 三頁共用 UI 接線契約", () => {
     expect(backtestSource).toContain("V41EntryConditionsPanel");
     expect(backtestSource).toContain("入場邏輯：{cfg.entryConditionLogic.toUpperCase()}");
     expect(backtestSource).toContain("ENTRY CONDITIONS {countEnabledV41EntryConditions(cfg)}/3");
-    expect(backtestSource).toContain("disabled={runMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}");
+    expect(backtestSource).toContain("disabled={runMutation.isPending || readinessBlocked || Boolean(v41Validation && !v41Validation.valid)}");
+    expect(backtestSource).toContain("readinessButtonTitle");
     expect(backtestSource).toContain("disabled={saveSnapshotMutation.isPending || Boolean(v41Validation && !v41Validation.valid)}");
   });
 
