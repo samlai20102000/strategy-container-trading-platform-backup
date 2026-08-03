@@ -480,9 +480,13 @@ export function buildOpenPositionSnapshot(
     0,
   );
   const entryFees = entryNotional * commission;
+  const exitNotional = markPrice * position.totalSize;
+  const exitFees = exitNotional * commission;
   const unrealizedGrossPnl = position.side === "long"
     ? (markPrice - position.avgPrice) * position.totalSize
     : (position.avgPrice - markPrice) * position.totalSize;
+  // 未實現盈虧 = 毛利 - 出場費用（入場費用已在平倉時計算，不應重複扣除）
+  const unrealizedPnlValue = roundBacktestMoney(unrealizedGrossPnl - exitFees);
   return {
     side: position.side,
     entryTime: position.entryTime,
@@ -492,7 +496,7 @@ export function buildOpenPositionSnapshot(
     entryNotional: roundBacktestMoney(entryNotional),
     entryFees: roundBacktestMoney(entryFees),
     unrealizedGrossPnl: roundBacktestMoney(unrealizedGrossPnl),
-    unrealizedPnl: roundBacktestMoney(unrealizedGrossPnl - entryFees),
+    unrealizedPnl: unrealizedPnlValue,
   };
 }
 
