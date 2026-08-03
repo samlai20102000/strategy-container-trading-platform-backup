@@ -692,6 +692,14 @@ export default function ParameterSnapshots() {
                                 </Badge>
                                 <Badge variant="outline" className="text-[10px]">{display.config.kamaLines.length} KAMA</Badge>
                                 <Badge variant="outline" className="text-[10px]">{display.config.maxLayers} 層</Badge>
+                                <Badge
+                                  variant="outline"
+                                  className={display.config.reentryEnabled
+                                    ? "border-emerald-500/40 text-[10px] text-emerald-300"
+                                    : "border-slate-500/40 text-[10px] text-slate-300"}
+                                >
+                                  自動重入：{display.config.reentryEnabled ? "開啟" : "關閉"}
+                                </Badge>
                                 {!display.validation.valid && (
                                   <Badge variant="outline" className="border-amber-500/45 text-[10px] text-amber-300">需複核</Badge>
                                 )}
@@ -844,6 +852,14 @@ export default function ParameterSnapshots() {
                     <Badge variant="outline">{getKamaRainbowMartinTimeframeMinutes(viewKamaRainbowMartinDisplay.config.timeframe)}m</Badge>
                     <Badge variant="outline">{viewKamaRainbowMartinDisplay.config.kamaLines.length} 條 KAMA</Badge>
                     <Badge variant="outline">{viewKamaRainbowMartinDisplay.config.maxLayers} 層含底倉</Badge>
+                    <Badge
+                      variant="outline"
+                      className={viewKamaRainbowMartinDisplay.config.reentryEnabled
+                        ? "border-emerald-500/40 text-emerald-300"
+                        : "border-slate-500/40 text-slate-300"}
+                    >
+                      自動重入：{viewKamaRainbowMartinDisplay.config.reentryEnabled ? "開啟" : "關閉"}
+                    </Badge>
                   </div>
                   <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                     此處唯讀覆核 canonical 策略配置；Position_Size／Mode 來自快照頂層回測設定，不會回寫策略配置。
@@ -974,8 +990,16 @@ export default function ParameterSnapshots() {
                   <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{selectedKamaRainbowMartinDisplay.config.version}</Badge>
                   <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.kamaLines.length} KAMA</Badge>
                   <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.maxLayers} 層</Badge>
+                  <Badge
+                    variant="outline"
+                    className={selectedKamaRainbowMartinDisplay.config.reentryEnabled
+                      ? "border-emerald-500/40 text-emerald-300"
+                      : "border-slate-500/40 text-slate-300"}
+                  >
+                    自動重入：{selectedKamaRainbowMartinDisplay.config.reentryEnabled ? "開啟" : "關閉"}
+                  </Badge>
                 </div>
-                <p className="mt-2 text-muted-foreground">只允許套用至相同 KRM strategy key；套用後會停用並要求重新 preflight。</p>
+                <p className="mt-2 text-muted-foreground">只允許套用至相同 KRM strategy key；套用後會安全停用。LEGACY 策略可覆核後由卡片直接啟用，canonical deployment 則需重新通過 preflight。</p>
                 {!selectedKamaRainbowMartinDisplay.validation.valid && (
                   <p className="mt-2 text-amber-300">Canonical 驗證失敗，伺服器將 fail-closed 拒絕套用。</p>
                 )}
@@ -1049,8 +1073,16 @@ export default function ParameterSnapshots() {
                   <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{selectedKamaRainbowMartinDisplay.config.version}</Badge>
                   <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.kamaLines.length} KAMA</Badge>
                   <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.maxLayers} 層</Badge>
+                  <Badge
+                    variant="outline"
+                    className={selectedKamaRainbowMartinDisplay.config.reentryEnabled
+                      ? "border-emerald-500/40 text-emerald-300"
+                      : "border-slate-500/40 text-slate-300"}
+                  >
+                    自動重入：{selectedKamaRainbowMartinDisplay.config.reentryEnabled ? "開啟" : "關閉"}
+                  </Badge>
                 </div>
-                <p className="mt-2 text-amber-200">KRM 快照複製後固定為停用；canonical 配置與頂層部署倉位分離，必須重新通過 preflight。</p>
+                <p className="mt-2 text-amber-200">KRM 快照複製後預設停用，canonical 配置（含自動重入）會完整保留；人工覆核後可由策略卡片直接啟用，不需另跑 deployment preflight。</p>
               </div>
             )}
             <div className="space-y-4 py-4">

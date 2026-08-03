@@ -91,6 +91,51 @@ export interface BacktestDataQuality {
   sortedAscending: boolean;
 }
 
+export type BacktestReentryTrigger =
+  | "INITIAL_ENTRY"
+  | "SAME_BAR_REENTRY"
+  | "LATER_BAR_REENTRY";
+
+export interface BacktestReentryEvidenceEvent {
+  eventId: string;
+  eventType: "ENTRY" | "CLOSE";
+  timestamp: number;
+  cycleId: string;
+  cycleNumber: number;
+  side: "long" | "short";
+  sameDirectionSequence: number;
+  isReentry: boolean;
+  sameDirectionAsPrevious: boolean | null;
+  trigger?: BacktestReentryTrigger;
+  price: number;
+  reasonCode: string;
+  reason: string;
+  closeReason?: string;
+}
+
+/**
+ * 回測重新入市唯一統計口徑：cycle 是一次由底倉開啟至全平的生命週期；
+ * reentry 是首個 cycle 之後的再次底倉入市，不把馬丁加倉誤算為重新入市。
+ */
+export interface BacktestReentryDiagnostics {
+  version: "backtest-reentry-diagnostics-v1";
+  strategyKey: string;
+  enabled: boolean;
+  cycleCount: number;
+  reentryCount: number;
+  sameDirectionReentryCount: number;
+  oppositeDirectionReentryCount: number;
+  currentCycleId: string | null;
+  currentSide: "long" | "short" | null;
+  currentSameDirectionSequence: number | null;
+  lastEntrySide: "long" | "short" | null;
+  lastSameDirectionSequence: number | null;
+  totalEvidenceEventCount: number;
+  evidenceEventLimit: number;
+  evidenceTruncated: boolean;
+  events: BacktestReentryEvidenceEvent[];
+}
+
 export interface BacktestOpenPositionSnapshot {
   side: "long" | "short";
   entryTime: number;

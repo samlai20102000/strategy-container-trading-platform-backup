@@ -341,6 +341,28 @@ export function applyKamaRainbowMartinFillToState(
   const longFill = fill.action === "OPEN_LONG" || fill.action === "ADD_LONG";
   const initialAction = fill.action === "OPEN_LONG" || fill.action === "OPEN_SHORT";
   const active = hasActivePosition(nextState);
+  const startsNewCycle = initialAction && !active;
+  const entrySide = longFill ? "long" : "short";
+  const hasPriorCycle = runtime.cycleNumber > 0 || runtime.lastEntrySide !== null || runtime.lastCloseReason !== null;
+  const entryKind = !startsNewCycle
+    ? runtime.currentEntryKind
+    : !hasPriorCycle
+      ? "initial"
+      : runtime.lastEntrySide === entrySide
+        ? "same_direction_reentry"
+        : "reverse_direction_reentry";
+  const cycleNumber = startsNewCycle
+    ? Math.max(0, runtime.cycleNumber) + 1
+    : active
+      ? Math.max(1, runtime.cycleNumber)
+      : runtime.cycleNumber;
+  const sameDirectionEntrySequence = startsNewCycle
+    ? entryKind === "same_direction_reentry"
+      ? Math.max(1, runtime.sameDirectionEntrySequence) + 1
+      : 1
+    : active
+      ? Math.max(1, runtime.sameDirectionEntrySequence)
+      : runtime.sameDirectionEntrySequence;
   const targetLayer = fill.targetLayer ?? (initialAction ? 1 : nextState.currentLayer + 1);
   if (!Number.isSafeInteger(targetLayer) || targetLayer < 1) throw new Error("Kama 彩虹馬丁成交層數無效");
   if (active && nextState.isLong !== longFill) throw new Error("Kama 彩虹馬丁成交方向與既有腿不一致");
@@ -398,6 +420,22 @@ export function applyKamaRainbowMartinFillToState(
     triggerProfitPct: null,
     lastCloseReason: initialAction ? null : runtime.lastCloseReason,
     reentryPending: false,
+    cycleNumber,
+    sameDirectionEntrySequence,
+    lastEntrySide: startsNewCycle ? entrySide : runtime.lastEntrySide,
+    currentEntryKind: startsNewCycle ? entryKind : runtime.currentEntryKind,
+    lastEntryEvent: startsNewCycle
+      ? {
+          kind: entryKind ?? "initial",
+          cycleNumber,
+          sameDirectionEntrySequence,
+          side: entrySide,
+          previousCloseReason: runtime.lastCloseReason,
+          occurredAt: fill.timestamp,
+          fillId: fill.fillId,
+          orderId: fill.orderId?.trim() || null,
+        }
+      : runtime.lastEntryEvent,
     lastActionTimestamp: fill.timestamp,
     lastActionSignature: `${fill.action}:L${targetLayer}:${fill.fillId}`,
     lastDecisionReason: `成交已確認：${longFill ? "多" : "空"} L${targetLayer} @ ${fill.fillPrice} × ${fill.fillQuantity}`,

@@ -27,7 +27,7 @@ import { deploymentsRouter } from "./routers/deployments.router";
 import { orderPolicyRouter } from "./routers/orderPolicy.router";
 import { registryManager } from "./services/registryManager";
 import { telegramNotifier } from "./services/telegramNotifier";
-import { getBoundStrategyConfig, pickStrategyConfigState } from "./services/strategySnapshotConfig";
+import { pickStrategyConfigState } from "./services/strategySnapshotConfig";
 import { summarizeStrategyPerformance } from "./services/performanceSummary";
 import {
   assertValidV25Config,
@@ -44,14 +44,11 @@ import {
   assertValidRainbowTrendLadderConfig,
   RAINBOW_TREND_LADDER_STRATEGY_KEY,
 } from "../shared/strategies/rainbowTrendLadder";
+import { KAMA_RAINBOW_MARTIN_STRATEGY_KEY } from "../shared/strategies/kamaRainbowMartin";
 import {
-  assertValidKamaRainbowMartinConfig,
-  getLayerGapPct,
-  getLayerMultiplier,
-  getKamaRainbowMartinTimeframeMinutes,
-  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
-  KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
-} from "../shared/strategies/kamaRainbowMartin";
+  bindKamaRainbowMartinStrategyConfig,
+  resolveBoundKamaRainbowMartinConfig,
+} from "./services/kamaRainbowMartinStrategyConfig";
 import {
   deploymentPositionColumns,
   finalizeDeploymentPosition,
@@ -87,6 +84,7 @@ import {
 } from "../shared/executionModes";
 import { listActivePositionLegs } from "./services/threeModeLedger";
 import { parseKamaRainbowMartinSignalPayload } from "../shared/observability/kamaRainbowMartinSignalTrace";
+import { listKamaRainbowMartinReentryObservations } from "./services/kamaRainbowMartinReentryObservability";
 
 /* ==================== API 金鑰路由 ==================== */
 
@@ -561,11 +559,44 @@ function buildWebhookUrl(req: any, strategyId: number, secret: string): string {
 const strategiesRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     const items = await db.listStrategies(ctx.user.id);
-    return items.map((s) => {
+    const normalizedItems = items.map((s) => {
       const capability = evaluateMartingaleStrategyInstance(s);
+      const strategyWithLegacyConfig = s as typeof s & {
+        v35Config?: { Reentry_On_Trend?: unknown };
+        v50Config?: { Reentry_On_Trend?: unknown };
+        v61Config?: { enable_continuous_entry?: unknown };
+      };
+      let reentryEnabled = s.reentryEnabled;
+
+      if (s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
+        try {
+          reentryEnabled = resolveBoundKamaRainbowMartinConfig(
+            s.martinState,
+            s.reentryEnabled === true,
+          ).reentryEnabled;
+        } catch {
+          // 損壞的 canonical 配置不得誤顯示為已開啟；實際啟動仍由 preflight fail closed。
+          reentryEnabled = false;
+        }
+      }
+
+      // 如果頂層沒有，則根據策略類型從配置中獲取
+      if (reentryEnabled === undefined || reentryEnabled === null) {
+        if (strategyWithLegacyConfig.v35Config) {
+          reentryEnabled = strategyWithLegacyConfig.v35Config.Reentry_On_Trend === true;
+        } else if (strategyWithLegacyConfig.v50Config) {
+          reentryEnabled = strategyWithLegacyConfig.v50Config.Reentry_On_Trend === true;
+        } else if (strategyWithLegacyConfig.v61Config) {
+          // v61Config 的 enable_continuous_entry 可能是 boolean, string, number
+          const v61Reentry = strategyWithLegacyConfig.v61Config.enable_continuous_entry;
+          reentryEnabled = v61Reentry === true || v61Reentry === '1' || v61Reentry === 1;
+        }
+        // 其他策略類型可以繼續添加
+      }
       return {
         ...s,
         webhookUrl: buildWebhookUrl(ctx.req, s.id, s.webhookSecret),
+        reentryEnabled: reentryEnabled,
         martingaleLayerCapability: {
           isMartingale: capability.isMartingale,
           maxLayers: capability.maxLayers,
@@ -573,6 +604,23 @@ const strategiesRouter = router({
         },
       };
     });
+    const reentryObservations = await listKamaRainbowMartinReentryObservations({
+      userId: ctx.user.id,
+      strategies: normalizedItems
+        .filter(strategy => strategy.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY)
+        .map(strategy => ({
+          id: strategy.id,
+          martinState: strategy.martinState,
+          reentryEnabled: strategy.reentryEnabled === true,
+        })),
+    });
+    const observationByStrategy = new Map(
+      reentryObservations.map(observation => [observation.strategyId, observation] as const),
+    );
+    return normalizedItems.map(strategy => ({
+      ...strategy,
+      kamaRainbowMartinReentryObservation: observationByStrategy.get(strategy.id) ?? null,
+    }));
   }),
 
   /**
@@ -750,10 +798,13 @@ const strategiesRouter = router({
           message: "Kama彩虹馬丁策略不可混用其他策略的配置鍵",
         });
       }
-      let kamaRainbowMartinConfig: ReturnType<typeof assertValidKamaRainbowMartinConfig> | undefined;
+      let kamaRainbowMartinConfig: ReturnType<typeof bindKamaRainbowMartinStrategyConfig>["config"] | undefined;
       if (input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
         try {
-          kamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(input.kamaRainbowMartinConfig);
+          kamaRainbowMartinConfig = bindKamaRainbowMartinStrategyConfig(
+            undefined,
+            input.kamaRainbowMartinConfig,
+          ).config;
         } catch (error) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -787,14 +838,17 @@ const strategiesRouter = router({
         ...(input.v61Config ? { __v61Config: input.v61Config } : {}),
         ...(rainbow20415Config ? { __v2_0Config: rainbow20415Config } : {}),
         ...(rainbowTrendLadderConfig ? { __rainbowTrendLadderConfig: rainbowTrendLadderConfig } : {}),
-        ...(kamaRainbowMartinConfig ? { [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: kamaRainbowMartinConfig } : {}),
         ...(input.v70Config ? { __v70Config: input.v70Config } : {}),
         ...(v25Config ? { __v25Config: v25Config } : {}),
       };
+      const kamaRainbowMartinBinding = kamaRainbowMartinConfig
+        ? bindKamaRainbowMartinStrategyConfig(initialMartinState, kamaRainbowMartinConfig)
+        : undefined;
+      const krmColumns = kamaRainbowMartinBinding?.columns;
       const v41Columns = v41Config ? deriveV41StrategyColumns(v41Config) : undefined;
       const martinState = v41Config
-        ? attachV41StrategyConfig(initialMartinState, v41Config, "策略建立配置")
-        : initialMartinState;
+        ? attachV41StrategyConfig(kamaRainbowMartinBinding?.martinState ?? initialMartinState, v41Config, "策略建立配置")
+        : kamaRainbowMartinBinding?.martinState ?? initialMartinState;
       const insertResult: any = await db.createStrategy({
         userId: ctx.user.id,
         name: input.name,
@@ -816,24 +870,18 @@ const strategiesRouter = router({
         strategyVersion: capabilityManifest?.strategyVersion ?? 1,
         webhookSecret,
         maxPositionPct: String(input.maxPositionPct),
-        stopLossPct: v41Columns?.stopLossPct ?? String(kamaRainbowMartinConfig?.hardStopLossPct ?? v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
-        takeProfitPct: v41Columns?.takeProfitPct ?? String(kamaRainbowMartinConfig ? 0 : v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
+        stopLossPct: v41Columns?.stopLossPct ?? krmColumns?.stopLossPct ?? String(v25Config?.Hard_Stop_Loss_Pct ?? input.stopLossPct),
+        takeProfitPct: v41Columns?.takeProfitPct ?? krmColumns?.takeProfitPct ?? String(v25Config?.Take_Profit_Pct ?? rainbow20415Config?.Take_Profit_Pct ?? rainbowTrendLadderConfig?.Trailing_Activation_Pct ?? input.takeProfitPct),
         maxDailyLoss: String(input.maxDailyLoss),
-        martinMultiplier: v41Columns?.martinMultiplier ?? String(kamaRainbowMartinConfig
-          ? getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier)
-          : firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
+        martinMultiplier: v41Columns?.martinMultiplier ?? krmColumns?.martinMultiplier ?? String(firstV25Range?.multiplier ?? firstRainbowRange?.multiplier ?? firstRainbowTrendAddLayer?.lotMultiplier ?? input.martinMultiplier),
         maxMartinLevel: v41Columns?.maxMartinLevel ?? (v25Config
           ? Math.max(1, deriveV25MaxMartinLayer(v25Config.Martin_Ranges))
           : rainbow20415Config
             ? Math.max(1, deriveRainbow20415FinalEnabledLayer(rainbow20415Config.Martin_Ranges))
             : rainbowTrendLadderConfig
               ? rainbowTrendLadderConfig.Max_Layers
-              : kamaRainbowMartinConfig
-                ? kamaRainbowMartinConfig.maxLayers
-                : input.maxMartinLevel),
-        martinSpacingPct: v41Columns?.martinSpacingPct ?? String(kamaRainbowMartinConfig
-          ? getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct)
-          : firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
+              : krmColumns?.maxMartinLevel ?? input.maxMartinLevel),
+        martinSpacingPct: v41Columns?.martinSpacingPct ?? krmColumns?.martinSpacingPct ?? String(firstV25Range?.gap ?? rainbow20415Config?.Global_Spacing_Pct ?? firstRainbowTrendAddLayer?.triggerSpacingPct ?? input.martinSpacingPct),
         martinState,
         strategyKey: input.strategyKey || null,
         ...(v25Config ? {
@@ -856,9 +904,9 @@ const strategiesRouter = router({
           kLinePeriod: rainbowTrendLadderConfig.Entry_Timeframe_Minutes,
           reentryEnabled: rainbowTrendLadderConfig.Reentry_Wait_Next_M30_Close,
         } : {}),
-        ...(kamaRainbowMartinConfig ? {
-          kLinePeriod: getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe),
-          reentryEnabled: kamaRainbowMartinConfig.reentryEnabled,
+        ...(krmColumns ? {
+          kLinePeriod: krmColumns.kLinePeriod,
+          reentryEnabled: krmColumns.reentryEnabled,
         } : {}),
       });
       // T3：回傳新建策略的 Webhook URL，供前端顯示成功引導彈窗
@@ -969,32 +1017,18 @@ const strategiesRouter = router({
           ? existing.martinState as Record<string, unknown>
           : {};
         const rawConfig = input.kamaRainbowMartinConfig
-          ?? getBoundStrategyConfig(currentState, KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
-        let kamaRainbowMartinConfig: ReturnType<typeof assertValidKamaRainbowMartinConfig>;
+          ?? resolveBoundKamaRainbowMartinConfig(currentState, existing.reentryEnabled === true);
+        let binding: ReturnType<typeof bindKamaRainbowMartinStrategyConfig>;
         try {
-          kamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(rawConfig);
+          binding = bindKamaRainbowMartinStrategyConfig(currentState, rawConfig);
         } catch (error) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: `Kama彩虹馬丁參數設定錯誤：${error instanceof Error ? error.message : String(error)}`,
           });
         }
-        data.martinState = {
-          ...currentState,
-          ...pickStrategyConfigState(currentState),
-          [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: kamaRainbowMartinConfig,
-        };
-        data.stopLossPct = String(kamaRainbowMartinConfig.hardStopLossPct);
-        data.takeProfitPct = "0";
-        data.martinMultiplier = String(
-          getLayerMultiplier(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.multiplier),
-        );
-        data.maxMartinLevel = kamaRainbowMartinConfig.maxLayers;
-        data.martinSpacingPct = String(
-          getLayerGapPct(1, kamaRainbowMartinConfig.layerConfigs, kamaRainbowMartinConfig.gapPct),
-        );
-        data.kLinePeriod = getKamaRainbowMartinTimeframeMinutes(kamaRainbowMartinConfig.timeframe);
-        data.reentryEnabled = kamaRainbowMartinConfig.reentryEnabled;
+        data.martinState = binding.martinState;
+        Object.assign(data, binding.columns);
       }
       if (v41Config) {
         const currentState = existing.martinState && typeof existing.martinState === "object"

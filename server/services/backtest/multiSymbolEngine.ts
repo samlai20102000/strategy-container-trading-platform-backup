@@ -87,18 +87,23 @@ export function generateSummaryReport(results: MultiSymbolResultItem[]): string 
   const lines: string[] = [
     "# 多品種回測摘要",
     "",
-    "| 排名 | 交易對 | 總回報 | 勝率 | 最大回撤 | 夏普 | 利潤因子 | 交易數 |",
-    "|---|---|---|---|---|---|---|---|",
+    "| 排名 | 交易對 | 總回報 | 勝率 | 最大回撤 | 夏普 | 利潤因子 | 交易數 | 指標口徑 |",
+    "|---|---|---|---|---|---|---|---|---|",
   ];
   let rank = 1;
   for (const r of results) {
     if (r.success && r.metrics) {
       const m = r.metrics;
+      const profitFactor = m.profitFactorState === "no_losses"
+        ? "∞"
+        : m.profitFactorState === "no_closed_trades"
+          ? "—"
+          : String(m.profitFactor);
       lines.push(
-        `| ${rank++} | ${r.symbol} | ${m.totalReturn}% | ${m.winRate}% | ${m.maxDrawdown}% | ${m.sharpeRatio} | ${m.profitFactor} | ${m.totalTrades} |`,
+        `| ${rank++} | ${r.symbol} | ${m.totalReturn}% | ${m.winRate}% | ${Math.abs(m.maxDrawdown)}% | ${m.sharpeRatio} | ${profitFactor} | ${m.totalTrades} | ${m.metricSpec?.version ?? "legacy-unversioned"} |`,
       );
     } else {
-      lines.push(`| - | ${r.symbol} | 失敗：${r.error ?? "未知錯誤"} | - | - | - | - | - |`);
+      lines.push(`| - | ${r.symbol} | 失敗：${r.error ?? "未知錯誤"} | - | - | - | - | - | - |`);
     }
   }
   return lines.join("\n");

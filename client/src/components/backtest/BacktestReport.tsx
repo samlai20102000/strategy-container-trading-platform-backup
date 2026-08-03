@@ -42,6 +42,10 @@ import {
   validateKamaRainbowMartinConfig,
 } from "@shared/strategies/kamaRainbowMartin";
 import type { ExecutionMode, ExecutionPolicy } from "@shared/executionModes";
+import type {
+  BacktestPerformanceMetricSpec,
+  BacktestProfitFactorState,
+} from "@shared/backtest/performanceMetricSpec";
 
 const S1_EXECUTION_MODE_META = {
   code: "S1",
@@ -81,6 +85,9 @@ export interface ReportMetrics {
   totalTrades: number;
   winningTrades: number;
   losingTrades: number;
+  breakEvenTrades?: number;
+  invalidTradeCount?: number;
+  invalidEquityPointCount?: number;
   avgWin: number;
   avgLoss: number;
   maxWin: number;
@@ -88,6 +95,9 @@ export interface ReportMetrics {
   martinTriggerCount: number;
   maxMartinLayer: number;
   totalDays: number;
+  annualizationPeriodsPerYear?: number;
+  profitFactorState?: BacktestProfitFactorState;
+  metricSpec?: BacktestPerformanceMetricSpec;
 }
 
 export interface ReportOpenPosition {
@@ -155,6 +165,42 @@ export interface ReportEnvironment {
   initialCapital: number;
 }
 
+export interface ReportReentryEvidenceEvent {
+  eventId: string;
+  eventType: "ENTRY" | "CLOSE";
+  timestamp: number;
+  cycleId: string;
+  cycleNumber: number;
+  side: "long" | "short";
+  sameDirectionSequence: number;
+  isReentry: boolean;
+  sameDirectionAsPrevious: boolean | null;
+  trigger?: "INITIAL_ENTRY" | "SAME_BAR_REENTRY" | "LATER_BAR_REENTRY";
+  price: number;
+  reasonCode: string;
+  reason: string;
+  closeReason?: string;
+}
+
+export interface ReportReentryDiagnostics {
+  version: "backtest-reentry-diagnostics-v1";
+  strategyKey: string;
+  enabled: boolean;
+  cycleCount: number;
+  reentryCount: number;
+  sameDirectionReentryCount: number;
+  oppositeDirectionReentryCount: number;
+  currentCycleId: string | null;
+  currentSide: "long" | "short" | null;
+  currentSameDirectionSequence: number | null;
+  lastEntrySide: "long" | "short" | null;
+  lastSameDirectionSequence: number | null;
+  totalEvidenceEventCount: number;
+  evidenceEventLimit: number;
+  evidenceTruncated: boolean;
+  events: ReportReentryEvidenceEvent[];
+}
+
 interface Props {
   runId: string;
   strategyName?: string;
@@ -171,6 +217,7 @@ interface Props {
   dataQuality?: ReportDataQuality | null;
   engineSemantics?: ReportEngineSemantics | null;
   environment?: ReportEnvironment | null;
+  reentryDiagnostics?: ReportReentryDiagnostics | null;
   backtestSettings?: { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string };
   onCopyParams?: (config: Record<string, unknown>) => void;
   onSaveSnapshot?: () => void;
@@ -200,6 +247,7 @@ export default function BacktestReport({
   dataQuality,
   engineSemantics,
   environment,
+  reentryDiagnostics,
   backtestSettings,
   onCopyParams,
   onSaveSnapshot,
@@ -208,8 +256,15 @@ export default function BacktestReport({
   const [showParams, setShowParams] = useState(false);
   const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss">("all");
   const [martinFilter, setMartinFilter] = useState<"all" | "martin" | "no-martin">("all");
-  const hasAuditMetadata = Boolean(accounting || dataQuality || engineSemantics || environment);
+  const hasAuditMetadata = Boolean(
+    accounting || dataQuality || engineSemantics || environment || reentryDiagnostics || metrics.metricSpec,
+  );
   const isForceClose = endPositionPolicy === "force_close";
+  const profitFactorDisplay = metrics.profitFactorState === "no_losses"
+    ? "∞"
+    : metrics.profitFactorState === "no_closed_trades"
+      ? "—"
+      : metrics.profitFactor;
   const isKamaRainbowMartin = strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY;
   const kamaRainbowMartinDisplay = useMemo(() => {
     if (!isKamaRainbowMartin) return null;
@@ -467,6 +522,7 @@ export default function BacktestReport({
             <div className="text-2xl font-bold text-blue-500">{metrics.winRate}%</div>
             <p className="text-xs text-muted-foreground mt-1">
               {metrics.winningTrades} 勝 / {metrics.losingTrades} 負
+              {(metrics.breakEvenTrades ?? 0) > 0 ? ` / ${metrics.breakEvenTrades} 和` : ""}
             </p>
           </CardContent>
         </Card>
@@ -475,8 +531,8 @@ export default function BacktestReport({
             <CardTitle className="text-xs text-muted-foreground font-normal">最大回撤</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-500">-{metrics.maxDrawdown}%</div>
-            <p className="text-xs text-muted-foreground mt-1">-{metrics.maxDrawdownUSDT} USDT</p>
+            <div className="text-2xl font-bold text-red-500">{Math.abs(metrics.maxDrawdown)}%</div>
+            <p className="text-xs text-muted-foreground mt-1">{Math.abs(metrics.maxDrawdownUSDT)} USDT</p>
           </CardContent>
         </Card>
         <Card>
@@ -500,12 +556,36 @@ export default function BacktestReport({
             <div
               className={`text-2xl font-bold ${metrics.profitFactor >= 1.5 ? "text-emerald-500" : "text-yellow-500"}`}
             >
-              {metrics.profitFactor}
+              {profitFactorDisplay}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">總盈利 / 總虧損</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {metrics.profitFactorState === "no_losses" ? "無虧損交易" : "淨盈利 / 淨虧損"}
+            </p>
           </CardContent>
         </Card>
       </div>
+
+      <Card className="border-sky-500/25 bg-sky-500/[0.035]">
+        <CardContent className="flex flex-col gap-3 py-4 text-xs lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-sky-100">績效數學口徑</span>
+              <Badge variant="outline" className="border-sky-400/50 font-mono text-[10px] text-sky-200">
+                {metrics.metricSpec?.version ?? "legacy-unversioned"}
+              </Badge>
+            </div>
+            <p className="text-muted-foreground">
+              總回報取終點權益；最大回撤以正值峰谷幅度表示；勝率分母包含有效已平倉和局交易。
+            </p>
+          </div>
+          <div className="grid gap-1 text-muted-foreground sm:grid-cols-2 lg:max-w-2xl">
+            <span>Sharpe：權益點簡單收益、按日曆時間年化、年化無風險利率 {metrics.metricSpec?.riskFreeRateAnnualPct ?? 2}%</span>
+            <span>Profit factor：已平倉淨盈利 ÷ 已平倉淨虧損；無虧損時顯示 ∞</span>
+            <span>成本：runner 權益已反映手續費與滑點；支援時納入 funding</span>
+            <span>未平倉：依本次終點政策採市價估值或全域終點強制平倉</span>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 詳細統計 8 格 */}
       <Card>
@@ -549,6 +629,100 @@ export default function BacktestReport({
           </div>
         </CardContent>
       </Card>
+
+      {isKamaRainbowMartin && (
+        <Card className="border-violet-500/30 bg-violet-500/[0.04]">
+          <CardHeader className="gap-3 border-b border-violet-500/20 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle className="text-sm">自動重新入市稽核</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Cycle 只計算由底倉建立至全平的生命週期；馬丁加倉不會被誤算為重新入市。
+              </p>
+            </div>
+            {reentryDiagnostics && (
+              <div className="flex flex-wrap gap-2">
+                <Badge className={reentryDiagnostics.enabled ? "bg-emerald-600 text-white" : "bg-slate-600 text-white"}>
+                  {reentryDiagnostics.enabled ? "自動重新入市：開啟" : "自動重新入市：關閉"}
+                </Badge>
+                <Badge variant="outline" className="border-violet-400/60 font-mono text-[10px] text-violet-200">
+                  {reentryDiagnostics.version}
+                </Badge>
+              </div>
+            )}
+          </CardHeader>
+          <CardContent className="space-y-4 pt-5">
+            {!reentryDiagnostics ? (
+              <div role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
+                此結果未包含可驗證的重新入市事件證據，可能由舊版 runner 產生；系統不會把缺失資料顯示為 0。
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  {[
+                    ["Cycle 次數", reentryDiagnostics.cycleCount],
+                    ["重新入市", reentryDiagnostics.reentryCount],
+                    ["同方向重入", reentryDiagnostics.sameDirectionReentryCount],
+                    ["反方向重入", reentryDiagnostics.oppositeDirectionReentryCount],
+                    ["目前方向", reentryDiagnostics.currentSide ? (reentryDiagnostics.currentSide === "long" ? "買升" : "買跌") : "目前無持倉"],
+                    ["同方向次序", reentryDiagnostics.currentSameDirectionSequence ?? reentryDiagnostics.lastSameDirectionSequence ?? "尚無紀錄"],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-md border border-violet-500/20 bg-background/55 px-3 py-3">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+                      <p className="mt-1 font-mono text-sm font-semibold">{value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-hidden rounded-md border border-border/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-background/40 px-3 py-2">
+                    <p className="text-xs font-semibold">最近重新入市事件證據</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      顯示 {Math.min(12, reentryDiagnostics.events.length)} / {reentryDiagnostics.totalEvidenceEventCount}
+                      {reentryDiagnostics.evidenceTruncated ? `（僅保留最近 ${reentryDiagnostics.evidenceEventLimit} 筆）` : ""}
+                    </p>
+                  </div>
+                  {reentryDiagnostics.events.length === 0 ? (
+                    <p className="px-3 py-5 text-center text-xs text-muted-foreground">本次回測尚未建立任何入市 cycle。</p>
+                  ) : (
+                    <div className="max-h-72 overflow-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-xs">時間</TableHead>
+                            <TableHead className="text-xs">事件</TableHead>
+                            <TableHead className="text-xs">Cycle</TableHead>
+                            <TableHead className="text-xs">方向／次序</TableHead>
+                            <TableHead className="text-xs">觸發</TableHead>
+                            <TableHead className="text-xs">理由</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {reentryDiagnostics.events.slice(-12).reverse().map(event => (
+                            <TableRow key={event.eventId}>
+                              <TableCell className="whitespace-nowrap text-xs">{fmtTime(event.timestamp)}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className={event.eventType === "ENTRY" ? "border-emerald-500/60 text-emerald-300" : "border-amber-500/60 text-amber-300"}>
+                                  {event.eventType === "ENTRY" ? (event.isReentry ? "重新入市" : "初次入市") : "全平"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">#{event.cycleNumber}</TableCell>
+                              <TableCell className="whitespace-nowrap text-xs">{event.side === "long" ? "買升" : "買跌"} · 第 {event.sameDirectionSequence} 次</TableCell>
+                              <TableCell className="whitespace-nowrap font-mono text-[10px]">{event.trigger ?? event.closeReason ?? "—"}</TableCell>
+                              <TableCell className="max-w-[260px] text-xs" title={`${event.reasonCode} · ${event.reason}`}>
+                                <span className="line-clamp-2">{event.reason}</span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {hasAuditMetadata && (
         <Card className="border-cyan-500/30 bg-slate-950/30">

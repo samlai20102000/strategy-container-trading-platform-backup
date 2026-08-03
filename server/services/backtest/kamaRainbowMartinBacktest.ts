@@ -35,6 +35,14 @@ import {
   buildOpenPositionSnapshot,
   roundBacktestMoney,
 } from "./backtestContracts";
+import {
+  createBacktestReentryTracker,
+  recordBacktestCycleClose,
+  recordBacktestCycleEntry,
+  snapshotBacktestReentryDiagnostics,
+  type BacktestReentryCycleDescriptor,
+  type BacktestReentryTracker,
+} from "./backtestReentryDiagnostics";
 
 export interface KamaRainbowMartinBacktestPositionLayer {
   price: number;
@@ -51,7 +59,9 @@ export interface KamaRainbowMartinBacktestSession {
     side: "long" | "short";
     entryTime: number;
     layers: KamaRainbowMartinBacktestPositionLayer[];
+    cycle: BacktestReentryCycleDescriptor;
   } | null;
+  reentryTracker: BacktestReentryTracker;
   closedCandles: KLineData[];
   trades: TradeRecord[];
   equityCurve: EquityPoint[];
@@ -195,6 +205,8 @@ export async function runKamaRainbowMartinBacktest(
     capital: request.initialCapital,
   });
   let positionMeta: KamaRainbowMartinBacktestSession["positionMeta"] = priorSession?.positionMeta ?? null;
+  const reentryTracker = priorSession?.reentryTracker
+    ?? createBacktestReentryTracker(request.strategyKey, config.reentryEnabled);
   const basePositionSize = normalizePositionSize(rawConfig);
   const allowedDirection = allowedDirectionFrom(rawConfig);
   const leverage = Math.max(1, num(rawConfig.Leverage ?? rawConfig.leverage, 1));
@@ -264,10 +276,18 @@ export async function runKamaRainbowMartinBacktest(
       positionSizeAtOpen: basePositionSize,
     });
     if (isInitial || !positionMeta) {
+      const cycle = recordBacktestCycleEntry(reentryTracker, {
+        timestamp,
+        side: isLong ? "long" : "short",
+        price: fillPrice,
+        reasonCode: decision.reasonCode,
+        reason: decision.reason,
+      });
       positionMeta = {
         side: isLong ? "long" : "short",
         entryTime: timestamp,
         layers: [{ price: fillPrice, size: quantity, time: timestamp, layer }],
+        cycle,
       };
     } else {
       positionMeta.layers.push({ price: fillPrice, size: quantity, time: timestamp, layer });
@@ -293,9 +313,22 @@ export async function runKamaRainbowMartinBacktest(
     const pnlPct = state.avgPrice > 0
       ? (grossPnl / (state.avgPrice * state.totalSize)) * 100
       : 0;
+    const closeReason = "closeReason" in decision && decision.closeReason
+      ? decision.closeReason
+      : "OTHER";
+    recordBacktestCycleClose(reentryTracker, {
+      cycle: meta.cycle,
+      timestamp,
+      price: effectiveExitPrice,
+      reasonCode: decision.reasonCode,
+      reason: forcedReason ?? decision.reason,
+      closeReason,
+    });
     equity = roundBacktestMoney(equity + pnl);
     trades.push({
       id: ++tradeId,
+      cycleId: meta.cycle.cycleId,
+      entryReason: meta.cycle.entryReason,
       entryTime: meta.entryTime,
       exitTime: timestamp,
       side: meta.side,
@@ -309,7 +342,7 @@ export async function runKamaRainbowMartinBacktest(
     });
     state = applyKamaRainbowMartinCloseToState(
       decision.nextState,
-      "closeReason" in decision && decision.closeReason ? decision.closeReason : "OTHER",
+      closeReason,
       timestamp,
     );
     positionMeta = null;
@@ -464,13 +497,15 @@ export async function runKamaRainbowMartinBacktest(
   const firstCandle = priorSession?.firstCandle ?? candles[0] ?? null;
   const lastCandle = candles[candles.length - 1] ?? priorSession?.lastCandle ?? null;
   const summaryPrefix = isFinalSegment ? "Kama 彩虹馬丁回測完成" : "Kama 彩虹馬丁資料分片完成（狀態保留）";
-  const summary = `${summaryPrefix}：${strategyName} / ${request.symbol} ${expectedTimeframe}，共 ${totalCandleCount} 根已收盤 K 線、${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
+  const reentryDiagnostics = snapshotBacktestReentryDiagnostics(reentryTracker);
+  const summary = `${summaryPrefix}：${strategyName} / ${request.symbol} ${expectedTimeframe}，共 ${totalCandleCount} 根已收盤 K 線、${trades.length} 筆交易、${reentryDiagnostics.cycleCount} 個 cycle、${reentryDiagnostics.reentryCount} 次重新入市（${reentryDiagnostics.enabled ? "啟用" : "停用"}），總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
   const session: KamaRainbowMartinBacktestSession = {
     equity,
     tradeId,
     state,
     positionMeta,
+    reentryTracker,
     closedCandles,
     trades,
     equityCurve,
@@ -527,6 +562,7 @@ export async function runKamaRainbowMartinBacktest(
     environment,
     endPositionPolicy: config.backtestEndPositionPolicy,
     accounting,
+    reentryDiagnostics,
     session,
   };
 }

@@ -7,6 +7,10 @@ import {
 } from "../../../shared/strategies/kamaRainbowMartin";
 import { createInitialStrategyState, type KLineData, type StrategyState } from "../base";
 import { calculateKamaSeries, latestReadyKamaPair } from "./kama";
+import type {
+  KamaRainbowMartinEntryEvent,
+  KamaRainbowMartinEntryKind,
+} from "../../../shared/observability/kamaRainbowMartinReentry";
 
 export type KamaRainbowMartinAllowedDirection = "long" | "short" | "both";
 export type KamaRainbowMartinEntryAction = "OPEN_LONG" | "OPEN_SHORT" | "HOLD" | "MANAGE_POSITION";
@@ -90,6 +94,14 @@ export interface KamaRainbowMartinRuntimeMeta {
   lastCloseReason: string | null;
   /** A full close occurred and the current closed bar may be evaluated once for immediate re-entry. */
   reentryPending: boolean;
+  /** One-based completed/opened cycle sequence, advanced only after a confirmed L1 fill. */
+  cycleNumber: number;
+  /** Consecutive confirmed cycle entries in the same direction. */
+  sameDirectionEntrySequence: number;
+  lastEntrySide: "long" | "short" | null;
+  currentEntryKind: KamaRainbowMartinEntryKind | null;
+  /** Last confirmed cycle-entry fill. Candidate signals never update this evidence. */
+  lastEntryEvent: KamaRainbowMartinEntryEvent | null;
   lastProcessedBarKey: string;
   lastProcessedBarTimestamp: number;
   lastDecisionCode: KamaRainbowMartinReasonCode;
@@ -314,6 +326,10 @@ export function createKamaRainbowMartinRuntimeMeta(
     lastActionSignature: "",
     lastCloseReason: null,
     reentryPending: false,
+    cycleNumber: 0,
+    sameDirectionEntrySequence: 0,
+    lastEntrySide: null,
+    currentEntryKind: null,
     lastProcessedBarKey: "",
     lastProcessedBarTimestamp: 0,
     lastDecisionCode: "KRM_DATA_NOT_READY",
@@ -330,6 +346,7 @@ export function createKamaRainbowMartinRuntimeMeta(
       : null,
     initialPositionSize: seed?.initialPositionSize ? { ...seed.initialPositionSize } : null,
     fills: (seed?.fills ?? []).map(fill => ({ ...fill })),
+    lastEntryEvent: seed?.lastEntryEvent ? { ...seed.lastEntryEvent } : null,
     currentLineValues: { ...(seed?.currentLineValues ?? {}) },
     previousLineValues: { ...(seed?.previousLineValues ?? {}) },
     lineSlopes: { ...(seed?.lineSlopes ?? {}) },

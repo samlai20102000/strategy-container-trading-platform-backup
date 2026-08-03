@@ -112,6 +112,7 @@ import {
   type BacktestEngineSemantics,
   type BacktestLegAccounting,
   type BacktestModeResults,
+  type BacktestReentryDiagnostics,
   type BacktestRunnerIdentity,
   type BacktestVersionedExecutionContext,
 } from "./backtestContracts";
@@ -180,6 +181,8 @@ export interface BacktestResult {
   execution?: BacktestVersionedExecutionContext;
   modeResults?: BacktestModeResults;
   legAccounting?: BacktestLegAccounting;
+  /** cycle 與重新入市事件證據；只有支援並實際產生此證據的 runner 才回傳。 */
+  reentryDiagnostics?: BacktestReentryDiagnostics;
 }
 
 interface PositionLayer {

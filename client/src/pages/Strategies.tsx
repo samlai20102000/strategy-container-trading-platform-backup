@@ -198,6 +198,92 @@ function StrategyApiAccountIdentity({
   );
 }
 
+function KamaRainbowMartinReentryEvidence({
+  summary,
+}: {
+  summary: {
+    enabled: boolean;
+    state: "disabled" | "killed" | "position_open" | "awaiting_reentry" | "awaiting_initial_entry";
+    cycleNumber: number;
+    sameDirectionEntrySequence: number;
+    lastEntrySide: "long" | "short" | null;
+    lastCloseReason: string | null;
+    lastEntryEvent: {
+      kind: "initial" | "same_direction_reentry" | "reverse_direction_reentry";
+      cycleNumber: number;
+      sameDirectionEntrySequence: number;
+      side: "long" | "short";
+      previousCloseReason: string | null;
+      occurredAt: number;
+    } | null;
+    source: "s1_runtime" | "position_ledger" | "no_execution_evidence";
+  } | null;
+}) {
+  const stateLabels = {
+    disabled: "功能關閉",
+    killed: "KILL 鎖定",
+    position_open: "持倉 cycle 進行中",
+    awaiting_reentry: "等待下一次重入",
+    awaiting_initial_entry: "等待首次入市",
+  } as const;
+  const sourceLabels = {
+    s1_runtime: "S1 成交狀態",
+    position_ledger: "M2/H3 成交 Ledger",
+    no_execution_evidence: "尚無成交證據",
+  } as const;
+  const event = summary?.lastEntryEvent ?? null;
+  const eventLabel = !event
+    ? "尚無已成交入市事件"
+    : event.kind === "initial"
+      ? `首次入市 · ${event.side === "long" ? "多" : "空"}`
+      : event.kind === "same_direction_reentry"
+        ? `同方向重入 · ${event.side === "long" ? "多" : "空"} #${event.sameDirectionEntrySequence}`
+        : `反方向重入 · ${event.side === "long" ? "多" : "空"}`;
+
+  return (
+    <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/[0.04] px-3 py-2.5" data-testid="krm-reentry-evidence">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold text-cyan-200">自動重新入市成交證據</p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">只顯示已成交 runtime／ledger 真相，不以候選訊號推算。</p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <Badge variant="outline" className="border-cyan-500/30 text-[10px] text-cyan-200">
+            {summary ? stateLabels[summary.state] : "載入中"}
+          </Badge>
+          {summary && (
+            <Badge variant="outline" className="border-zinc-500/30 text-[10px] text-zinc-300">
+              {sourceLabels[summary.source]}
+            </Badge>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
+        <div className="rounded-md bg-background/55 px-2 py-1.5">
+          <p className="text-[10px] text-muted-foreground">目前 cycle</p>
+          <p className="font-mono font-semibold">{summary && summary.cycleNumber > 0 ? `#${summary.cycleNumber}` : "—"}</p>
+        </div>
+        <div className="rounded-md bg-background/55 px-2 py-1.5">
+          <p className="text-[10px] text-muted-foreground">同方向序號</p>
+          <p className="font-mono font-semibold">
+            {summary && summary.sameDirectionEntrySequence > 0 ? `#${summary.sameDirectionEntrySequence}` : "—"}
+          </p>
+        </div>
+        <div className="rounded-md bg-background/55 px-2 py-1.5">
+          <p className="text-[10px] text-muted-foreground">最近入市事件</p>
+          <p className="font-medium">{eventLabel}</p>
+        </div>
+      </div>
+      {event && (
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          Cycle #{event.cycleNumber} · {new Date(event.occurredAt).toLocaleString("zh-TW", { hour12: false })}
+          {event.previousCloseReason ? ` · 前輪平倉：${event.previousCloseReason}` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 type StrategyForm = {
   id?: number;
   name: string;
@@ -1355,13 +1441,17 @@ function StrategiesContent() {
                         <Badge variant="outline" className="text-[10px]">
                           {s.symbol}
                         </Badge>
-                        {s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+                        {s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && s.reentryEnabled !== undefined && (
                           <Badge
                             variant="outline"
-                            className={s.reentryEnabled === true
-                              ? "border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300"
-                              : "border-zinc-500/30 bg-zinc-500/10 text-[10px] text-zinc-400"}
-                            title="此狀態來自策略已保存的自動重新入市設定"
+                            className={s.reentryEnabled
+                              ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                              : "bg-zinc-500/15 text-zinc-400 border-zinc-500/30"
+                            }
+                            title={s.reentryEnabled
+                              ? "此策略已啟用自動重新入市功能，平倉後將根據條件自動重新開倉。"
+                              : "此策略未啟用自動重新入市功能。"
+                            }
                           >
                             自動重入：{s.reentryEnabled === true ? "開啟" : "關閉"}
                           </Badge>
@@ -1395,13 +1485,16 @@ function StrategiesContent() {
 	                      strategy={{ apiKeyId: s.apiKeyId, exchange: s.exchange }}
 	                      apiKeys={apiKeys}
 	                    />
-	                    {!s.enabled && s.disabledReason && (
-                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-400">
-                        停用原因：{s.disabledReason}
-                      </div>
-                    )}
+		                    {!s.enabled && s.disabledReason && (
+	                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-400">
+	                        停用原因：{s.disabledReason}
+	                      </div>
+	                    )}
+	                    {s.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+	                      <KamaRainbowMartinReentryEvidence summary={s.kamaRainbowMartinReentryObservation} />
+	                    )}
 
-                    <div className="grid grid-cols-4 gap-2 text-sm">
+	                    <div className="grid grid-cols-4 gap-2 text-sm">
                       <div>
                         <p className="text-xs text-muted-foreground">最終部署倉位</p>
                         <p className="font-mono-nums">

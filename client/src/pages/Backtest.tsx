@@ -1817,6 +1817,7 @@ export default function Backtest() {
             dataQuality={(result as any).dataQuality ?? null}
             engineSemantics={(result as any).engineSemantics ?? null}
             environment={(result as any).environment ?? null}
+            reentryDiagnostics={(result as any).reentryDiagnostics ?? null}
             backtestSettings={{
               exchange,
               symbol: symbol.trim(),
@@ -1898,6 +1899,7 @@ export default function Backtest() {
                       dataQuality={(loadedRun.run as any).dataQuality ?? null}
                       engineSemantics={(loadedRun.run as any).engineSemantics ?? null}
                       environment={(loadedRun as any).environment ?? null}
+                      reentryDiagnostics={(loadedRun.run as any).reentryDiagnostics ?? (loadedRun as any).reentryDiagnostics ?? null}
                     />
                   )}
                   {loadedRun && !loadedRun.metrics && (
