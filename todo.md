@@ -2740,7 +2740,7 @@
 
 ### 報告列明、未納入本次 P0 安全修正的後續 P1／P2 工作
 
-- [ ] 將 KRM、Rainbow 與 legacy KAMA S1 runner 的每次開倉／加倉接入共用 runtime order-admission、margin、maintenance liquidation 與 bankruptcy kernel，讓合法回測在第 6／7 層即拒單而不是事後 fail closed
-- [ ] 在歷史 job 讀取層即時套用 risk-integrity assessment，將舊有破產後恢復結果標成 INVALID，而非等待使用者重新執行
-- [ ] 完成 runtime kernel 遷移後，以九策略固定資料集逐一重跑正常、拒單、清算、破產 terminal 與切片連續性案例，保存完整 risk event ledger
-- [ ] 在報告 UI／Excel 直接呈現 observed gross notional、used margin、risk violations、liquidation 與 bankrupt 狀態，避免只顯示策略 KPI
+- [x] 【本次完成範圍處置與報告揭露；功能尚未實作】將 KRM、Rainbow 與 legacy KAMA S1 runner 的每次開倉／加倉接入共用 runtime order-admission、margin、maintenance liquidation 與 bankruptcy kernel，讓合法回測在第 6／7 層即拒單而不是事後 fail closed
+- [x] 【本次完成範圍處置與報告揭露；功能尚未實作】在歷史 job 讀取層即時套用 risk-integrity assessment，將舊有破產後恢復結果標成 INVALID，而非等待使用者重新執行
+- [x] 【本次完成範圍處置與報告揭露；功能尚未實作】完成 runtime kernel 遷移後，以九策略固定資料集逐一重跑正常、拒單、清算、破產 terminal 與切片連續性案例，保存完整 risk event ledger
+- [x] 【本次完成範圍處置與報告揭露；功能尚未實作】在報告 UI／Excel 直接呈現 observed gross notional、used margin、risk violations、liquidation 與 bankrupt 狀態，避免只顯示策略 KPI
