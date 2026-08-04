@@ -2000,6 +2000,10 @@ export default function Backtest() {
             engineSemantics={(result as any).engineSemantics ?? null}
             environment={(result as any).environment ?? null}
             reentryDiagnostics={(result as any).reentryDiagnostics ?? null}
+            validity={(result as any).validity ?? (result as any).riskIntegrity ?? null}
+            riskEvents={(result as any).riskEvents ?? []}
+            legAccounting={(result as any).legAccounting ?? null}
+            modeResults={(result as any).modeResults ?? null}
             backtestSettings={{
               exchange,
               symbol: symbol.trim(),
@@ -2082,6 +2086,10 @@ export default function Backtest() {
                       engineSemantics={(loadedRun.run as any).engineSemantics ?? null}
                       environment={(loadedRun as any).environment ?? null}
                       reentryDiagnostics={(loadedRun.run as any).reentryDiagnostics ?? (loadedRun as any).reentryDiagnostics ?? null}
+                      validity={(loadedRun as any).validity ?? null}
+                      riskEvents={(loadedRun as any).riskEvents ?? (loadedRun.run as any).riskEvents ?? []}
+                      legAccounting={(loadedRun as any).legAccounting ?? (loadedRun.run as any).legAccounting ?? null}
+                      modeResults={(loadedRun as any).modeResults ?? (loadedRun.run as any).modeResults ?? null}
                     />
                   )}
                   {loadedRun && !loadedRun.metrics && (

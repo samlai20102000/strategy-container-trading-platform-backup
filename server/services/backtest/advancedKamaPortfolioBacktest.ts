@@ -5,6 +5,7 @@ import { calculateKAMASeries } from "./kama";
 import { calculatePerformance, type EquityPoint, type TradeRecord } from "./performanceCalculator";
 import type { OHLCVRow } from "./backtestDatabase";
 import {
+  createBacktestRunId,
   createContinuousEngineSemantics,
   roundBacktestMoney,
   type BacktestEndPositionPolicy,
@@ -168,12 +169,24 @@ export async function runAdvancedKamaPortfolioBacktest(
 
   const deploymentId = deterministicDeploymentId(request);
   const leverage = Math.max(1, numberValue(config.Leverage ?? config.leverage, 1));
+  const configuredMaintenanceRate = numberValue(
+    config.maintenanceMarginRate ?? config.Maintenance_Margin_Rate ?? config.MaintenanceMarginRate,
+    Number.NaN,
+  );
+  const configuredMaintenancePct = numberValue(
+    config.maintenanceMarginPct ?? config.Maintenance_Margin_Pct ?? config.MaintenanceMarginPct,
+    0.5,
+  );
+  const maintenanceMarginRate = Number.isFinite(configuredMaintenanceRate)
+    ? configuredMaintenanceRate
+    : configuredMaintenancePct / 100;
   const capabilities = request.strategyModeCapabilities;
   const kernel = new ThreeModePortfolioKernel({
     deploymentId,
     executionPolicy,
     initialCapital: request.initialCapital,
     leverage,
+    maintenanceMarginRate,
     commissionRate: commission,
     slippageRate: slippage,
     capabilities: {
@@ -291,6 +304,7 @@ export async function runAdvancedKamaPortfolioBacktest(
     const timestamp = candle.timestamp;
     const candidates: BacktestPortfolioCandidate[] = [];
     const legs = kernel.snapshotOpenLegs(price);
+    const account = kernel.snapshotAccount(price, timestamp);
     let hasForcedExit = false;
 
     for (const leg of legs) {
@@ -334,6 +348,7 @@ export async function runAdvancedKamaPortfolioBacktest(
       executionPolicy,
       initialCapital: request.initialCapital,
       baseLotUsdt,
+      account,
       openLegs: legs,
       indicators: {
         kamaFast: kamaFast[index],
@@ -368,6 +383,7 @@ export async function runAdvancedKamaPortfolioBacktest(
     }, candidates);
 
     const afterLegs = kernel.snapshotOpenLegs(price);
+    const committedAccount = kernel.snapshotAccount(price, timestamp);
     await runtimeAdapter.onBarCommitted?.({
       index,
       timestamp,
@@ -379,6 +395,7 @@ export async function runAdvancedKamaPortfolioBacktest(
       executionPolicy,
       initialCapital: request.initialCapital,
       baseLotUsdt,
+      account: committedAccount,
       openLegs: afterLegs,
       beforeLegs,
       afterLegs,
@@ -422,7 +439,7 @@ export async function runAdvancedKamaPortfolioBacktest(
     price: point.price,
   }));
   const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
-  const runId = `bt-3m-${deploymentId}-${last.timestamp}`;
+  const runId = createBacktestRunId(request.strategyKey, request.symbol);
   const environment = buildEnvironmentSnapshot(
     request.symbol,
     request.timeframe,
@@ -448,11 +465,15 @@ export async function runAdvancedKamaPortfolioBacktest(
     config,
     summary,
     candleCount: candles.length,
-    environment,
+    environment: {
+      ...environment,
+      ...runtimeAdapter.getDiagnostics?.(),
+    },
     endPositionPolicy,
     accounting: portfolio.accounting,
     engineSemantics: createContinuousEngineSemantics(),
     legAccounting: portfolio.legAccounting,
     modeResults: portfolio.modeResults,
+    riskEvents: portfolio.events,
   };
 }

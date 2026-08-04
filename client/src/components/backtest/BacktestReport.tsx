@@ -1,6 +1,6 @@
 /**
  * 回測績效報告（pasted_content_4.txt 任務 9 + 12 + 14）
- * 5 項核心指標卡 + 詳細統計 + 權益曲線 + 交易明細（可篩選）+ CSV 導出 + 一鍵複製參數
+ * 5 項核心指標卡 + 詳細統計 + 權益曲線 + 交易明細（可篩選）+ 五工作表 Excel + 風險帳本
  */
 
 import { useMemo, useState } from "react";
@@ -125,6 +125,10 @@ export interface ReportAccounting {
   openPosition: ReportOpenPosition | null;
   openPositionCount: number;
   syntheticForceCloseCount: number;
+  grossExposure?: number;
+  netExposure?: number;
+  marginLiquidationCount?: number;
+  bankrupt?: boolean;
 }
 
 export interface ReportDataQuality {
@@ -201,13 +205,79 @@ export interface ReportReentryDiagnostics {
   events: ReportReentryEvidenceEvent[];
 }
 
+export interface ReportRiskIntegrityViolation {
+  code: string;
+  message: string;
+  timestamp?: number;
+  actual?: number;
+  limit?: number;
+}
+
+export interface ReportRiskIntegrityAssessment {
+  version: string;
+  passed: boolean;
+  enforcement: "RUNTIME_KERNEL" | "POSTHOC_ONLY";
+  validEquityPointCount: number;
+  invalidEquityPointCount: number;
+  globalPositiveEquityPeak: number;
+  minimumEquity: number;
+  minimumEquityTimestamp: number | null;
+  firstNonPositiveEquityTimestamp: number | null;
+  recoveredAfterInsolvency: boolean;
+  bankruptcyDeclared: boolean;
+  marginLiquidationCount: number;
+  observedEntryNotionalPeak: number;
+  grossNotionalLimitAtGlobalPeak: number;
+  observedEntryMarginPeak: number;
+  marginLimitAtGlobalPeak: number;
+  violations: ReportRiskIntegrityViolation[];
+}
+
+export interface ReportRiskEvent {
+  eventId: string;
+  timestamp: number;
+  sequence: number;
+  eventKind: string;
+  candidateId: string;
+  decisionId: string;
+  decisionOutcome: string;
+  reasonCode: string;
+  legId?: string;
+  contextSnapshot: Record<string, unknown>;
+}
+
+export interface ReportLegAccounting {
+  grossExposurePeak: number;
+  netExposureAbsPeak: number;
+  marginUsagePeak: number;
+  marginHeadroomLow: number;
+  turnover: number;
+  fees: number;
+  funding: number;
+  eventCount: number;
+  decisionCount: number;
+  rejectedDecisionCount: number;
+  marginLiquidationCount?: number;
+  bankrupt?: boolean;
+}
+
+export interface ReportModeResults {
+  grossExposurePeak: number;
+  netExposureAbsPeak: number;
+  marginHeadroomLow: number;
+  marginLiquidationCount?: number;
+  bankrupt?: boolean;
+  fairComparisonEligible?: boolean;
+  fairnessBlockers?: string[];
+}
+
 interface Props {
   runId: string;
   strategyName?: string;
   strategyKey?: string;
   metrics: ReportMetrics;
   trades: ReportTrade[];
-  equityCurve: Array<{ timestamp: number; equity: number; price: number }>;
+  equityCurve: Array<{ timestamp: number; equity: number; price: number; grossExposure?: number; netExposure?: number; marginUsage?: number }>;
   config: Record<string, unknown>;
   executionMode: ExecutionMode;
   executionPolicy: ExecutionPolicy;
@@ -218,6 +288,10 @@ interface Props {
   engineSemantics?: ReportEngineSemantics | null;
   environment?: ReportEnvironment | null;
   reentryDiagnostics?: ReportReentryDiagnostics | null;
+  validity?: ReportRiskIntegrityAssessment | null;
+  riskEvents?: ReportRiskEvent[] | null;
+  legAccounting?: ReportLegAccounting | null;
+  modeResults?: ReportModeResults | null;
   backtestSettings?: { exchange: string; symbol: string; timeframe: string; startDate: string; endDate: string; initialCapital: number; tradeAmount?: number; endPositionPolicy?: "mark_to_market" | "force_close"; configJson?: Record<string, unknown>; baseLotSize?: number; baseLotSizeMode?: string };
   onCopyParams?: (config: Record<string, unknown>) => void;
   onSaveSnapshot?: () => void;
@@ -248,6 +322,10 @@ export default function BacktestReport({
   engineSemantics,
   environment,
   reentryDiagnostics,
+  validity,
+  riskEvents = [],
+  legAccounting,
+  modeResults,
   backtestSettings,
   onCopyParams,
   onSaveSnapshot,
@@ -257,8 +335,33 @@ export default function BacktestReport({
   const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss">("all");
   const [martinFilter, setMartinFilter] = useState<"all" | "martin" | "no-martin">("all");
   const hasAuditMetadata = Boolean(
-    accounting || dataQuality || engineSemantics || environment || reentryDiagnostics || metrics.metricSpec,
+    accounting || dataQuality || engineSemantics || environment || reentryDiagnostics || validity || legAccounting || modeResults || metrics.metricSpec,
   );
+  const canReuseResult = validity?.passed === true;
+  const reuseBlockReason = validity
+    ? "此回測為 INVALID，禁止參數重用與策略比較"
+    : "此回測缺少可驗證的 risk-integrity 證據，已依 fail-closed 原則停用參數重用";
+  const grossExposurePeak = legAccounting?.grossExposurePeak
+    ?? modeResults?.grossExposurePeak
+    ?? validity?.observedEntryNotionalPeak
+    ?? accounting?.grossExposure
+    ?? 0;
+  const marginUsagePeak = legAccounting?.marginUsagePeak
+    ?? validity?.observedEntryMarginPeak
+    ?? 0;
+  const marginHeadroomLow = legAccounting?.marginHeadroomLow
+    ?? modeResults?.marginHeadroomLow
+    ?? 0;
+  const liquidationCount = legAccounting?.marginLiquidationCount
+    ?? modeResults?.marginLiquidationCount
+    ?? validity?.marginLiquidationCount
+    ?? accounting?.marginLiquidationCount
+    ?? 0;
+  const bankrupt = legAccounting?.bankrupt
+    ?? modeResults?.bankrupt
+    ?? validity?.bankruptcyDeclared
+    ?? accounting?.bankrupt
+    ?? false;
   const isForceClose = endPositionPolicy === "force_close";
   const profitFactorDisplay = metrics.profitFactorState === "no_losses"
     ? "∞"
@@ -282,37 +385,143 @@ export default function BacktestReport({
     });
   }, [trades, resultFilter, martinFilter]);
 
-  const exportCSV = () => {
-    const headers = ["時間", "部署模式", "腿角色", "Cycle ID", "Leg ID", "觸發來源", "開倉原因", "方向", "入場價", "出場價", "數量", "盈虧", "盈虧%", "平倉原因", "馬丁層數"];
-    const rows = trades.map((t) => [
-      fmtTime(t.exitTime),
-      tradeDeploymentMode(t),
-      t.role ?? "PRIMARY",
-      t.cycleId ?? "legacy-s1",
-      t.legId ?? `legacy-s1:${t.id}`,
-      t.triggerSource ?? "LEGACY",
-      t.entryReason ?? "LEGACY_ENTRY",
-      t.side === "long" ? "買升" : "買跌",
-      t.entryPrice,
-      t.exitPrice,
-      t.size,
-      t.pnl,
-      t.pnlPct,
-      t.exitReason,
-      t.martinLayer,
-    ]);
-    const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `backtest_${runId}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success("CSV 已導出");
+  const exportExcel = async () => {
+    try {
+      const ExcelJS = await import("exceljs");
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = "Lean-Safe Backtest Center";
+      workbook.created = new Date();
+      const addSheet = (name: string, rows: Array<Array<string | number | boolean | null | undefined>>) => {
+        const sheet = workbook.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
+        sheet.addRows(rows);
+        const header = sheet.getRow(1);
+        header.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0F766E" } };
+        sheet.columns.forEach((column) => {
+          let width = 12;
+          column.eachCell?.({ includeEmpty: true }, (cell) => {
+            width = Math.min(48, Math.max(width, String(cell.value ?? "").length + 2));
+          });
+          column.width = width;
+        });
+        sheet.autoFilter = { from: "A1", to: `${sheet.getColumn(Math.max(1, rows[0]?.length ?? 1)).letter}1` };
+        return sheet;
+      };
+
+      addSheet("摘要", [
+        ["欄位", "值"],
+        ["Run ID", runId],
+        ["策略", strategyName ?? strategyKey ?? "未知策略"],
+        ["策略 Key", strategyKey ?? ""],
+        ["Validity", validity ? (validity.passed ? "VALID" : "INVALID") : "UNVERIFIED"],
+        ["Risk enforcement", validity?.enforcement ?? "UNAVAILABLE"],
+        ["違規數", validity?.violations.length ?? "無證據"],
+        ["總回報 (%)", metrics.totalReturn],
+        ["總回報 (USDT)", metrics.totalReturnUSDT],
+        ["最大回撤 (%)", metrics.maxDrawdown],
+        ["最大回撤 (USDT)", metrics.maxDrawdownUSDT],
+        ["勝率 (%)", metrics.winRate],
+        ["Sharpe", metrics.sharpeRatio],
+        ["Profit factor", profitFactorDisplay],
+        ["交易數", metrics.totalTrades],
+        ["終點權益", accounting?.finalEquity],
+        ["帳本對平", accounting?.reconciled],
+        ["資料雜湊", environment?.dataHash],
+      ]);
+
+      addSheet("交易明細", [
+        ["出場時間", "部署模式", "腿角色", "Cycle ID", "Leg ID", "觸發來源", "開倉原因", "方向", "入場價", "出場價", "數量", "盈虧", "盈虧%", "平倉原因", "馬丁層數"],
+        ...trades.map((trade) => [
+          fmtTime(trade.exitTime), tradeDeploymentMode(trade), trade.role ?? "PRIMARY",
+          trade.cycleId ?? "legacy-s1", trade.legId ?? `legacy-s1:${trade.id}`,
+          trade.triggerSource ?? "LEGACY", trade.entryReason ?? "LEGACY_ENTRY",
+          trade.side === "long" ? "買升" : "買跌", trade.entryPrice, trade.exitPrice,
+          trade.size, trade.pnl, trade.pnlPct, trade.exitReason, trade.martinLayer,
+        ]),
+      ]);
+
+      addSheet("權益曲線", [
+        ["時間", "權益", "價格", "Gross exposure", "Net exposure", "Margin usage"],
+        ...equityCurve.map((point) => [
+          fmtTime(point.timestamp), point.equity, point.price,
+          point.grossExposure, point.netExposure, point.marginUsage,
+        ]),
+      ]);
+
+      const riskSheet = addSheet("風險事件", [
+        ["違規代碼", "訊息", "時間", "實際值", "限制值"],
+        ...(validity?.violations ?? []).map((violation) => [
+          violation.code, violation.message,
+          violation.timestamp ? fmtTime(violation.timestamp) : "",
+          violation.actual, violation.limit,
+        ]),
+        [],
+        ["事件時間", "序號", "事件類型", "決策結果", "理由代碼", "Leg ID", "Candidate ID", "Decision ID", "Context snapshot"],
+        ...(riskEvents ?? []).map((event) => [
+          fmtTime(event.timestamp), event.sequence, event.eventKind, event.decisionOutcome,
+          event.reasonCode, event.legId ?? "", event.candidateId, event.decisionId,
+          JSON.stringify(event.contextSnapshot),
+        ]),
+      ]);
+      riskSheet.getRow(3 + (validity?.violations.length ?? 0)).font = { bold: true };
+
+      addSheet("執行與會計", [
+        ["欄位", "值", "限制／補充"],
+        ["Validity", validity ? (validity.passed ? "VALID" : "INVALID") : "UNVERIFIED", validity?.version],
+        ["Enforcement", validity?.enforcement ?? "UNAVAILABLE", "RUNTIME_KERNEL 才具執行期證據"],
+        ["Execution mode", executionMode, executionPolicy.version],
+        ["終點政策", endPositionPolicy, engineSemantics?.finalizationScope],
+        ["全域正權益高點", validity?.globalPositiveEquityPeak, "USDT"],
+        ["最低權益", validity?.minimumEquity, validity?.minimumEquityTimestamp ? fmtTime(validity.minimumEquityTimestamp) : ""],
+        ["Gross exposure peak", grossExposurePeak, `政策上限 ${validity?.grossNotionalLimitAtGlobalPeak ?? "—"}`],
+        ["Net exposure abs peak", legAccounting?.netExposureAbsPeak ?? modeResults?.netExposureAbsPeak, "USDT"],
+        ["Margin usage peak", marginUsagePeak, `政策上限 ${validity?.marginLimitAtGlobalPeak ?? "—"}`],
+        ["Margin headroom low", marginHeadroomLow, "USDT"],
+        ["強制清算次數", liquidationCount, ""],
+        ["破產狀態", bankrupt, validity?.recoveredAfterInsolvency ? "偵測到破產後恢復" : ""],
+        ["Risk event count", riskEvents?.length ?? 0, legAccounting?.eventCount],
+        ["Decision / rejected", legAccounting?.decisionCount, legAccounting?.rejectedDecisionCount],
+        ["Turnover", legAccounting?.turnover, "USDT"],
+        ["Fees", legAccounting?.fees ?? accounting?.openPosition?.entryFees, "USDT"],
+        ["Funding", legAccounting?.funding, "USDT"],
+        ["初始資本", accounting?.initialCapital ?? environment?.initialCapital, "USDT"],
+        ["已實現損益", accounting?.realizedPnl, "USDT"],
+        ["未實現損益", accounting?.unrealizedPnl, "USDT"],
+        ["最終權益", accounting?.finalEquity, "USDT"],
+        ["對帳差額", accounting?.reconciliationDifference, `容差 ${accounting?.tolerance ?? "—"}`],
+        ["帳本對平", accounting?.reconciled, accounting?.balanced],
+        ["資料雜湊", environment?.dataHash, environment?.engineVersion],
+        ["K 棒數", candleCount ?? dataQuality?.candleCount ?? environment?.candleCount, dataQuality?.intervalContract],
+        [],
+        ["策略參數", "值", ""],
+        ...Object.entries(config).map(([key, value]) => [
+          key,
+          typeof value === "object" && value !== null ? JSON.stringify(value) : String(value),
+          "",
+        ]),
+      ]);
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([new Uint8Array(buffer)], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `backtest_${runId}.xlsx`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast.success("五工作表 Excel 已導出（含風險帳本）");
+    } catch (error) {
+      toast.error(error instanceof Error ? `Excel 導出失敗：${error.message}` : "Excel 導出失敗");
+    }
   };
 
   const copyParams = () => {
+    if (!canReuseResult) {
+      toast.error(reuseBlockReason);
+      return;
+    }
     navigator.clipboard.writeText(JSON.stringify(config, null, 2));
     onCopyParams?.(config);
     toast.success("參數已複製，可貼到策略配置使用");
@@ -331,11 +540,20 @@ export default function BacktestReport({
   const [, navigate] = useLocation();
 
   const handleApplyToExisting = () => {
+    if (!canReuseResult) {
+      toast.error(reuseBlockReason);
+      return;
+    }
     setApplyTargetId("");
     setShowApplyModal(true);
   };
 
   const handleConfirmApply = async () => {
+    if (!canReuseResult) {
+      toast.error(reuseBlockReason);
+      setShowApplyModal(false);
+      return;
+    }
     if (!applyTargetId) {
       toast.error("請選擇目標策略實例");
       return;
@@ -345,6 +563,7 @@ export default function BacktestReport({
         snapshotConfig: config as Record<string, unknown>,
         strategyKey: strategyKey || "unknown",
         targetInstanceId: Number(applyTargetId),
+        sourceRunId: runId,
       });
       toast.success(result.message);
       setShowApplyModal(false);
@@ -354,6 +573,10 @@ export default function BacktestReport({
   };
 
   const handleCreateNewStrategy = () => {
+    if (!canReuseResult) {
+      toast.error(reuseBlockReason);
+      return;
+    }
     // 跳轉到策略管理頁，帶入預填參數
     navigate("/strategies");
     // 使用 sessionStorage 傳遞參數（wouter 不支援 state）
@@ -375,6 +598,10 @@ export default function BacktestReport({
   };
 
   const handleSaveSnapshot = async () => {
+    if (!canReuseResult) {
+      toast.error(reuseBlockReason);
+      return;
+    }
     setSavingSnapshot(true);
     try {
       await saveSnapshotMutation.mutateAsync({
@@ -411,7 +638,7 @@ export default function BacktestReport({
             }
           : undefined,
       });
-      toast.success("✅ 參數快照已儲存到快照庫");
+      toast.success("參數快照已儲存到快照庫");
       onSaveSnapshot?.();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "儲存快照失敗");
@@ -438,6 +665,14 @@ export default function BacktestReport({
         <Badge variant="secondary" className="text-xs font-mono" title={runId}>
           {runId.length > 40 ? runId.slice(0, 40) + "..." : runId}
         </Badge>
+        <Badge
+          variant="outline"
+          className={validity?.passed
+            ? "border-emerald-500/55 bg-emerald-500/10 text-emerald-300"
+            : "border-red-500/55 bg-red-500/10 text-red-300"}
+        >
+          {validity?.passed ? "VALID" : validity ? "INVALID" : "UNVERIFIED"}
+        </Badge>
         <Button
           variant="ghost"
           size="sm"
@@ -447,6 +682,116 @@ export default function BacktestReport({
           {showParams ? "隱藏參數快照" : "查看參數快照"}
         </Button>
       </div>
+      {/* P2: Validity 警告橫幅 */}
+      {validity && !validity.passed && (
+        <div role="alert" className="rounded-lg border border-red-500/35 bg-red-500/8 p-3 text-xs text-red-200">
+          <div className="font-semibold mb-2">此回測結果標記為 INVALID（風險契約違反）</div>
+          <div className="space-y-1">
+            {validity.violations?.map((v: any, i: number) => (
+              <div key={i} className="text-xs">
+                • <strong>{v.code}</strong>: {v.message}
+                {v.actual !== undefined && v.limit !== undefined && (
+                  <span> (實際: {v.actual}, 限制: {v.limit})</span>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 text-xs text-red-300">此結果不適合用於參數重用或策略比較。</div>
+        </div>
+      )}
+      {!validity && (
+        <div role="alert" className="rounded-lg border border-amber-500/35 bg-amber-500/8 p-3 text-xs text-amber-100">
+          <div className="font-semibold">此回測缺少可驗證的 risk-integrity 證據</div>
+          <p className="mt-1 text-amber-100/80">依 fail-closed 原則，參數複製、快照保存與策略套用均已停用；仍可檢視與匯出稽核資料。</p>
+        </div>
+      )}
+
+      <Card className={validity?.passed ? "border-emerald-500/25 bg-emerald-500/[0.035]" : "border-red-500/30 bg-red-500/[0.035]"}>
+        <CardHeader className="gap-3 border-b border-border/60 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <CardTitle className="text-sm">風險帳本</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">有限責任、gross exposure、margin headroom、清算與破產的 canonical 稽核證據。</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge className={validity?.passed ? "bg-emerald-600 text-white" : "bg-red-600 text-white"}>
+              {validity?.passed ? "風險契約通過" : validity ? "風險契約違反" : "證據不足"}
+            </Badge>
+            <Badge variant="outline" className="font-mono text-[10px]">
+              {validity?.enforcement ?? "UNVERIFIED"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4 pt-5">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            {[
+              ["Gross exposure peak", `${grossExposurePeak.toFixed(2)} USDT`],
+              ["Margin usage peak", `${marginUsagePeak.toFixed(2)} USDT`],
+              ["Margin headroom low", `${marginHeadroomLow.toFixed(2)} USDT`],
+              ["最低權益", validity ? `${validity.minimumEquity.toFixed(2)} USDT` : "未驗證"],
+              ["強制清算", liquidationCount],
+              ["破產狀態", bankrupt ? "已宣告破產" : "未宣告破產"],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-md border border-border/70 bg-background/55 px-3 py-3">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+                <p className="mt-1 font-mono text-sm font-semibold">{value}</p>
+              </div>
+            ))}
+          </div>
+
+          {(validity?.violations.length ?? 0) > 0 && (
+            <div className="rounded-md border border-red-500/35 bg-red-500/8 p-4">
+              <p className="text-xs font-semibold text-red-200">違規項目（{validity?.violations.length}）</p>
+              <div className="mt-2 space-y-2">
+                {validity?.violations.map((violation) => (
+                  <div key={`${violation.code}:${violation.timestamp ?? "global"}`} className="text-xs text-red-100/90">
+                    <span className="font-mono font-semibold">{violation.code}</span>
+                    <span className="mx-2">—</span>{violation.message}
+                    {violation.actual !== undefined && violation.limit !== undefined && (
+                      <span className="ml-2 text-red-200/70">實際 {violation.actual}／限制 {violation.limit}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="overflow-hidden rounded-md border border-border/70">
+            <div className="flex items-center justify-between gap-2 border-b border-border/70 bg-background/40 px-3 py-2">
+              <p className="text-xs font-semibold">Runtime 風險事件</p>
+              <p className="text-[10px] text-muted-foreground">顯示 {Math.min(8, riskEvents?.length ?? 0)} / {riskEvents?.length ?? 0}</p>
+            </div>
+            {!riskEvents?.length ? (
+              <p className="px-3 py-5 text-center text-xs text-muted-foreground">本次結果沒有 runtime 拒單、清算或破產事件。</p>
+            ) : (
+              <div className="max-h-64 overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs">時間</TableHead>
+                      <TableHead className="text-xs">事件</TableHead>
+                      <TableHead className="text-xs">結果</TableHead>
+                      <TableHead className="text-xs">理由</TableHead>
+                      <TableHead className="text-xs">Leg</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {riskEvents.slice(-8).reverse().map((event) => (
+                      <TableRow key={event.eventId}>
+                        <TableCell className="whitespace-nowrap text-xs">{fmtTime(event.timestamp)}</TableCell>
+                        <TableCell><Badge variant="outline" className="font-mono text-[10px]">{event.eventKind}</Badge></TableCell>
+                        <TableCell className="font-mono text-xs">{event.decisionOutcome}</TableCell>
+                        <TableCell className="font-mono text-xs">{event.reasonCode}</TableCell>
+                        <TableCell className="font-mono text-xs">{event.legId ?? "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       {showParams && (
         <Card>
           <CardHeader className="pb-2">
@@ -826,14 +1171,16 @@ export default function BacktestReport({
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-sm">權益曲線</CardTitle>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={exportCSV}>
+            <Button variant="outline" size="sm" onClick={exportExcel}>
               <Download className="w-4 h-4 mr-1" />
-              導出 CSV
+              導出 Excel
             </Button>
             <Button
               size="sm"
               className="bg-emerald-600 hover:bg-emerald-700 text-white"
               onClick={copyParams}
+              disabled={!canReuseResult}
+              title={!canReuseResult ? reuseBlockReason : undefined}
             >
               <Copy className="w-4 h-4 mr-1" />
               一鍵複製參數
@@ -843,7 +1190,8 @@ export default function BacktestReport({
               variant="outline"
               className="border-amber-500 text-amber-400 hover:bg-amber-500/10"
               onClick={handleSaveSnapshot}
-              disabled={savingSnapshot}
+              disabled={savingSnapshot || !canReuseResult}
+              title={!canReuseResult ? reuseBlockReason : undefined}
             >
               <Save className="w-4 h-4 mr-1" />
               {savingSnapshot ? "儲存中..." : "儲存快照"}
@@ -855,13 +1203,14 @@ export default function BacktestReport({
                     size="sm"
                     className="bg-blue-600 hover:bg-blue-700 text-white"
                     onClick={handleApplyToExisting}
+                    disabled={!canReuseResult}
                   >
                     <Play className="w-4 h-4 mr-1" />
                     套用至現有策略
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>將此回測參數覆蓋至選定的現有策略實例</p>
+                  <p>{canReuseResult ? "將此回測參數覆蓋至選定的現有策略實例" : reuseBlockReason}</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -872,13 +1221,14 @@ export default function BacktestReport({
                     size="sm"
                     className="bg-emerald-600 hover:bg-emerald-700 text-white"
                     onClick={handleCreateNewStrategy}
+                    disabled={!canReuseResult}
                   >
                     <Upload className="w-4 h-4 mr-1" />
                     以參數建立新策略
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>以此回測參數建立一個全新的策略實例</p>
+                  <p>{canReuseResult ? "以此回測參數建立一個全新的策略實例" : reuseBlockReason}</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -1023,7 +1373,7 @@ export default function BacktestReport({
             <Button
               className="bg-blue-600 hover:bg-blue-700 text-white"
               onClick={handleConfirmApply}
-              disabled={applyToInstanceMutation.isPending || !applyTargetId}
+              disabled={applyToInstanceMutation.isPending || !applyTargetId || !canReuseResult}
             >
               {applyToInstanceMutation.isPending ? "套用中..." : "✅ 確認套用"}
             </Button>

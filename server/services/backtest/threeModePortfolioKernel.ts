@@ -15,6 +15,7 @@ import {
 } from "../advancedExecutionModeEngine";
 import {
   BACKTEST_ACCOUNTING_TOLERANCE,
+  BACKTEST_END_OF_DATA_REASON_CODE,
   BACKTEST_INTRABAR_EVENT_ORDER,
   type BacktestAccountingSnapshot,
   type BacktestEndPositionPolicy,
@@ -24,6 +25,7 @@ import {
   type BacktestLegAttribution,
   type BacktestModeResults,
   type BacktestOpenLegSnapshot,
+  type BacktestRiskEvent,
   roundBacktestMoney,
 } from "./backtestContracts";
 
@@ -100,16 +102,25 @@ export interface BacktestPortfolioTrade {
   martinLayer: number;
 }
 
-export interface BacktestPortfolioEvent {
-  eventId: string;
+export type BacktestPortfolioEvent = BacktestRiskEvent;
+
+export interface BacktestPortfolioAccountSnapshot {
   timestamp: number;
-  sequence: number;
-  eventKind: BacktestIntrabarEventKind;
-  candidateId: string;
-  decisionId: string;
-  decisionOutcome: ModeDecision["outcome"];
-  reasonCode: string;
-  legId?: string;
+  markPrice: number;
+  initialCapital: number;
+  walletBalance: number;
+  equity: number;
+  rawEquity: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  grossNotional: number;
+  netNotional: number;
+  usedMargin: number;
+  marginUsagePct: number;
+  maintenanceMargin: number;
+  marginHeadroom: number;
+  openPositionCount: number;
+  bankrupt: boolean;
 }
 
 export interface BacktestPortfolioEquityPoint {
@@ -329,7 +340,7 @@ export class ThreeModePortfolioKernel {
           signalPrice: price,
           barTimestamp: timestamp,
           source: "RISK",
-          reasonCode: "END_OF_DATA_FORCE_CLOSE",
+          reasonCode: BACKTEST_END_OF_DATA_REASON_CODE,
           reason: "回測全域終點強制平倉",
           createdAt: timestamp,
           eventKind: "FORCED_RISK_EXIT",
@@ -353,6 +364,66 @@ export class ThreeModePortfolioKernel {
   /** 已實現交易的防禦性複本，用於策略級連虧縮倉與重入狀態。 */
   snapshotTrades(): BacktestPortfolioTrade[] {
     return this.trades.map(trade => ({ ...trade }));
+  }
+
+  /**
+   * 供策略 adapter 與報告層讀取的 canonical 帳戶快照；所有欄位均直接源自 kernel 單一權益帳本。
+   */
+  snapshotAccount(price = this.lastPrice, timestamp = this.lastMarkedAt ?? 0): BacktestPortfolioAccountSnapshot {
+    if (!finitePositive(price)) {
+      return {
+        timestamp,
+        markPrice: 0,
+        initialCapital: roundBacktestMoney(this.config.initialCapital),
+        walletBalance: roundBacktestMoney(this.config.initialCapital),
+        equity: roundBacktestMoney(this.config.initialCapital),
+        rawEquity: roundBacktestMoney(this.config.initialCapital),
+        realizedPnl: 0,
+        unrealizedPnl: 0,
+        grossNotional: 0,
+        netNotional: 0,
+        usedMargin: 0,
+        marginUsagePct: 0,
+        maintenanceMargin: 0,
+        marginHeadroom: roundBacktestMoney(this.config.initialCapital),
+        openPositionCount: 0,
+        bankrupt: this.bankrupt,
+      };
+    }
+    const open = this.openLegs();
+    const realizedPnl = this.trades.reduce((sum, trade) => sum + trade.pnl, 0);
+    const unrealizedPnl = open.reduce(
+      (sum, leg) => sum + this.unrealizedGrossPnl(leg, price) + leg.fundingBalance - leg.entryFeeBalance,
+      0,
+    );
+    const walletBalance = this.config.initialCapital + realizedPnl + this.bankruptcyAdjustment;
+    const rawEquity = this.rawCurrentEquity(price);
+    const equity = this.currentEquity(price);
+    const grossNotional = open.reduce((sum, leg) => sum + Math.abs(leg.quantity * price), 0);
+    const netNotional = open.reduce(
+      (sum, leg) => sum + signedDirection(leg.side) * leg.quantity * price,
+      0,
+    );
+    const usedMargin = grossNotional / this.config.leverage;
+    const maintenanceMargin = grossNotional * this.config.maintenanceMarginRate;
+    return {
+      timestamp,
+      markPrice: price,
+      initialCapital: roundBacktestMoney(this.config.initialCapital),
+      walletBalance: roundBacktestMoney(walletBalance),
+      equity: roundBacktestMoney(equity),
+      rawEquity: roundBacktestMoney(rawEquity),
+      realizedPnl: roundBacktestMoney(realizedPnl),
+      unrealizedPnl: roundBacktestMoney(unrealizedPnl),
+      grossNotional: roundBacktestMoney(grossNotional),
+      netNotional: roundBacktestMoney(netNotional),
+      usedMargin: roundBacktestMoney(usedMargin),
+      marginUsagePct: equity > MONEY_EPSILON ? Number(((usedMargin / equity) * 100).toFixed(6)) : 100,
+      maintenanceMargin: roundBacktestMoney(maintenanceMargin),
+      marginHeadroom: roundBacktestMoney(equity - usedMargin),
+      openPositionCount: open.length,
+      bankrupt: this.bankrupt,
+    };
   }
 
   private assertBar(bar: BacktestPortfolioBar): void {
@@ -441,6 +512,7 @@ export class ThreeModePortfolioKernel {
       if (event?.decisionId === decision.decisionId) {
         event.decisionOutcome = "REJECTED";
         event.reasonCode = decision.reasonCode;
+        event.contextSnapshot = { ...decision.contextSnapshot };
       }
       return;
     }
@@ -587,12 +659,16 @@ export class ThreeModePortfolioKernel {
     price: number,
   ): { approved: true } | { approved: false; reasonCode: string; context: Record<string, unknown> } {
     const existing = this.openLegs();
-    const proposedNotional = price * quantity;
+    const proposedFillPrice = this.executionPrice(side, price, false);
+    const proposedNotional = proposedFillPrice * quantity;
     const gross = existing.reduce((sum, leg) => sum + leg.quantity * price, 0) + proposedNotional;
     const net = existing.reduce((sum, leg) => sum + signedDirection(leg.side) * leg.quantity * price, 0)
       + signedDirection(side) * proposedNotional;
     const margin = gross / this.config.leverage;
     const riskEquity = this.currentEquity(price);
+    const estimatedFee = proposedNotional * this.config.commissionRate;
+    const postFeeEquity = Math.max(0, riskEquity - estimatedFee);
+    const maintenanceMargin = gross * this.config.maintenanceMarginRate;
     const grossLimit = riskEquity * this.config.executionPolicy.riskBudget.maxGrossNotionalPct / 100;
     const marginLimit = riskEquity * this.config.executionPolicy.riskBudget.maxMarginUsagePct / 100;
     if (gross > grossLimit + MONEY_EPSILON) {
@@ -607,6 +683,20 @@ export class ThreeModePortfolioKernel {
         approved: false,
         reasonCode: "RISK_MARGIN_USAGE_LIMIT",
         context: { proposedMarginUsage: margin, marginLimit, proposedGrossNotional: gross },
+      };
+    }
+    if (postFeeEquity <= maintenanceMargin + MONEY_EPSILON) {
+      return {
+        approved: false,
+        reasonCode: "RISK_INSUFFICIENT_EQUITY",
+        context: {
+          proposedGrossNotional: gross,
+          proposedNetNotional: net,
+          proposedUsedMargin: margin,
+          proposedMaintenanceMargin: maintenanceMargin,
+          estimatedFee,
+          postFeeEquity,
+        },
       };
     }
     return { approved: true };
@@ -766,6 +856,7 @@ export class ThreeModePortfolioKernel {
       decisionOutcome: decision.outcome,
       reasonCode: decision.reasonCode,
       legId: decision.targetLegId,
+      contextSnapshot: { ...decision.contextSnapshot },
     });
   }
 
@@ -862,12 +953,12 @@ export class ThreeModePortfolioKernel {
   }
 
   private rawCurrentEquity(price: number): number {
-    const legs = Array.from(this.legs.values());
-    const realizedGross = legs.reduce((sum, leg) => sum + leg.realizedGrossPnl, 0);
-    const fees = legs.reduce((sum, leg) => sum + leg.fees, 0);
-    const funding = legs.reduce((sum, leg) => sum + leg.funding, 0);
-    const unrealized = this.openLegs().reduce((sum, leg) => sum + this.unrealizedGrossPnl(leg, price), 0);
-    return this.config.initialCapital + realizedGross + funding - fees + unrealized;
+    const realizedPnl = this.trades.reduce((sum, trade) => sum + trade.pnl, 0);
+    const unrealizedPnl = this.openLegs().reduce(
+      (sum, leg) => sum + this.unrealizedGrossPnl(leg, price) + leg.fundingBalance - leg.entryFeeBalance,
+      0,
+    );
+    return this.config.initialCapital + realizedPnl + unrealizedPnl;
   }
 
   private currentEquity(price: number): number {
@@ -889,6 +980,7 @@ export class ThreeModePortfolioKernel {
       if (open.length === 0 && rawEquity <= MONEY_EPSILON && !this.bankrupt) {
         this.bankruptcyAdjustment += Math.max(0, -rawEquity);
         this.bankrupt = true;
+        this.recordBankruptcyEvent(bar, rawEquity, 0);
       }
       return false;
     }
@@ -931,8 +1023,34 @@ export class ThreeModePortfolioKernel {
     if (postLiquidationEquity <= MONEY_EPSILON) {
       this.bankruptcyAdjustment += Math.max(0, -postLiquidationEquity);
       this.bankrupt = true;
+      this.recordBankruptcyEvent(bar, postLiquidationEquity, maintenanceMargin);
     }
     return true;
+  }
+
+  private recordBankruptcyEvent(
+    bar: BacktestPortfolioBar,
+    rawEquity: number,
+    maintenanceMargin: number,
+  ): void {
+    this.eventSequence += 1;
+    const candidateId = `bankruptcy:${this.config.deploymentId}:${bar.timestamp}:${this.eventSequence}`.slice(0, 128);
+    this.events.push({
+      eventId: `event:${this.config.deploymentId}:${bar.timestamp}:${this.eventSequence}`,
+      timestamp: bar.timestamp,
+      sequence: this.eventSequence,
+      eventKind: "FORCED_RISK_EXIT",
+      candidateId,
+      decisionId: decisionId(candidateId),
+      decisionOutcome: "REJECTED",
+      reasonCode: "ACCOUNT_BANKRUPT",
+      contextSnapshot: {
+        rawEquity: roundBacktestMoney(rawEquity),
+        maintenanceMargin: roundBacktestMoney(maintenanceMargin),
+        bankruptcyAdjustment: roundBacktestMoney(this.bankruptcyAdjustment),
+        newExposureBlocked: true,
+      },
+    });
   }
 
   private applyAutomaticHedgeLifecycle(bar: BacktestPortfolioBar): void {
@@ -1119,7 +1237,7 @@ export class ThreeModePortfolioKernel {
       openPositions: openLegs,
       openPositionCount: openLegs.length,
       syntheticForceCloseCount: policy === "force_close"
-        ? this.trades.filter(trade => trade.exitReason === "END_OF_DATA_FORCE_CLOSE").length
+        ? this.trades.filter(trade => trade.exitReason === BACKTEST_END_OF_DATA_REASON_CODE).length
         : 0,
       grossExposure: roundBacktestMoney(grossExposure),
       netExposure: roundBacktestMoney(netExposure),

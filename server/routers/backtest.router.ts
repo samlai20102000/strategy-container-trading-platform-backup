@@ -95,6 +95,32 @@ function assertRegisteredStrategy(strategyKey: string): void {
   }
 }
 
+async function requireReusableBacktestSourceRun(
+  sourceRunId: string | undefined,
+  userId: number,
+  strategyKey: string,
+) {
+  if (!sourceRunId) return null;
+  const sourceRun = await backtestJobManager.getJobResultFromDB(sourceRunId, userId);
+  if (!sourceRun || sourceRun.status !== "completed") {
+    throw new Error("來源回測不存在、未完成或不屬於目前使用者，已拒絕參數重用");
+  }
+  if (sourceRun.strategyKey !== strategyKey) {
+    throw new Error("來源回測與目標策略引擎不一致，已拒絕參數重用");
+  }
+  if (!sourceRun.validity) {
+    throw new Error("來源回測缺少可驗證的 risk-integrity 證據，已依 fail-closed 原則拒絕參數重用");
+  }
+  if (!sourceRun.validity.passed) {
+    const codes = sourceRun.validity.violations
+      .map((violation: { code?: string }) => violation.code)
+      .filter(Boolean)
+      .join(", ");
+    throw new Error(`來源回測為 INVALID，禁止比較或參數重用${codes ? `（${codes}）` : ""}`);
+  }
+  return sourceRun.validity;
+}
+
 function artifactPersistenceColumns(artifact: StrategyArtifactEnvelope) {
   return {
     artifactContractVersion: artifact.contractVersion,
@@ -507,6 +533,9 @@ export const backtestRouter = router({
         },
         modeResults: dbJob.modeResults ?? undefined,
         legAccounting: dbJob.legAccounting ?? undefined,
+        riskIntegrity: dbJob.riskIntegrity ?? dbJob.validity ?? undefined,
+        riskEvents: dbJob.riskEvents ?? [],
+        reentryDiagnostics: dbJob.reentryDiagnostics ?? undefined,
       };
     }),
 
@@ -570,7 +599,56 @@ export const backtestRouter = router({
         environment: dbJob.environment ?? null,
         modeResults: dbJob.modeResults ?? null,
         legAccounting: dbJob.legAccounting ?? null,
+        riskIntegrity: dbJob.riskIntegrity ?? dbJob.validity ?? null,
+        riskEvents: dbJob.riskEvents ?? [],
+        reentryDiagnostics: dbJob.reentryDiagnostics ?? null,
+        validity: dbJob.validity ?? null,
       };
+    }),
+
+  /** 僅允許 VALID 完成結果進入績效比較；授權與 risk-integrity 皆由伺服器權威判定。 */
+  compareRuns: protectedProcedure
+    .input(z.object({
+      runIds: z.array(z.string().min(1)).min(2).max(4),
+    }))
+    .query(async ({ input, ctx }) => {
+      const userId = ctx.user?.id;
+      if (!userId) throw new Error("請先登入");
+      const runIds = [...new Set(input.runIds)];
+      if (runIds.length !== input.runIds.length) {
+        throw new Error("比較清單包含重複回測記錄");
+      }
+
+      return Promise.all(runIds.map(async (runId) => {
+        const dbJob = await backtestJobManager.getJobResultFromDB(runId, userId);
+        if (!dbJob || dbJob.status !== "completed") {
+          throw new Error(`回測 ${runId} 不存在、未完成或不屬於目前使用者`);
+        }
+        if (!dbJob.validity) {
+          throw new Error(`回測 ${runId} 缺少可驗證的 risk-integrity 證據，禁止策略比較`);
+        }
+        if (!dbJob.validity.passed) {
+          const codes = dbJob.validity.violations
+            .map((violation: { code?: string }) => violation.code)
+            .filter(Boolean)
+            .join(", ");
+          throw new Error(`回測 ${runId} 為 INVALID，禁止策略比較${codes ? `（${codes}）` : ""}`);
+        }
+
+        return {
+          runId: dbJob.jobId,
+          strategyKey: dbJob.strategyKey,
+          symbol: dbJob.symbol,
+          timeframe: dbJob.timeframe,
+          executionMode: dbJob.executionMode,
+          endPositionPolicy: dbJob.endPositionPolicy,
+          engineVersion: dbJob.engineSemantics?.version ?? dbJob.environment?.engineVersion,
+          reconciled: dbJob.accounting?.reconciled,
+          candleCount: dbJob.candleCount ?? dbJob.dataQuality?.candleCount,
+          metrics: dbJob.metrics ?? null,
+          validity: dbJob.validity,
+        };
+      }));
     }),
 
   /** 刪除歷史回測記錄 */
@@ -636,6 +714,12 @@ export const backtestRouter = router({
 
       const db = await getDb();
       if (!db) throw new Error("資料庫不可用");
+
+      const sourceValidity = await requireReusableBacktestSourceRun(
+        input.sourceRunId,
+        userId,
+        input.strategyKey,
+      );
 
       const snapshotName = input.snapshotName ||
         `${input.strategyKey}_${new Date().toLocaleDateString("zh-TW")}_${new Date().toLocaleTimeString("zh-TW", { hour12: false })}`;
@@ -743,7 +827,7 @@ export const backtestRouter = router({
       const compatibility = assessStrategyArtifactCompatibility({
         artifact,
         targetManifest: capabilityManifest,
-        integrityValid: true,
+        integrityValid: sourceValidity?.passed ?? true,
       });
       return { success: true, snapshotName, artifact, compatibility };
     }),
@@ -862,6 +946,11 @@ export const backtestRouter = router({
         : await requireCompatibleSnapshotArtifact(
             snapshot as unknown as Record<string, unknown>,
           );
+      await requireReusableBacktestSourceRun(
+        artifactBundle.artifact.source.sourceRunId,
+        userId,
+        snapshotKey,
+      );
 
       if (!strategy.strategyKey || strategy.strategyKey !== snapshotKey) {
         throw new Error(
@@ -1022,6 +1111,11 @@ export const backtestRouter = router({
         snapshot as unknown as Record<string, unknown>,
         config,
       );
+      await requireReusableBacktestSourceRun(
+        artifactBundle.artifact.source.sourceRunId,
+        userId,
+        snapshotKey,
+      );
       const v41Config = snapshotKey === V41_STRATEGY_KEY
         ? assertValidV41Config(config)
         : undefined;
@@ -1144,6 +1238,7 @@ export const backtestRouter = router({
       snapshotConfig: z.record(z.string(), z.unknown()),
       strategyKey: z.string(),
       targetInstanceId: z.number(),
+      sourceRunId: z.string().min(1).max(128).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const userId = ctx.user?.id;
@@ -1151,6 +1246,12 @@ export const backtestRouter = router({
 
       const db = await getDb();
       if (!db) throw new Error("資料庫不可用");
+
+      await requireReusableBacktestSourceRun(
+        input.sourceRunId,
+        userId,
+        input.strategyKey,
+      );
 
       // 1. 獲取目標策略實例
       const [instance] = await db

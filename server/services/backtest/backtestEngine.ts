@@ -103,6 +103,7 @@ import {
   buildBacktestComparisonGroupId,
   buildBacktestHash,
   buildOpenPositionSnapshot,
+  createBacktestRunId,
   createContinuousEngineSemantics,
   normalizeOHLCVData,
   resolveEndPositionPolicy,
@@ -114,6 +115,7 @@ import {
   type BacktestLegAccounting,
   type BacktestModeResults,
   type BacktestReentryDiagnostics,
+  type BacktestRiskEvent,
   type BacktestRunnerIdentity,
   type BacktestVersionedExecutionContext,
 } from "./backtestContracts";
@@ -194,6 +196,8 @@ export interface BacktestResult {
   riskIntegrity?: BacktestRiskIntegrityAssessment;
   /** cycle 與重新入市事件證據；只有支援並實際產生此證據的 runner 才回傳。 */
   reentryDiagnostics?: BacktestReentryDiagnostics;
+  /** shared runtime 的 canonical 拒單、清算、破產與終點事件帳本。 */
+  riskEvents?: BacktestRiskEvent[];
 }
 
 interface PositionLayer {
@@ -1163,12 +1167,10 @@ export class BacktestEngine {
       message: "KAMA 主 runner 計算完成，正在保存結果...",
       force: true,
     });
-    onProgress?.(95, "計算績效指標...");
+        onProgress?.(95, "計算績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
-
-    const runId = makeRunId(request.strategyKey, request.symbol);
+    const runId = createBacktestRunId(request.strategyKey, request.symbol);
     const summary = `回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根 K 線，${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
-
     // 持久化到 SQLite（本地快取層）
     try {
       const db = getBacktestDatabase();
@@ -1903,7 +1905,7 @@ export class BacktestEngine {
 
     onProgress?.(95, "計算 20415 七彩虹績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
-    const runId = makeRunId(request.strategyKey, request.symbol);
+    const runId = createBacktestRunId(request.strategyKey, request.symbol);
     const summary = `20415 七彩虹回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根管理 K 線、${closedEntryCandles.length} 根已收盤 ${entryTimeframeLabel}、${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
     try {
@@ -2261,7 +2263,7 @@ export class BacktestEngine {
       equityCurve,
       request.initialCapital,
     );
-    const runId = makeRunId(request.strategyKey, request.symbol);
+    const runId = createBacktestRunId(request.strategyKey, request.symbol);
     const summary = `V2.5 回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根 K 線，${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
     try {
@@ -2829,7 +2831,7 @@ export class BacktestEngine {
 
     onProgress?.(95, "計算績效指標...");
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
-    const runId = makeRunId(request.strategyKey, request.symbol);
+    const runId = createBacktestRunId(request.strategyKey, request.symbol);
     const summary = `回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根 K 線，${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
     try {
@@ -3292,7 +3294,7 @@ export class BacktestEngine {
 
     // 績效計算
     const metrics = calculatePerformance(trades, equityCurve, request.initialCapital);
-    const runId = makeRunId(request.strategyKey, request.symbol);
+    const runId = createBacktestRunId(request.strategyKey, request.symbol);
     const summary = `V7.0 回測完成：${strategy.name} / ${request.symbol} ${request.timeframe}，共 ${candles.length} 根 K 線，${trades.length} 筆交易，總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
     // 持久化
@@ -3340,14 +3342,6 @@ export class BacktestEngine {
       accounting,
     };
   }
-}
-
-/** 任務 A3：唯一 runId（含策略 key + 時間戳 + 隨機碼，避免同毫秒碰撞） */
-function makeRunId(strategyKey: string, symbol: string): string {
-  const rand = Math.random().toString(36).slice(2, 8);
-  const key = strategyKey.replace(/[^A-Za-z0-9]/g, "").slice(0, 20);
-  const sym = symbol.replace(/[^A-Za-z0-9]/g, "");
-  return `bt_${key}_${Date.now()}_${rand}_${sym}`;
 }
 
 /** EMA 系列（null 表示未就緒） */

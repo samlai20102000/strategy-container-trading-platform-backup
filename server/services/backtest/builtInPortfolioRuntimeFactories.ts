@@ -39,6 +39,10 @@ import {
 } from "../../strategies/v25/core";
 import { evaluateV40EntryGates } from "../../strategies/v35/entryGate";
 import { evaluateV41EntryConditions } from "../../strategies/v41/entryConditions";
+import {
+  V41_CONFIG_KEY,
+  assertValidV41Config,
+} from "../../../shared/strategies/kama3kMartinV41";
 import { calculateV61PrecomputedBarSeries, StrategyKama3kV61 } from "../../strategies/v61/strategy_kama_3k_v61";
 import { StrategyKama3kV70 } from "../../strategies/v70/strategy_kama_3k_v70";
 import {
@@ -59,6 +63,10 @@ import type {
   PortfolioStrategyRuntimeFactory,
   PortfolioStrategyRuntimeFactoryContext,
 } from "./portfolioStrategyRuntimeAdapter";
+import {
+  createV41BacktestEntryDiagnostics,
+  recordV41BacktestEntryEvaluation,
+} from "./v41BacktestDiagnostics";
 
 type AllowedDirection = "long" | "short" | "both";
 
@@ -184,7 +192,7 @@ function makeLegIntent(
   if (action === "add" || action === "add_long" || action === "add_short") {
     const quantity = decision.lotUsdt && decision.lotUsdt > 0
       ? decision.lotUsdt / context.candle.close
-      : orderSizeQuantity(decision.orderSize, context.candle.close, context.initialCapital, context.baseLotUsdt);
+      : orderSizeQuantity(decision.orderSize, context.candle.close, context.account.equity, context.baseLotUsdt);
     return {
       action: leg.sideCode === "LONG" ? "ADD_LONG" : "ADD_SHORT",
       reasonCode,
@@ -198,11 +206,16 @@ function makeLegIntent(
 function synchronizeStates(
   states: Map<string, StrategyState>,
   legs: readonly BacktestOpenLegSnapshot[],
-  seed: (leg: BacktestOpenLegSnapshot, previous?: StrategyState) => StrategyState,
+  seed: (
+    leg: BacktestOpenLegSnapshot,
+    previous: StrategyState | undefined,
+    account: PortfolioAdapterBarContext["account"],
+  ) => StrategyState,
+  account: PortfolioAdapterBarContext["account"],
 ): void {
   const openIds = new Set(legs.map(leg => leg.legId));
   for (const id of states.keys()) if (!openIds.has(id)) states.delete(id);
-  for (const leg of legs) states.set(leg.legId, seed(leg, states.get(leg.legId)));
+  for (const leg of legs) states.set(leg.legId, seed(leg, states.get(leg.legId), account));
 }
 
 function createCoreRuntime(
@@ -210,7 +223,11 @@ function createCoreRuntime(
   options: {
     adapterId: string;
     adapterVersion: number;
-    seedState: (leg: BacktestOpenLegSnapshot, previous?: StrategyState) => StrategyState;
+    seedState: (
+      leg: BacktestOpenLegSnapshot,
+      previous: StrategyState | undefined,
+      account: PortfolioAdapterBarContext["account"],
+    ) => StrategyState;
     evaluateEntry: (context: PortfolioAdapterBarContext, flatState: StrategyState) => DecisionLike;
     evaluateManagement: (context: PortfolioAdapterBarContext, leg: BacktestOpenLegSnapshot, state: StrategyState) => DecisionLike;
     entryCode: string;
@@ -224,7 +241,7 @@ function createCoreRuntime(
     adapterVersion: options.adapterVersion,
     ownsPositionManagement: true,
     evaluateBar(context) {
-      synchronizeStates(legStates, context.openLegs, options.seedState);
+      synchronizeStates(legStates, context.openLegs, options.seedState, context.account);
       const management: PortfolioAdapterIntent[] = [];
       for (const leg of context.openLegs) {
         const decision = options.evaluateManagement(context, leg, legStates.get(leg.legId)!);
@@ -244,14 +261,14 @@ function createCoreRuntime(
       if (side) {
         const desired = entryDecision.lotUsdt && entryDecision.lotUsdt > 0
           ? entryDecision.lotUsdt / context.candle.close
-          : orderSizeQuantity(entryDecision.orderSize, context.candle.close, context.initialCapital, context.baseLotUsdt);
+          : orderSizeQuantity(entryDecision.orderSize, context.candle.close, context.account.equity, context.baseLotUsdt);
         const intent = makeEntryIntent(context, side, `${options.entryCode}_${side.toUpperCase()}`, desired);
         if (intent) entries.push(intent);
       }
       return { management, entries };
     },
     onBarCommitted(context) {
-      synchronizeStates(legStates, context.afterLegs, options.seedState);
+      synchronizeStates(legStates, context.afterLegs, options.seedState, context.account);
       if (context.afterLegs.length > context.beforeLegs.length) flatState = createInitialStrategyState();
     },
   };
@@ -262,12 +279,12 @@ function rainbow20415Factory(factoryContext: PortfolioStrategyRuntimeFactoryCont
   return createCoreRuntime(factoryContext, {
     adapterId: "rainbow-20415-portfolio",
     adapterVersion: 1,
-    seedState: (leg, previous) => createRainbow20415RuntimeState({
+    seedState: (leg, previous, account) => createRainbow20415RuntimeState({
       ...projectLegState(leg, previous),
       rainbow20415Runtime: createRainbow20415RuntimeMeta({
         blindMode: true,
         entryTimestamp: leg.openedAt,
-        entryAccountEquity: factoryContext.initialCapital,
+        entryAccountEquity: account.equity,
       }),
     }),
     evaluateEntry: context => evaluateRainbow20415Entry(
@@ -280,7 +297,7 @@ function rainbow20415Factory(factoryContext: PortfolioStrategyRuntimeFactoryCont
     evaluateManagement: (context, _leg, state) => evaluateRainbow20415Management({
       currentPrice: context.candle.close,
       now: context.timestamp,
-      account: { equity: context.initialCapital, marginUsagePct: 0 },
+      account: { equity: context.account.equity, marginUsagePct: context.account.marginUsagePct },
     }, state, context.config) as Rainbow20415CoreDecision,
     entryCode: "RAINBOW_20415_ENTRY",
     managementCode: "RAINBOW_20415_MANAGE",
@@ -292,13 +309,13 @@ function rainbowTrendLadderFactory(factoryContext: PortfolioStrategyRuntimeFacto
   return createCoreRuntime(factoryContext, {
     adapterId: "rainbow-trend-ladder-portfolio",
     adapterVersion: 1,
-    seedState: (leg, previous) => createRainbowTrendLadderRuntimeState({
+    seedState: (leg, previous, account) => createRainbowTrendLadderRuntimeState({
       ...projectLegState(leg, previous),
       rainbowTrendLadderRuntime: createRainbowTrendLadderRuntimeMeta({
         blindMode: true,
         entryTimestamp: leg.openedAt,
         initialEntryPrice: leg.averageEntryPrice,
-        entryAccountEquity: factoryContext.initialCapital,
+        entryAccountEquity: account.equity,
       }),
     }),
     evaluateEntry: context => evaluateRainbowTrendLadderEntry({
@@ -313,7 +330,7 @@ function rainbowTrendLadderFactory(factoryContext: PortfolioStrategyRuntimeFacto
       currentPrice: context.candle.close,
       now: context.timestamp,
       barTimestamp: context.timestamp,
-      account: { equity: context.initialCapital, marginUsagePct: 0 },
+      account: { equity: context.account.equity, marginUsagePct: context.account.marginUsagePct },
       spreadPoints: 0,
     }, state, context.config) as RainbowTrendLadderCoreDecision,
     entryCode: "RAINBOW_TREND_ENTRY",
@@ -354,7 +371,7 @@ function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactor
     adapterVersion: 3,
     ownsPositionManagement: true,
     evaluateBar(context) {
-      synchronizeStates(legStates, context.openLegs, seedState);
+      synchronizeStates(legStates, context.openLegs, seedState, context.account);
       for (const leg of context.openLegs) {
         if (leg.role === "INDEPENDENT") m2OpenedCycles.add(leg.cycleId);
       }
@@ -411,7 +428,7 @@ function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactor
       const sizingDecision = entryDecision as DecisionLike;
       const desired = sizingDecision.lotUsdt && sizingDecision.lotUsdt > 0
         ? sizingDecision.lotUsdt / context.candle.close
-        : orderSizeQuantity(sizingDecision.orderSize, context.candle.close, context.initialCapital, context.baseLotUsdt);
+        : orderSizeQuantity(sizingDecision.orderSize, context.candle.close, context.account.equity, context.baseLotUsdt);
 
       if (!primary) {
         const intent = makeEntryIntent(context, side, `KRM_S1_PRIMARY_${side.toUpperCase()}`, desired);
@@ -437,7 +454,7 @@ function kamaRainbowMartinFactory(factoryContext: PortfolioStrategyRuntimeFactor
       return { management, entries };
     },
     onBarCommitted(context) {
-      synchronizeStates(legStates, context.afterLegs, seedState);
+      synchronizeStates(legStates, context.afterLegs, seedState, context.account);
       for (const leg of context.afterLegs) {
         if (leg.role === "INDEPENDENT") m2OpenedCycles.add(leg.cycleId);
       }
@@ -517,11 +534,17 @@ function createClassicKamaFactory(
   adapterVersion: number,
   semantic: "V35" | "V41" | "V50",
 ): PortfolioStrategyRuntimeFactory {
-  return () => ({
-    adapterId,
-    adapterVersion,
-    ownsPositionManagement: true,
-    async evaluateBar(context): Promise<PortfolioAdapterBarDecision> {
+  return factoryContext => {
+    const v41Diagnostics = semantic === "V41"
+      ? createV41BacktestEntryDiagnostics(assertValidV41Config(
+          factoryContext.config[V41_CONFIG_KEY] ?? factoryContext.config,
+        ))
+      : undefined;
+    return {
+      adapterId,
+      adapterVersion,
+      ownsPositionManagement: true,
+      async evaluateBar(context): Promise<PortfolioAdapterBarDecision> {
       const management = context.openLegs.flatMap(leg => classicManagement(context, leg, semantic));
       const fast = context.indicators.kamaFast;
       const slow = context.indicators.kamaSlow;
@@ -550,6 +573,7 @@ function createClassicKamaFactory(
           slowKama: slow,
           allowedDirection: allowedDirection(context.config),
         });
+        if (v41Diagnostics) recordV41BacktestEntryEvaluation(v41Diagnostics, evaluation);
         if (evaluation.passed) {
           side = evaluation.direction;
           reasonCode = evaluation.primaryReasonCode;
@@ -581,8 +605,12 @@ function createClassicKamaFactory(
       }
       const entry = makeEntryIntent(context, side, reasonCode, desired);
       return { management, entries: entry ? [entry] : [] };
-    },
-  });
+      },
+      getDiagnostics: v41Diagnostics
+        ? () => ({ v41EntryDiagnostics: v41Diagnostics })
+        : undefined,
+    };
+  };
 }
 
 function v61Factory(factoryContext: PortfolioStrategyRuntimeFactoryContext): PortfolioStrategyRuntimeAdapter {

@@ -2744,3 +2744,45 @@
 - [x] 【本次完成範圍處置與報告揭露；功能尚未實作】在歷史 job 讀取層即時套用 risk-integrity assessment，將舊有破產後恢復結果標成 INVALID，而非等待使用者重新執行
 - [x] 【本次完成範圍處置與報告揭露；功能尚未實作】完成 runtime kernel 遷移後，以九策略固定資料集逐一重跑正常、拒單、清算、破產 terminal 與切片連續性案例，保存完整 risk event ledger
 - [x] 【本次完成範圍處置與報告揭露；功能尚未實作】在報告 UI／Excel 直接呈現 observed gross notional、used margin、risk violations、liquidation 與 bankrupt 狀態，避免只顯示策略 KPI
+
+## 2026-08-04 回測中心 P0＋P1＋P2 全量正常化修復
+
+- [x] 盤點九個內建策略目前的 runner／portfolio adapter、order-admission、會計、歷史 job 讀取與報告資料契約，建立不改變策略入場訊號的遷移邊界
+- [x] 建立所有策略共用的 runtime 風險政策正規化：initial capital、leverage、gross notional、margin usage、maintenance margin、max open legs 與 bankruptcy 規則必須來自實際回測設定
+- [x] 將每次開倉／加倉候選先送入共用 order-admission；超過 gross、margin、腿數或資本限制時原子拒單，並寫入可稽核 risk event，不得先成交後補判定
+- [x] 在每根 K 線執行 mark-to-market，持續更新 wallet balance、realized／unrealized PnL、equity、used margin、margin usage 與 minimum equity
+- [x] 實作 maintenance liquidation 與 bankruptcy terminal：清算後關閉所有持倉、記錄費用／事件、禁止破產後恢復及後續新開倉
+- [x] 讓九個內建策略及未來 portfolio runner 共用同一 runtime kernel／finalizer 契約，同時保留各策略原生進出場訊號、runId、strategy identity 與專屬 diagnostics
+- [x] 在歷史 job 列表、詳情及比較讀取層即時執行 risk-integrity assessment；舊結果若含負權益、破產後恢復、政策違約或帳本不一致，自動標記 INVALID 並附理由
+- [x] 對 INVALID／FAILED／未驗證歷史結果全面禁止績效比較、參數重用與成功結果呈現；VALID 結果維持既有操作
+- [x] 在回測報告 UI 顯示 observed／allowed gross notional、used／allowed margin、minimum equity、liquidation、bankrupt、terminal reason 與完整 risk violations／event ledger
+- [x] 將 Excel 匯出完成為五工作表單一風險帳本：摘要、交易明細、權益曲線、風險事件、執行與會計證據；數值必須與 UI／canonical result 同源
+- [x] 建立固定資料集測試覆蓋正常成交、gross 拒單、margin 拒單、maintenance liquidation、bankruptcy terminal、破產後不得恢復、切片保真與九策略 source contract
+- [x] 執行受影響測試、完整 Vitest（143 檔通過、2 檔跳過；1,138 項通過、5 項跳過）、TypeScript、production build、桌面回測中心 UI、console／network 與 Excel 內容驗收；全程未觸發實盤下單、撤單、平倉或策略啟停
+- [x] 核對 todo.md、更新技術證據、保存 checkpoint 並交付已自動發布版本
+
+## 2026-08-04 今日維護長時間未完成事故報告
+
+- [x] 盤點今日實際檔案修改、未提交差異、測試通過／失敗、型別狀態與最後已發布 checkpoint
+- [x] 重建今日工作時間線，區分已驗證完成、部分完成、尚未開始及被重複執行的工作
+- [x] 分析真正技術困難：shared-kernel 資料契約、九策略語義保留、單一權益帳本、V4.1 diagnostics、歷史 INVALID 與 UI／Excel 同源性
+- [x] 分析非技術原因：工作階段提前結束、步驟切得過碎、缺少批次驗收門檻、進度訊息與真實完成狀態不一致
+- [x] 說明對正式站、開發預覽、資料庫、實盤交易與回測可信度的實際影響
+- [x] 提出安全暫停、恢復執行、驗收與發布的具體次序及完成定義
+- [x] 產出可下載的繁體中文詳盡事故報告並核驗內容完整性
+
+## 2026-08-04 Lean‑Safe 回測中心恢復方案（使用者選擇方案 1）
+
+- [x] 重建目前未發布工作樹與 P0 聚焦測試基線，清除測試殘留檔並列出剩餘接線缺口
+- [x] 收斂共用 runtime kernel：成交前 gross／margin／維持保證金准入、逐棒帳戶快照、清算、破產 terminal、破產後鎖定及 canonical risk events 必須同源
+- [x] 完成 legacy／shared runner canonical runId、九策略 adapter、live account 與 V4.1 diagnostics 接線，保持各策略原生訊號不變
+- [x] 完成 P0 source-contract 與固定資料集測試，覆蓋正常成交、拒單、清算、破產、破產後不得恢復及單一權益帳本對帳
+- [x] 完成 P1 讀取時 risk-integrity assessment；不做 schema migration、不做歷史批次回填
+- [x] 在歷史 list／detail／result read 與伺服器端 compare／reuse 入口標記 INVALID 並 fail-closed，VALID 結果維持既有操作
+- [x] 完成 P2 最小 UI：沿用現有頁面，加入 validity 橫幅、gross／margin／minimum equity／liquidation／bankrupt 與 risk event ledger，不做大規模視覺重構
+- [x] 完成 P2 最小 Excel：沿用現有匯出，確保摘要、交易、權益曲線、風險事件與執行／會計證據五工作表全部取自 canonical result
+- [x] 更新 Vitest 覆蓋 P0／P1／P2 契約；修改期間跑聚焦測試，最終完整 Vitest、TypeScript 與 production build 均通過
+- [x] 完成桌面回測中心、console／network、INVALID 操作守門與 Excel 內容驗收；不得觸發實盤下單、撤單、平倉或策略啟停
+- [x] 核對 todo.md，僅在全部驗收通過後建立一次 checkpoint；自動發布後交付版本與驗證證據
+- [x] 修正全量 Vitest 唯一失敗：runner descriptor 測試不得以 V4.1 的 0/3 草稿預設值建立 executable runtime，應使用不改變正式預設值的有效測試設定並維持 fail-closed 契約
+- [x] 修正歷史 listRuns 將 tradesData／equityCurve 全量送往前端造成約 1 秒延遲與載入轉圈；列表僅保留 validity 計算所需資料於伺服器端並回傳輕量摘要

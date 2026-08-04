@@ -11,7 +11,15 @@ import { normalizeExecutionModePolicy } from "../../../shared/executionModes";
 import { getDb } from "../../db";
 import { backtestWsService } from "../wsService";
 import { backtestEngine, type BacktestRequest, type BacktestResult } from "./backtestEngine";
-import type { BacktestRunnerIdentity } from "./backtestContracts";
+import type {
+  BacktestReentryDiagnostics,
+  BacktestRiskEvent,
+  BacktestRunnerIdentity,
+} from "./backtestContracts";
+import {
+  assessBacktestRiskIntegrity,
+  type BacktestRiskIntegrityAssessment,
+} from "./backtestRiskIntegrity";
 import {
   classifyBacktestFailure,
   preflightBacktestRunner,
@@ -121,7 +129,14 @@ export function buildBacktestResultPersistence(
     executionMode: result.execution?.executionMode ?? policy.mode,
     executionPolicy: result.execution?.executionPolicy ?? policy,
     executionPolicyVersion: result.execution?.executionPolicyVersion ?? policy.version,
-    executionContext: result.execution ?? null,
+    executionContext: result.execution
+      ? {
+          ...result.execution,
+          riskIntegrity: result.riskIntegrity ?? null,
+          riskEvents: result.riskEvents ?? [],
+          reentryDiagnostics: result.reentryDiagnostics ?? null,
+        }
+      : null,
     modeResults: result.modeResults ?? null,
     legAccounting: result.legAccounting ?? null,
     error: null,
@@ -154,6 +169,81 @@ export function buildBacktestJobExecutionContext(job: Pick<
     runner: job.runner ?? null,
     failure: job.failure ?? null,
   };
+}
+
+export interface PersistedBacktestAudit {
+  riskIntegrity: BacktestRiskIntegrityAssessment | null;
+  riskEvents: BacktestRiskEvent[];
+  reentryDiagnostics: BacktestReentryDiagnostics | null;
+}
+
+export function readPersistedBacktestAudit(executionContext: unknown): PersistedBacktestAudit {
+  if (!executionContext || typeof executionContext !== "object" || Array.isArray(executionContext)) {
+    return { riskIntegrity: null, riskEvents: [], reentryDiagnostics: null };
+  }
+  const record = executionContext as Record<string, unknown>;
+  const candidate = record.riskIntegrity;
+  const riskIntegrity = candidate
+    && typeof candidate === "object"
+    && !Array.isArray(candidate)
+    && typeof (candidate as Record<string, unknown>).passed === "boolean"
+    && Array.isArray((candidate as Record<string, unknown>).violations)
+      ? candidate as BacktestRiskIntegrityAssessment
+      : null;
+  return {
+    riskIntegrity,
+    riskEvents: Array.isArray(record.riskEvents)
+      ? record.riskEvents as BacktestRiskEvent[]
+      : [],
+    reentryDiagnostics: record.reentryDiagnostics
+      && typeof record.reentryDiagnostics === "object"
+      && !Array.isArray(record.reentryDiagnostics)
+        ? record.reentryDiagnostics as BacktestReentryDiagnostics
+        : null,
+  };
+}
+
+export function computePersistedBacktestValidity(row: any): BacktestRiskIntegrityAssessment | null {
+  const audit = readPersistedBacktestAudit(row.executionContext);
+  if (audit.riskIntegrity) return audit.riskIntegrity;
+  if (row.status !== "completed" || !row.equityCurve || !row.metrics) return null;
+  const executionPolicy = row.executionPolicy as Record<string, unknown> | undefined;
+  const mode = row.executionMode ?? executionPolicy?.mode ?? "SINGLE_EXCLUSIVE";
+  const leverage = Math.max(1, Number(row.environment?.leverage) || 1);
+  try {
+    const riskBudget = (executionPolicy?.riskBudget as any) ?? {
+      maxGrossNotionalPct: 100,
+      maxMarginUsagePct: 100,
+      capabilityTtlSeconds: 3600,
+    };
+    return assessBacktestRiskIntegrity({
+      runId: row.jobId,
+      strategyKey: row.strategyKey,
+      initialCapital: Number(row.initialCapital),
+      leverage,
+      executionPolicy: { mode, riskBudget } as any,
+      trades: row.tradesData ?? [],
+      equityCurve: row.equityCurve ?? [],
+      accounting: row.accounting ?? undefined,
+      legAccounting: row.legAccounting ?? undefined,
+      modeResults: row.modeResults ?? undefined,
+      hasRuntimeRiskEvidence: audit.riskEvents.length > 0,
+    });
+  } catch (error) {
+    console.error(`[P1] Risk integrity assessment failed for ${row.jobId}:`, error);
+    return null;
+  }
+}
+
+export function buildBacktestHistoryListItem(row: any) {
+  const validity = computePersistedBacktestValidity(row);
+  const {
+    executionContext: _executionContext,
+    tradesData: _tradesData,
+    equityCurve: _equityCurve,
+    ...summary
+  } = row;
+  return { ...summary, validity };
 }
 
 function parseProgressMessage(message: string, pct: number, currentTotal: number): {
@@ -632,7 +722,7 @@ class BacktestJobManager {
   async listJobsFromDB(userId: number, options?: { limit?: number; offset?: number }): Promise<any[]> {
     const db = await getDb();
     if (!db) return [];
-    return db
+    const rows = await db
       .select({
         id: backtestJobs.id,
         jobId: backtestJobs.jobId,
@@ -660,6 +750,8 @@ class BacktestJobManager {
         errorCode: backtestJobs.errorCode,
         message: backtestJobs.message,
         metrics: backtestJobs.metrics,
+        tradesData: backtestJobs.tradesData,
+        equityCurve: backtestJobs.equityCurve,
         summary: backtestJobs.summary,
         endPositionPolicy: backtestJobs.endPositionPolicy,
         candleCount: backtestJobs.candleCount,
@@ -679,6 +771,7 @@ class BacktestJobManager {
       .orderBy(desc(backtestJobs.createdAt))
       .limit(options?.limit ?? 20)
       .offset(options?.offset ?? 0);
+    return rows.map(buildBacktestHistoryListItem);
   }
 
   async getJobResultFromDB(jobId: string, userId: number): Promise<any | null> {
@@ -689,7 +782,16 @@ class BacktestJobManager {
       .from(backtestJobs)
       .where(and(eq(backtestJobs.jobId, jobId), eq(backtestJobs.userId, userId)))
       .limit(1);
-    return row ?? null;
+    if (!row) return null;
+    const audit = readPersistedBacktestAudit(row.executionContext);
+    const validity = computePersistedBacktestValidity(row);
+    return {
+      ...row,
+      validity,
+      riskIntegrity: audit.riskIntegrity ?? validity,
+      riskEvents: audit.riskEvents,
+      reentryDiagnostics: audit.reentryDiagnostics,
+    };
   }
 
   async deleteJobFromDB(jobId: string, userId: number): Promise<boolean> {

@@ -17,6 +17,10 @@ import {
 } from "./services/backtest/portfolioStrategyAdapterRegistry";
 import { ensureBuiltInPortfolioRuntimeFactoriesRegistered } from "./services/backtest/builtInPortfolioRuntimeFactories";
 import { createDefaultExecutionPolicy, type ExecutionMode } from "../shared/executionModes";
+import {
+  V41_CONFIG_KEY,
+  V41_STRATEGY_KEY,
+} from "../shared/strategies/kama3kMartinV41";
 import { getStrategy, initStrategyStudio } from "./services/strategyStudio";
 
 function testCandles(count = 240) {
@@ -126,9 +130,19 @@ describe("strategy runner descriptors", () => {
       for (const mode of descriptor.certifications.BACKTEST.supportedModes satisfies readonly ExecutionMode[]) {
         const executionPolicy = createDefaultExecutionPolicy(mode);
         const resolved = resolvePortfolioStrategyAdapter(descriptor.strategyKey, mode);
+        const runtimeConfig = descriptor.strategyKey === V41_STRATEGY_KEY
+          ? {
+              ...strategy!.defaultConfig,
+              enableKamaFastSlowCross: true,
+              [V41_CONFIG_KEY]: {
+                ...((strategy!.defaultConfig[V41_CONFIG_KEY] ?? {}) as Record<string, unknown>),
+                enableKamaFastSlowCross: true,
+              },
+            }
+          : strategy!.defaultConfig;
         const runtime = createPortfolioStrategyRuntimeAdapter(resolved, {
           strategy: strategy!,
-          config: strategy!.defaultConfig,
+          config: runtimeConfig,
           candles,
           executionPolicy,
           initialCapital: 10_000,
@@ -142,7 +156,7 @@ describe("strategy runner descriptors", () => {
           timestamp: candles.at(-1)!.timestamp,
           candle: candles.at(-1)!,
           previousCandle: (offset) => candles[candles.length - 1 - offset],
-          config: strategy!.defaultConfig,
+          config: runtimeConfig,
           strategy: strategy!,
           executionMode: mode,
           executionPolicy,

@@ -163,23 +163,19 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
     }
     setComparing(true);
     try {
-      const rows: CompareRow[] = [];
-      for (const runId of selected) {
-        const data = await utils.backtest.getRun.fetch({ runId });
-        const m = data.metrics as CompareRow["metrics"];
-        rows.push({
-          runId,
-          strategyKey: data.run.strategyKey,
-          symbol: data.run.symbol,
-          timeframe: data.run.timeframe,
-          executionMode: (data.run as { executionMode?: string }).executionMode,
-          endPositionPolicy: data.run.endPositionPolicy,
-          engineVersion: data.engineSemantics?.version ?? data.environment?.engineVersion,
-          reconciled: data.accounting?.reconciled,
-          candleCount: data.run.candleCount ?? data.dataQuality?.candleCount,
-          metrics: m,
-        });
-      }
+      const data = await utils.backtest.compareRuns.fetch({ runIds: selected });
+      const rows: CompareRow[] = data.map((run) => ({
+        runId: run.runId,
+        strategyKey: run.strategyKey,
+        symbol: run.symbol,
+        timeframe: run.timeframe,
+        executionMode: run.executionMode,
+        endPositionPolicy: run.endPositionPolicy,
+        engineVersion: run.engineVersion,
+        reconciled: run.reconciled,
+        candleCount: run.candleCount,
+        metrics: run.metrics as CompareRow["metrics"],
+      }));
       setCompareRows(rows);
     } catch (e) {
       toast.error(`對比載入失敗：${e instanceof Error ? e.message : String(e)}`);
@@ -223,7 +219,7 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
-          第 {page + 1} 頁，勾選 2-4 筆可並排對比
+          第 {page + 1} 頁，僅 VALID 的完成結果可勾選 2-4 筆並排對比
         </p>
         <div className="flex items-center gap-2">
           <Button
@@ -348,6 +344,8 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
               const engineVersion = semantics?.version ?? environment?.engineVersion;
               const executionContext = (r as { executionContext?: RunnerExecutionContext | null }).executionContext ?? null;
               const failure = executionContext?.failure;
+              const validity = (r as { validity?: any }).validity;
+              const comparisonEligible = r.status === "completed" && validity?.passed === true;
               const displayedRunner = runnerLabel(r.status, engineVersion, executionContext);
               return (
                 <TableRow key={rowId} className={r.status === "running" ? "bg-blue-500/5" : ""}>
@@ -355,7 +353,8 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                     <Checkbox
                       checked={selected.includes(rowId)}
                       onCheckedChange={() => toggleSelect(rowId)}
-                      disabled={r.status !== "completed"}
+                      disabled={!comparisonEligible}
+                      aria-label={comparisonEligible ? `選取回測 ${rowId} 進行比較` : `回測 ${rowId} 不可比較`}
                     />
                   </TableCell>
                   <TableCell className="text-xs">{fmtDate(r.createdAt)}</TableCell>
@@ -401,6 +400,16 @@ export default function BacktestHistory({ strategyNameMap, onLoadRun }: Props) {
                         >
                           {dataQuality.candleCount} K
                         </span>
+                      )}
+                      {validity && !validity.passed && (
+                        <Badge variant="destructive" className="text-[9px]" title={`違反: ${validity.violations?.map((v: any) => v.code).join(", ") ?? "unknown"}`}>
+                          INVALID
+                        </Badge>
+                      )}
+                      {r.status === "completed" && !validity && (
+                        <Badge variant="outline" className="border-amber-500/55 bg-amber-500/10 text-[9px] text-amber-300" title="缺少可驗證的 risk-integrity 證據，依 fail-closed 原則禁止比較與參數重用">
+                          UNVERIFIED
+                        </Badge>
                       )}
                     </div>
                   </TableCell>

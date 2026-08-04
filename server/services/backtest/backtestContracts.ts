@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   ExecutionMode,
   ExecutionPolicy,
+  ModeDecision,
   PositionLegRole,
   PositionSide,
 } from "../../../shared/executionModes";
@@ -14,6 +15,7 @@ export const BACKTEST_RISK_MODEL_VERSION = "gross-margin-liquidation-v2";
 export const BACKTEST_INTRABAR_POLICY_VERSION = "risk-first-v1";
 export const BACKTEST_ACCOUNTING_TOLERANCE = 0.02;
 export const V25_END_OF_DATA_EXIT_REASON = "回測全域終點強制平倉";
+export const BACKTEST_END_OF_DATA_REASON_CODE = "END_OF_DATA_FORCE_CLOSE";
 
 export type BacktestEndPositionPolicy = "mark_to_market" | "force_close";
 export type BacktestIntrabarEventPolicy = "risk_first";
@@ -28,6 +30,31 @@ export const BACKTEST_INTRABAR_EVENT_ORDER = [
 ] as const;
 
 export type BacktestIntrabarEventKind = (typeof BACKTEST_INTRABAR_EVENT_ORDER)[number];
+
+/**
+ * Canonical runtime 風險事件帳本。所有拒單、強制退出、清算與破產事件都沿用同一事件來源，
+ * contextSnapshot 保存當下的 equity／gross notional／margin 證據，供歷史稽核與 UI／Excel 匯出。
+ */
+export interface BacktestRiskEvent {
+  eventId: string;
+  timestamp: number;
+  sequence: number;
+  eventKind: BacktestIntrabarEventKind;
+  candidateId: string;
+  decisionId: string;
+  decisionOutcome: ModeDecision["outcome"];
+  reasonCode: string;
+  legId?: string;
+  contextSnapshot: Record<string, unknown>;
+}
+
+/** 唯一 canonical run identity；策略 key 與 symbol 必須保留在 artifact 身份中。 */
+export function createBacktestRunId(strategyKey: string, symbol: string): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  const key = strategyKey.replace(/[^A-Za-z0-9]/g, "").slice(0, 20);
+  const sym = symbol.replace(/[^A-Za-z0-9]/g, "");
+  return `bt_${key}_${Date.now()}_${rand}_${sym}`;
+}
 
 export interface BacktestRunnerIdentity {
   runnerId: string;

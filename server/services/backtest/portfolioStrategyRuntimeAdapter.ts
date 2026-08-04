@@ -2,7 +2,15 @@ import type { ExecutionMode, ExecutionPolicy } from "../../../shared/executionMo
 import type { BaseStrategy } from "../../strategies/base";
 import type { BacktestOpenLegSnapshot } from "./backtestContracts";
 import type { OHLCVRow } from "./backtestDatabase";
-import type { BacktestPortfolioCandidate } from "./threeModePortfolioKernel";
+import type {
+  BacktestPortfolioAccountSnapshot,
+  BacktestPortfolioCandidate,
+} from "./threeModePortfolioKernel";
+import type { V41BacktestEntryDiagnostics } from "./v41BacktestDiagnostics";
+
+export interface PortfolioStrategyDiagnostics {
+  v41EntryDiagnostics?: V41BacktestEntryDiagnostics;
+}
 
 export interface PortfolioAdapterIndicators {
   kamaFast: number | null;
@@ -32,6 +40,8 @@ export interface PortfolioAdapterBarContext {
   executionPolicy: ExecutionPolicy;
   initialCapital: number;
   baseLotUsdt: number;
+  /** 每根 K 線由 shared kernel 單一權益帳本產生，不得由策略以初始資金或固定 0% margin 代替。 */
+  account: Readonly<BacktestPortfolioAccountSnapshot>;
   openLegs: readonly BacktestOpenLegSnapshot[];
   indicators: PortfolioAdapterIndicators;
   consecutiveLosses: number;
@@ -56,6 +66,8 @@ export interface PortfolioStrategyRuntimeAdapter {
   readonly ownsPositionManagement: boolean;
   evaluateBar(context: PortfolioAdapterBarContext): Promise<PortfolioAdapterBarDecision> | PortfolioAdapterBarDecision;
   onBarCommitted?(context: PortfolioAdapterCommitContext): Promise<void> | void;
+  /** 策略專屬可稽核診斷；runner 只負責原樣合併到 canonical result。 */
+  getDiagnostics?(): PortfolioStrategyDiagnostics;
 }
 
 export interface PortfolioStrategyRuntimeFactoryContext {
