@@ -507,12 +507,149 @@ export function validateKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartin
   return { valid: issues.length === 0, config, issues, warnings };
 }
 
+/**
+ * Persisted／execution 邊界的嚴格契約。
+ * Draft 表單仍可使用 normalizeKamaRainbowMartinConfig(undefined) 建立兩線起始值；
+ * 但任何保存、回測或實盤執行都必須明確提供版本與 KAMA 陣列，禁止 implicit default。
+ */
+export function validateExplicitKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartinValidationResult {
+  const result = validateKamaRainbowMartinConfig(raw);
+  const issues = [...result.issues];
+
+  if (!isRecord(raw)) {
+    addIssue(
+      issues,
+      "config",
+      "KRM_CONFIG_MISSING",
+      "Kama 彩虹馬丁執行配置缺失；只允許在未保存草稿中使用預設範本",
+    );
+  } else {
+    const suppliedVersion = firstDefined(raw.version, raw.Config_Version);
+    if (suppliedVersion === undefined || String(suppliedVersion).trim() === "") {
+      addIssue(
+        issues,
+        "version",
+        "KRM_CONFIG_MISSING",
+        "執行配置必須明確包含 version",
+      );
+    }
+
+    const suppliedLines = firstDefined(raw.kamaLines, raw.lines);
+    if (!Array.isArray(suppliedLines)) {
+      addIssue(
+        issues,
+        "kamaLines",
+        "KRM_CONFIG_MISSING",
+        "執行配置必須明確包含 kamaLines 陣列",
+      );
+    }
+  }
+
+  return {
+    ...result,
+    valid: issues.length === 0,
+    issues,
+  };
+}
+
 export function assertValidKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartinConfig {
   const result = validateKamaRainbowMartinConfig(raw);
   if (!result.valid) {
     throw new Error(result.issues.map(issue => `${issue.path}: ${issue.message}`).join("；"));
   }
   return result.config;
+}
+
+export function assertExplicitKamaRainbowMartinConfig(raw: unknown): KamaRainbowMartinConfig {
+  const result = validateExplicitKamaRainbowMartinConfig(raw);
+  if (!result.valid) {
+    throw new Error(
+      result.issues
+        .map(issue => `[${issue.code}] ${issue.path}: ${issue.message}`)
+        .join("；"),
+    );
+  }
+  return result.config;
+}
+
+export const KAMA_RAINBOW_MARTIN_LINE_SET_RECEIPT_VERSION = "krm-line-set-receipt.v1" as const;
+export const KAMA_RAINBOW_MARTIN_ENTRY_SEMANTICS = "ALL_ENABLED_SAME_SLOPE_WITH_PAIR_LOCK" as const;
+
+export type KamaRainbowMartinLineSetSource =
+  | "draft"
+  | "backtest-input"
+  | "backtest-result"
+  | "snapshot"
+  | "snapshot-apply"
+  | "strategy-binding"
+  | "live-binding"
+  | "unknown";
+
+export interface KamaRainbowMartinLineSetReceipt {
+  schemaVersion: typeof KAMA_RAINBOW_MARTIN_LINE_SET_RECEIPT_VERSION;
+  source: KamaRainbowMartinLineSetSource;
+  inputVersion: string;
+  configVersion: typeof KAMA_RAINBOW_MARTIN_CONFIG_VERSION;
+  migrated: boolean;
+  totalLineCount: number;
+  enabledLineCount: number;
+  enabledLineIds: string[];
+  entrySemantics: typeof KAMA_RAINBOW_MARTIN_ENTRY_SEMANTICS;
+  lineSetHash: string;
+  configHash: string;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`).join(",")}}`;
+}
+
+function fnv1a32Hex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+export function createKamaRainbowMartinLineSetReceipt(
+  raw: unknown,
+  source: KamaRainbowMartinLineSetSource = "unknown",
+): KamaRainbowMartinLineSetReceipt {
+  const config = assertExplicitKamaRainbowMartinConfig(raw);
+  const rawRecord = isRecord(raw) ? raw : {};
+  const inputVersion = String(firstDefined(rawRecord.version, rawRecord.Config_Version, "unknown"));
+  const enabledLineIds = config.kamaLines
+    .filter(line => line.enabled)
+    .map(line => line.id);
+  const canonicalLineSet = config.kamaLines.map(line => ({
+    id: line.id,
+    name: line.name,
+    enabled: line.enabled,
+    erPeriod: line.erPeriod,
+    fastEma: line.fastEma,
+    slowEma: line.slowEma,
+    color: line.color,
+  }));
+
+  return {
+    schemaVersion: KAMA_RAINBOW_MARTIN_LINE_SET_RECEIPT_VERSION,
+    source,
+    inputVersion,
+    configVersion: config.version,
+    migrated: inputVersion !== config.version,
+    totalLineCount: config.kamaLines.length,
+    enabledLineCount: enabledLineIds.length,
+    enabledLineIds,
+    entrySemantics: KAMA_RAINBOW_MARTIN_ENTRY_SEMANTICS,
+    lineSetHash: `krm-lines-${fnv1a32Hex(stableJson(canonicalLineSet))}`,
+    configHash: `krm-config-${fnv1a32Hex(stableJson(config))}`,
+  };
 }
 
 export function getKamaRainbowMartinTimeframeMinutes(timeframe: KamaRainbowMartinTimeframe): number {

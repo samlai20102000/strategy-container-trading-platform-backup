@@ -1016,10 +1016,10 @@ const strategiesRouter = router({
         const currentState = existing.martinState && typeof existing.martinState === "object"
           ? existing.martinState as Record<string, unknown>
           : {};
-        const rawConfig = input.kamaRainbowMartinConfig
-          ?? resolveBoundKamaRainbowMartinConfig(currentState, existing.reentryEnabled === true);
         let binding: ReturnType<typeof bindKamaRainbowMartinStrategyConfig>;
         try {
+          const rawConfig = input.kamaRainbowMartinConfig
+            ?? resolveBoundKamaRainbowMartinConfig(currentState, existing.reentryEnabled === true);
           binding = bindKamaRainbowMartinStrategyConfig(currentState, rawConfig);
         } catch (error) {
           throw new TRPCError({

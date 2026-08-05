@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createKamaRainbowMartinDefaultConfig } from "../shared/strategies/kamaRainbowMartin";
+import {
+  createKamaRainbowMartinDefaultConfig,
+  type KamaRainbowMartinConfig,
+} from "../shared/strategies/kamaRainbowMartin";
 import { createInitialStrategyState, type KLineData } from "./strategies/base";
 import {
+  calculateKamaRainbowMartinSnapshot,
   classifyKamaRainbowMartinLines,
   createKamaRainbowMartinRuntimeState,
   evaluateKamaRainbowMartinEntry,
@@ -24,6 +28,27 @@ function candlesFromCloses(closes: number[]): KLineData[] {
   }));
 }
 
+function observationSet(lineCount: number, direction: "up" | "down" = "up"): KamaRainbowMartinLineObservation[] {
+  return Array.from({ length: lineCount }, (_, index) => {
+    const previous = 1_000 - index * 10;
+    return line(`KAMA_${index + 1}`, previous, previous + (direction === "up" ? 1 : -1));
+  });
+}
+
+function threeLineConfigWithDisabledThird(): KamaRainbowMartinConfig {
+  const config = createKamaRainbowMartinDefaultConfig();
+  config.kamaLines.push({
+    id: "KAMA_3",
+    name: "KAMA 30",
+    enabled: false,
+    erPeriod: 30,
+    fastEma: 2,
+    slowEma: 30,
+    color: "#f59e0b",
+  });
+  return config;
+}
+
 describe("Kama 彩虹馬丁交叉鎖與 entry evaluator", () => {
   it("以任意線對的 previous/current delta 判定 cross 與 touch", () => {
     expect(classifyKamaRainbowMartinLines([line("A", 1, 3), line("B", 2, 2)]).reasonCode).toBe(
@@ -42,6 +67,59 @@ describe("Kama 彩虹馬丁交叉鎖與 entry evaluator", () => {
     expect(classifyKamaRainbowMartinLines([line("A", 1, 2), line("B", 4, 3)]).reasonCode).toBe(
       "KRM_MIXED_SLOPE",
     );
+  });
+
+  it.each([2, 3, 6, 32])("%i 條啟用線全部同向才產生方向候選", (lineCount) => {
+    expect(classifyKamaRainbowMartinLines(observationSet(lineCount, "up"))).toEqual({
+      reasonCode: "KRM_ALL_UP",
+      direction: "UP",
+      lockedPair: null,
+    });
+    expect(classifyKamaRainbowMartinLines(observationSet(lineCount, "down"))).toEqual({
+      reasonCode: "KRM_ALL_DOWN",
+      direction: "DOWN",
+      lockedPair: null,
+    });
+
+    const mixed = observationSet(lineCount, "up");
+    mixed[lineCount - 1] = line(`KAMA_${lineCount}`, mixed[lineCount - 1].previous, mixed[lineCount - 1].previous - 1);
+    expect(classifyKamaRainbowMartinLines(mixed).reasonCode).toBe("KRM_MIXED_SLOPE");
+  });
+
+  it("第 5／6 條線發生 cross 或 touch 時同樣鎖定，不會只檢查前兩條", () => {
+    const crossed = observationSet(6, "up");
+    crossed[4] = line("KAMA_5", 110, 112);
+    crossed[5] = line("KAMA_6", 100, 113);
+    expect(classifyKamaRainbowMartinLines(crossed)).toEqual({
+      reasonCode: "KRM_CROSS_LOCK",
+      direction: "MIXED",
+      lockedPair: ["KAMA_5", "KAMA_6"],
+    });
+
+    const touched = observationSet(6, "up");
+    touched[4] = line("KAMA_5", 110, 112);
+    touched[5] = line("KAMA_6", 100, 112);
+    expect(classifyKamaRainbowMartinLines(touched)).toEqual({
+      reasonCode: "KRM_TOUCH_LOCK",
+      direction: "MIXED",
+      lockedPair: ["KAMA_5", "KAMA_6"],
+    });
+  });
+
+  it("停用的第 3 條不參與快照或入市分類，但仍完整保留於 canonical config", () => {
+    const config = threeLineConfigWithDisabledThird();
+    const candles = candlesFromCloses(Array.from({ length: 80 }, (_, index) => 100 + index));
+    const snapshot = calculateKamaRainbowMartinSnapshot(candles, config);
+    const twoLineBaseline = calculateKamaRainbowMartinSnapshot(
+      candles,
+      createKamaRainbowMartinDefaultConfig(),
+    );
+
+    expect(config.kamaLines).toHaveLength(3);
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.lines.map(item => item.id)).toEqual(["KAMA_1", "KAMA_2"]);
+    expect(snapshot.direction).toBe(twoLineBaseline.direction);
+    expect(snapshot.lockedPair).toEqual(twoLineBaseline.lockedPair);
   });
 
   it("目標腿有持倉時優先跳過 KAMA，即使沒有 candles 仍進入管理", () => {

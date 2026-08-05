@@ -1,6 +1,5 @@
 import {
-  assertValidKamaRainbowMartinConfig,
-  createKamaRainbowMartinDefaultConfig,
+  assertExplicitKamaRainbowMartinConfig,
   getKamaRainbowMartinTimeframeMinutes,
   getLayerGapPct,
   getLayerMultiplier,
@@ -38,15 +37,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function resolveBoundKamaRainbowMartinConfig(
   state: unknown,
-  fallbackReentryEnabled = false,
+  _fallbackReentryEnabled = false,
 ): KamaRainbowMartinConfig {
   const boundConfig = getBoundStrategyConfig(state, KAMA_RAINBOW_MARTIN_STRATEGY_KEY);
-  if (boundConfig) return assertValidKamaRainbowMartinConfig(boundConfig);
-
-  return assertValidKamaRainbowMartinConfig({
-    ...createKamaRainbowMartinDefaultConfig(),
-    reentryEnabled: fallbackReentryEnabled,
-  });
+  return assertExplicitKamaRainbowMartinConfig(boundConfig);
 }
 
 export function deriveKamaRainbowMartinStrategyColumns(
@@ -76,7 +70,7 @@ export function bindKamaRainbowMartinStrategyConfig(
   martinState: Record<string, unknown>;
   columns: KamaRainbowMartinStrategyColumns;
 } {
-  const config = assertValidKamaRainbowMartinConfig(rawConfig);
+  const config = assertExplicitKamaRainbowMartinConfig(rawConfig);
   const state = isRecord(currentState) ? currentState : {};
   let martinState: Record<string, unknown>;
 

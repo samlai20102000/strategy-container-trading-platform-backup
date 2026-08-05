@@ -3,6 +3,7 @@ import {
   KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
   createKamaRainbowMartinDefaultConfig,
+  createKamaRainbowMartinLineSetReceipt,
   validateKamaRainbowMartinConfig,
 } from "../shared/strategies/kamaRainbowMartin";
 import { normalizeSnapshotConfigForStrategy } from "./routers/backtest.router";
@@ -36,14 +37,18 @@ describe("Kama 彩虹馬丁快照 canonical round-trip", () => {
     config.reentryEnabled = true;
     config.trailing.enabled = false;
     config.kamaLines[1].enabled = false;
-    config.kamaLines.push({
-      id: "krm-line-3",
-      name: "KAMA 30",
-      erPeriod: 30,
-      fastEma: 2,
-      slowEma: 30,
-      enabled: true,
-    });
+    config.kamaLines.push(
+      ...Array.from({ length: 4 }, (_, index) => ({
+        id: `KAMA_${index + 3}`,
+        name: `KAMA ${index + 3}`,
+        erPeriod: 30 + index * 10,
+        fastEma: 2,
+        slowEma: 30 + index,
+        enabled: true,
+        color: `#${(index + 3).toString(16).padStart(6, "0")}`,
+      })),
+    );
+    const sourceReceipt = createKamaRainbowMartinLineSetReceipt(config, "snapshot");
 
     const state = attachSnapshotConfig(
       { currentLayer: 0, runtimeOnly: "preserved" },
@@ -64,6 +69,20 @@ describe("Kama 彩虹馬丁快照 canonical round-trip", () => {
     expect(restoredConfig).toEqual(config);
     expect(restoredConfig?.reentryEnabled).toBe(true);
     expect(validateKamaRainbowMartinConfig(restoredConfig).valid).toBe(true);
+    expect(restoredConfig?.kamaLines.map(line => line.id)).toEqual([
+      config.kamaLines[0].id,
+      config.kamaLines[1].id,
+      "KAMA_3",
+      "KAMA_4",
+      "KAMA_5",
+      "KAMA_6",
+    ]);
+    expect(createKamaRainbowMartinLineSetReceipt(restoredConfig, "strategy-binding")).toMatchObject({
+      totalLineCount: 6,
+      enabledLineCount: 5,
+      lineSetHash: sourceReceipt.lineSetHash,
+      configHash: sourceReceipt.configHash,
+    });
     expect(getBoundStrategyConfig(restored, "RAINBOW_TREND_LADDER_V1")).toBeUndefined();
   });
 

@@ -71,13 +71,18 @@ describe("KRM canonical strategy config binding", () => {
     expect(edited.columns.reentryEnabled).toBe(false);
   });
 
-  it("讀取時以 canonical 私有配置為真相來源，只有缺少配置才採頂層 fallback", () => {
+  it("讀取時以 canonical 私有配置為真相來源，缺少綁定時 fail-closed", () => {
     const canonical = createKamaRainbowMartinDefaultConfig();
     canonical.reentryEnabled = false;
 
     expect(resolveBoundKamaRainbowMartinConfig({
       [KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]: canonical,
     }, true).reentryEnabled).toBe(false);
-    expect(resolveBoundKamaRainbowMartinConfig({}, true).reentryEnabled).toBe(true);
+    expect(() => resolveBoundKamaRainbowMartinConfig({}, true)).toThrow(/KRM_CONFIG_MISSING/);
+  });
+
+  it("保存邊界不得把 undefined 靜默正規化為兩線預設", () => {
+    expect(() => bindKamaRainbowMartinStrategyConfig(undefined, undefined))
+      .toThrow(/KRM_CONFIG_MISSING/);
   });
 });

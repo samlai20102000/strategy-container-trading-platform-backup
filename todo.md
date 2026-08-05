@@ -2786,3 +2786,34 @@
 - [x] 核對 todo.md，僅在全部驗收通過後建立一次 checkpoint；自動發布後交付版本與驗證證據
 - [x] 修正全量 Vitest 唯一失敗：runner descriptor 測試不得以 V4.1 的 0/3 草稿預設值建立 executable runtime，應使用不改變正式預設值的有效測試設定並維持 fail-closed 契約
 - [x] 修正歷史 listRuns 將 tradesData／equityCurve 全量送往前端造成約 1 秒延遲與載入轉圈；列表僅保留 validity 計算所需資料於伺服器端並回傳輕量摘要
+
+
+## 2026-08-05 Kama 彩虹馬丁回測破產診斷與修復
+
+- [ ] 診斷 KRM 三模式 funding 與 margin 計算缺陷：確認 portfolioStrategyRuntimeAdapter 是否正確納入 M2/H3 輔助腿的 funding 費用與 margin requirement
+- [ ] 檢查馬丁倍率配置與初始資本匹配度：L1-L8 層級總需求（12,800+ USDT）遠超初始資本（10,000 USDT）
+- [ ] 驗證回測進度停止於 K 棒 55,000/55,488 的根本原因：是否為 bankruptcy terminal 觸發
+- [ ] 修復 KRM 三模式的 funding 與 margin 納入邏輯，確保輔助腿成本被正確計算
+- [ ] 調整馬丁倍率配置（改為 2-3 層）或增加初始資本（改為 50,000 USDT）以匹配風控政策
+- [ ] 重新回測驗證破產問題已解決，確認能完成全部 55,488 根 K 棒
+- [ ] 檢查其他 KRM 策略（如 V50、V61、V70）是否存在相同問題
+
+
+## 2026-08-05 KRM 彩虹馬丁 MARGIN_USAGE_POLICY_BREACH 診斷
+- [ ] Phase 1：核讀 KRM 入市條件邏輯 — 驗證 6 個 KAMA 都同一方向才入市
+- [ ] Phase 2：核讀 KRM 馬丁加倉邏輯 — 驗證 1 個馬丁系統管理所有層級
+- [ ] Phase 3：修復入市條件或馬丁邏輯缺陷
+- [ ] Phase 4：重新回測驗證修復
+
+## 2026-08-05 KRM 動態 KAMA 2–32 線全鏈路加固（已確認 A＋B＋C）
+- [x] 將 KRM 草稿預設正規化與 persisted／execution 嚴格驗證分離，禁止缺失 canonical config 靜默退回兩線
+- [x] KRM 一般新建、編輯、快照套用及由快照新建策略均強制驗證 explicit canonical config，缺失時 fail-closed
+- [x] KRM 實盤訊號找不到綁定配置時回傳 `KRM_CONFIG_MISSING` 並禁止新增曝險，不改變既有全線同向入市語義
+- [x] 建立 KRM line-set receipt（總線數、啟用線數、啟用 ID、版本與 deterministic hash），供回測、快照及策略建立共用
+- [x] 回測中心顯示本次實際入市線集合及配置來源，讓第 3–N 條的參與狀態可直接驗證
+- [x] 參數快照庫顯示 line-set receipt，套用／複製時檢查線集合一致性並阻止來源不明配置
+- [x] 新建／編輯策略介面顯示完整 KRM 線集合摘要，保留兩線草稿起始但不得在保存或實盤階段隱式套用
+- [x] 新增 2／3／6／32 線契約、任意線對 cross／touch、停用線及 JSON round-trip 測試
+- [x] 新增 KRM 回測／實盤共用入市核心與 line-set receipt 一致性測試
+- [x] 執行受影響測試、完整 Vitest、TypeScript、production build、桌面與手機介面、console／network 驗收
+- [x] 核對 todo.md 全部本輪項目、保存 checkpoint 並交付自動發布版本及修改報告

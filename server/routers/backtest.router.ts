@@ -60,10 +60,12 @@ import {
   V41_STRATEGY_KEY,
 } from "../../shared/strategies/kama3kMartinV41";
 import {
-  assertValidKamaRainbowMartinConfig,
+  assertExplicitKamaRainbowMartinConfig,
+  createKamaRainbowMartinLineSetReceipt,
   getKamaRainbowMartinTimeframeMinutes,
   KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+  type KamaRainbowMartinLineSetSource,
 } from "../../shared/strategies/kamaRainbowMartin";
 import { deriveV41StrategyColumns } from "../services/v41StrategyConfig";
 import { bindKamaRainbowMartinStrategyConfig } from "../services/kamaRainbowMartinStrategyConfig";
@@ -257,7 +259,7 @@ export function normalizeSnapshotConfigForStrategy(
     }
     if (strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
       const nestedConfig = rawConfig[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY];
-      return { ...assertValidKamaRainbowMartinConfig(nestedConfig ?? rawConfig) };
+      return { ...assertExplicitKamaRainbowMartinConfig(nestedConfig ?? rawConfig) };
     }
     return { ...rawConfig };
   } catch (error) {
@@ -273,6 +275,34 @@ export function normalizeSnapshotConfigForStrategy(
     throw new Error(
       `${label}快照參數錯誤：${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+}
+
+function createKamaRainbowMartinReceiptForStrategy(
+  strategyKey: string,
+  config: Record<string, unknown>,
+  source: KamaRainbowMartinLineSetSource,
+) {
+  if (strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY) return null;
+  return createKamaRainbowMartinLineSetReceipt(config, source);
+}
+
+function inspectKamaRainbowMartinReceiptForStrategy(
+  strategyKey: string,
+  config: Record<string, unknown>,
+  source: KamaRainbowMartinLineSetSource,
+) {
+  if (strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY) return {};
+  try {
+    return {
+      lineSetReceipt: createKamaRainbowMartinLineSetReceipt(config, source),
+      lineSetReceiptError: null,
+    };
+  } catch (error) {
+    return {
+      lineSetReceipt: null,
+      lineSetReceiptError: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -365,7 +395,7 @@ export function validateBacktestRequest(input: z.infer<typeof backtestRequestSch
       input.config = { ...config };
     } else if (input.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY) {
       const nestedConfig = input.config[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY];
-      const config = assertValidKamaRainbowMartinConfig(nestedConfig ?? input.config);
+      const config = assertExplicitKamaRainbowMartinConfig(nestedConfig ?? input.config);
       const expectedSeconds = getKamaRainbowMartinTimeframeMinutes(config.timeframe) * 60;
       const requestedSeconds = parseTimeframe(input.timeframe).totalSeconds;
       if (requestedSeconds !== expectedSeconds) {
@@ -507,7 +537,16 @@ export const backtestRouter = router({
       if (!userId) throw new Error("請先登入");
       // 先從記憶體查
       const memResult = backtestJobManager.getResult(input.jobId, userId);
-      if (memResult) return memResult;
+      if (memResult) {
+        return {
+          ...memResult,
+          ...inspectKamaRainbowMartinReceiptForStrategy(
+            memResult.strategyKey,
+            memResult.config as Record<string, unknown>,
+            "backtest-result",
+          ),
+        };
+      }
       // Fallback: 從 DB 查
       const dbJob = await backtestJobManager.getJobResultFromDB(input.jobId, userId);
       if (!dbJob || dbJob.status !== "completed") throw new Error("結果不存在（任務未完成或已過期）");
@@ -536,6 +575,11 @@ export const backtestRouter = router({
         riskIntegrity: dbJob.riskIntegrity ?? dbJob.validity ?? undefined,
         riskEvents: dbJob.riskEvents ?? [],
         reentryDiagnostics: dbJob.reentryDiagnostics ?? undefined,
+        ...inspectKamaRainbowMartinReceiptForStrategy(
+          dbJob.strategyKey,
+          dbJob.config as Record<string, unknown>,
+          "backtest-result",
+        ),
       };
     }),
 
@@ -603,6 +647,11 @@ export const backtestRouter = router({
         riskEvents: dbJob.riskEvents ?? [],
         reentryDiagnostics: dbJob.reentryDiagnostics ?? null,
         validity: dbJob.validity ?? null,
+        ...inspectKamaRainbowMartinReceiptForStrategy(
+          dbJob.strategyKey,
+          dbJob.config as Record<string, unknown>,
+          "backtest-result",
+        ),
       };
     }),
 
@@ -727,6 +776,11 @@ export const backtestRouter = router({
         input.strategyKey,
         input.config,
       );
+      const lineSetReceipt = createKamaRainbowMartinReceiptForStrategy(
+        input.strategyKey,
+        storedConfig,
+        "snapshot",
+      );
       assertRegisteredStrategy(input.strategyKey);
       const capabilityManifest = await requireStrategyCapabilityManifest(input.strategyKey);
       const artifactScope = input.artifactScope
@@ -792,7 +846,7 @@ export const backtestRouter = router({
                           : "usdt",
                         timeframe: timeframeForMinutes(
                           getKamaRainbowMartinTimeframeMinutes(
-                            assertValidKamaRainbowMartinConfig(storedConfig).timeframe,
+                            assertExplicitKamaRainbowMartinConfig(storedConfig).timeframe,
                           ),
                         ),
                         configJson: storedConfig,
@@ -829,7 +883,7 @@ export const backtestRouter = router({
         targetManifest: capabilityManifest,
         integrityValid: sourceValidity?.passed ?? true,
       });
-      return { success: true, snapshotName, artifact, compatibility };
+      return { success: true, snapshotName, artifact, compatibility, lineSetReceipt };
     }),
 
   /** 獲取參數快照列表（可按策略過濾） */
@@ -880,6 +934,11 @@ export const backtestRouter = router({
           maxDrawdown: r.maxDrawdown ? parseFloat(r.maxDrawdown) : null,
           isFavorite: r.isFavorite,
           createdAt: r.createdAt,
+          ...inspectKamaRainbowMartinReceiptForStrategy(
+            r.strategyKey,
+            r.config as Record<string, unknown>,
+            "snapshot",
+          ),
           ...artifactView,
         };
       }));
@@ -936,6 +995,11 @@ export const backtestRouter = router({
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
         (snapshot.config as Record<string, unknown>) || {},
+      );
+      const lineSetReceipt = createKamaRainbowMartinReceiptForStrategy(
+        snapshotKey,
+        config,
+        "snapshot-apply",
       );
       const isLegacyCardStrategy = strategy.activationState === "LEGACY";
       const artifactBundle = isLegacyCardStrategy
@@ -1061,6 +1125,7 @@ export const backtestRouter = router({
         activationState: isLegacyCardStrategy ? "LEGACY" as const : "DISABLED" as const,
         artifact: artifactBundle.artifact,
         compatibility: artifactBundle.compatibility,
+        lineSetReceipt,
         message: isLegacyCardStrategy
           ? "參數已套用並將策略安全設為停用；確認設定後可由策略卡片直接啟用"
           : "Canonical deployment 參數已套用並安全設為停用；請重新通過部署 preflight 後再啟用",
@@ -1106,6 +1171,11 @@ export const backtestRouter = router({
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
         (snapshot.config as Record<string, unknown>) || {},
+      );
+      const lineSetReceipt = createKamaRainbowMartinReceiptForStrategy(
+        snapshotKey,
+        config,
+        "snapshot-apply",
       );
       const artifactBundle = await requireImportableSnapshotArtifact(
         snapshot as unknown as Record<string, unknown>,
@@ -1228,6 +1298,7 @@ export const backtestRouter = router({
         activationState: "LEGACY" as const,
         artifact: artifactBundle.artifact,
         compatibility: artifactBundle.compatibility,
+        lineSetReceipt,
         message: `已從快照建立停用策略「${input.name}」；引擎鎖定為 ${snapshotKey}，確認參數、API 與風控設定後可由策略卡片直接啟用`,
       };
     }),
@@ -1282,6 +1353,11 @@ export const backtestRouter = router({
       const config = normalizeSnapshotConfigForStrategy(
         snapshotKey,
         input.snapshotConfig as Record<string, unknown>,
+      );
+      const lineSetReceipt = createKamaRainbowMartinReceiptForStrategy(
+        snapshotKey,
+        config,
+        "snapshot-apply",
       );
       const capabilityManifest = await requireStrategyCapabilityManifest(snapshotKey);
       const directArtifact = buildStrategyArtifactEnvelope({
@@ -1386,6 +1462,7 @@ export const backtestRouter = router({
         enabled: false,
         activationState: isLegacyCardStrategy ? "LEGACY" as const : "DISABLED" as const,
         artifact: directArtifact,
+        lineSetReceipt,
         message: isLegacyCardStrategy
           ? "參數已套用並將策略安全設為停用；確認設定後可由策略卡片直接啟用"
           : "Canonical deployment 參數已套用並安全設為停用；請重新通過部署 preflight 後再啟用",
@@ -1427,6 +1504,11 @@ export const backtestRouter = router({
         sharpeRatio: snapshot.sharpeRatio ? parseFloat(snapshot.sharpeRatio) : null,
         maxDrawdown: snapshot.maxDrawdown ? parseFloat(snapshot.maxDrawdown) : null,
         createdAt: snapshot.createdAt,
+        ...inspectKamaRainbowMartinReceiptForStrategy(
+          snapshot.strategyKey,
+          snapshot.config as Record<string, unknown>,
+          "snapshot",
+        ),
         ...artifactView,
       };
     }),

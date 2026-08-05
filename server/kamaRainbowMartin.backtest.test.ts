@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
   createKamaRainbowMartinDefaultConfig,
+  createKamaRainbowMartinLineSetReceipt,
   type KamaRainbowMartinBacktestEndPositionPolicy,
 } from "../shared/strategies/kamaRainbowMartin";
 import { V25_END_OF_DATA_EXIT_REASON } from "./services/backtest/backtestContracts";
@@ -80,6 +81,22 @@ function makeRequest(candles: OHLCVRow[], policy: KamaRainbowMartinBacktestEndPo
   };
 }
 
+function makeSixLineRequest(candles: OHLCVRow[]): BacktestRequest {
+  const request = makeRequest(candles, "mark_to_market");
+  const config = makeConfig("mark_to_market");
+  config.kamaLines = Array.from({ length: 6 }, (_, index) => ({
+    id: `KAMA_${index + 1}`,
+    name: `KAMA ${index + 1}`,
+    enabled: true,
+    erPeriod: 5 + index * 2,
+    fastEma: 2,
+    slowEma: 30 + index,
+    color: `#${(index + 1).toString(16).padStart(6, "0")}`,
+  }));
+  request.config = config;
+  return request;
+}
+
 describe("Kama 彩虹馬丁同源回測", () => {
   beforeEach(() => {
     saveBacktestResult.mockClear();
@@ -116,6 +133,40 @@ describe("Kama 彩虹馬丁同源回測", () => {
     expect(progress.at(-1)?.pct).toBe(100);
     expect(saveBacktestResult).toHaveBeenCalledTimes(1);
     expect(savePerformanceMetrics).toHaveBeenCalledTimes(1);
+  });
+
+  it("六線回測完整保留第 3–6 條，receipt 與 live-binding canonical hash 一致", async () => {
+    const candles = makeTrendingCandles(80);
+    const request = makeSixLineRequest(candles);
+    const expectedLiveReceipt = createKamaRainbowMartinLineSetReceipt(request.config, "live-binding");
+
+    const result = await runKamaRainbowMartinBacktest(
+      request,
+      "Kama彩虹馬丁策略",
+      request.config,
+      candles,
+      request.startDate,
+      request.endDate,
+      0,
+      0,
+    );
+
+    expect((result.config.kamaLines as Array<{ id: string }>).map(line => line.id)).toEqual([
+      "KAMA_1",
+      "KAMA_2",
+      "KAMA_3",
+      "KAMA_4",
+      "KAMA_5",
+      "KAMA_6",
+    ]);
+    expect(result.lineSetReceipt).toMatchObject({
+      source: "backtest-input",
+      totalLineCount: 6,
+      enabledLineCount: 6,
+      enabledLineIds: expectedLiveReceipt.enabledLineIds,
+      lineSetHash: expectedLiveReceipt.lineSetHash,
+      configHash: expectedLiveReceipt.configHash,
+    });
   });
 
   it("force-close 只在全域資料終點產生一筆合成平倉，且不保留未平倉部位", async () => {

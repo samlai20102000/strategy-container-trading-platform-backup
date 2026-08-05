@@ -14,9 +14,11 @@ import {
 } from "../../strategies/kamaRainbowMartin/core";
 import type { KLineData } from "../../strategies/base";
 import {
-  assertValidKamaRainbowMartinConfig,
+  assertExplicitKamaRainbowMartinConfig,
+  createKamaRainbowMartinLineSetReceipt,
   getKamaRainbowMartinTimeframeMinutes,
   type KamaRainbowMartinConfig,
+  type KamaRainbowMartinLineSetReceipt,
 } from "../../../shared/strategies/kamaRainbowMartin";
 import { buildEnvironmentSnapshot } from "../riskSettingsValidator";
 import { getBacktestDatabase, type OHLCVRow } from "./backtestDatabase";
@@ -80,6 +82,7 @@ export interface KamaRainbowMartinBacktestRunOptions {
 }
 
 export interface KamaRainbowMartinBacktestRunResult extends BacktestResult {
+  lineSetReceipt: KamaRainbowMartinLineSetReceipt;
   session: KamaRainbowMartinBacktestSession;
 }
 
@@ -172,7 +175,8 @@ export async function runKamaRainbowMartinBacktest(
   onProgress?: (pct: number, message: string) => void,
   options: KamaRainbowMartinBacktestRunOptions = {},
 ): Promise<KamaRainbowMartinBacktestRunResult> {
-  const config: KamaRainbowMartinConfig = assertValidKamaRainbowMartinConfig(rawConfig);
+  const config: KamaRainbowMartinConfig = assertExplicitKamaRainbowMartinConfig(rawConfig);
+  const lineSetReceipt = createKamaRainbowMartinLineSetReceipt(rawConfig, "backtest-input");
   const expectedMinutes = getKamaRainbowMartinTimeframeMinutes(config.timeframe);
   const expectedTimeframe = `${expectedMinutes}m`;
   const requestTimeframe = parseTimeframe(request.timeframe);
@@ -488,7 +492,7 @@ export async function runKamaRainbowMartinBacktest(
   const lastCandle = candles[candles.length - 1] ?? priorSession?.lastCandle ?? null;
   const summaryPrefix = isFinalSegment ? "Kama 彩虹馬丁回測完成" : "Kama 彩虹馬丁資料分片完成（狀態保留）";
   const reentryDiagnostics = snapshotBacktestReentryDiagnostics(reentryTracker);
-  const summary = `${summaryPrefix}：${strategyName} / ${request.symbol} ${expectedTimeframe}，共 ${totalCandleCount} 根已收盤 K 線、${trades.length} 筆交易、${reentryDiagnostics.cycleCount} 個 cycle、${reentryDiagnostics.reentryCount} 次重新入市（${reentryDiagnostics.enabled ? "啟用" : "停用"}），總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
+  const summary = `${summaryPrefix}：${strategyName} / ${request.symbol} ${expectedTimeframe}，入市線 ${lineSetReceipt.enabledLineCount}/${lineSetReceipt.totalLineCount} [${lineSetReceipt.enabledLineIds.join(", ")}]（${lineSetReceipt.lineSetHash}），共 ${totalCandleCount} 根已收盤 K 線、${trades.length} 筆交易、${reentryDiagnostics.cycleCount} 個 cycle、${reentryDiagnostics.reentryCount} 次重新入市（${reentryDiagnostics.enabled ? "啟用" : "停用"}），總回報 ${metrics.totalReturn}%，勝率 ${metrics.winRate}%，最大回撤 ${metrics.maxDrawdown}%`;
 
   const session: KamaRainbowMartinBacktestSession = {
     equity,
@@ -550,6 +554,7 @@ export async function runKamaRainbowMartinBacktest(
     summary,
     candleCount: totalCandleCount,
     environment,
+    lineSetReceipt,
     endPositionPolicy: config.backtestEndPositionPolicy,
     accounting,
     reentryDiagnostics,

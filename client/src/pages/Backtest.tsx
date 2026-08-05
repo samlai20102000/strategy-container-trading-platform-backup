@@ -82,7 +82,10 @@ import {
   summarizeV41EntryConfig,
   validateV41Config,
 } from "@shared/strategies/kama3kMartinV41";
-import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
+import {
+  KamaRainbowMartinConfigPanel,
+  KamaRainbowMartinLineSetReceiptPanel,
+} from "@/components/KamaRainbowMartinConfigPanel";
 import {
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
   getKamaRainbowMartinTimeframeMinutes,
@@ -1983,41 +1986,50 @@ export default function Backtest() {
 
         {/* 績效報告 */}
         {phase === "done" && result && (
-          <BacktestReport
-            runId={(result as any).runId ?? jobId}
-            strategyName={(result as any).strategyName ?? selectedStrategy?.name}
-            strategyKey={(result as any).strategyKey ?? strategyKey}
-            metrics={result.metrics as ReportMetrics}
-            trades={result.trades as ReportTrade[]}
-            equityCurve={result.equityCurve}
-            config={(result as any).config ?? configJson}
-            executionMode={(result as any).executionMode ?? executionPolicy.mode}
-            executionPolicy={(result as any).executionPolicy ?? executionPolicy}
-            endPositionPolicy={(result as any).endPositionPolicy ?? endPositionPolicy}
-            candleCount={(result as any).candleCount}
-            accounting={(result as any).accounting ?? null}
-            dataQuality={(result as any).dataQuality ?? null}
-            engineSemantics={(result as any).engineSemantics ?? null}
-            environment={(result as any).environment ?? null}
-            reentryDiagnostics={(result as any).reentryDiagnostics ?? null}
-            validity={(result as any).validity ?? (result as any).riskIntegrity ?? null}
-            riskEvents={(result as any).riskEvents ?? []}
-            legAccounting={(result as any).legAccounting ?? null}
-            modeResults={(result as any).modeResults ?? null}
-            backtestSettings={{
-              exchange,
-              symbol: symbol.trim(),
-              timeframe: `${tfValue}${tfUnit}`,
-              startDate,
-              endDate,
-              initialCapital: Number(initialCapital),
-              tradeAmount: Number(tradeAmount) || undefined,
-              endPositionPolicy,
-              configJson,
-              baseLotSize: Number(tradeAmount) || undefined,
-              baseLotSizeMode: strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY ? positionMode : "usdt",
-            }}
-          />
+          <div className="space-y-4">
+            {((result as any).strategyKey ?? strategyKey) === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+              <KamaRainbowMartinLineSetReceiptPanel
+                config={(result as any).config ?? configJson}
+                receipt={(result as any).lineSetReceipt ?? null}
+                source="backtest-result"
+              />
+            )}
+            <BacktestReport
+              runId={(result as any).runId ?? jobId}
+              strategyName={(result as any).strategyName ?? selectedStrategy?.name}
+              strategyKey={(result as any).strategyKey ?? strategyKey}
+              metrics={result.metrics as ReportMetrics}
+              trades={result.trades as ReportTrade[]}
+              equityCurve={result.equityCurve}
+              config={(result as any).config ?? configJson}
+              executionMode={(result as any).executionMode ?? executionPolicy.mode}
+              executionPolicy={(result as any).executionPolicy ?? executionPolicy}
+              endPositionPolicy={(result as any).endPositionPolicy ?? endPositionPolicy}
+              candleCount={(result as any).candleCount}
+              accounting={(result as any).accounting ?? null}
+              dataQuality={(result as any).dataQuality ?? null}
+              engineSemantics={(result as any).engineSemantics ?? null}
+              environment={(result as any).environment ?? null}
+              reentryDiagnostics={(result as any).reentryDiagnostics ?? null}
+              validity={(result as any).validity ?? (result as any).riskIntegrity ?? null}
+              riskEvents={(result as any).riskEvents ?? []}
+              legAccounting={(result as any).legAccounting ?? null}
+              modeResults={(result as any).modeResults ?? null}
+              backtestSettings={{
+                exchange,
+                symbol: symbol.trim(),
+                timeframe: `${tfValue}${tfUnit}`,
+                startDate,
+                endDate,
+                initialCapital: Number(initialCapital),
+                tradeAmount: Number(tradeAmount) || undefined,
+                endPositionPolicy,
+                configJson,
+                baseLotSize: Number(tradeAmount) || undefined,
+                baseLotSizeMode: strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY ? positionMode : "usdt",
+              }}
+            />
+          </div>
         )}
         {phase === "done" && resultQuery.isLoading && (
           <p className="text-sm text-muted-foreground">載入結果中...</p>
@@ -2066,6 +2078,14 @@ export default function Backtest() {
                     <p className="text-sm text-red-500">載入失敗：{loadedRunQuery.error.message}</p>
                   )}
                   {loadedRun && loadedRun.metrics && (
+                    <div className="space-y-4">
+                    {loadedRun.run.strategyKey === KAMA_RAINBOW_MARTIN_STRATEGY_KEY && (
+                      <KamaRainbowMartinLineSetReceiptPanel
+                        config={loadedRun.run.config}
+                        receipt={(loadedRun as any).lineSetReceipt ?? (loadedRun.run as any).lineSetReceipt ?? null}
+                        source="backtest-result"
+                      />
+                    )}
                     <BacktestReport
                       runId={loadedRun.run.runId}
                       strategyName={strategyNameMap[loadedRun.run.strategyKey] ?? loadedRun.run.strategyKey}
@@ -2091,6 +2111,7 @@ export default function Backtest() {
                       legAccounting={(loadedRun as any).legAccounting ?? (loadedRun.run as any).legAccounting ?? null}
                       modeResults={(loadedRun as any).modeResults ?? (loadedRun.run as any).modeResults ?? null}
                     />
+                    </div>
                   )}
                   {loadedRun && !loadedRun.metrics && (
                     <p className="text-sm text-muted-foreground">此記錄無績效數據（可能為舊版本或失敗任務）</p>

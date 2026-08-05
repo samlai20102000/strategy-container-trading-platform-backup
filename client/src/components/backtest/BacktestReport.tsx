@@ -29,7 +29,10 @@ import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { InstanceSelector } from "@/components/InstanceSelector";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
-import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
+import {
+  KamaRainbowMartinConfigPanel,
+  KamaRainbowMartinLineSetReceiptPanel,
+} from "@/components/KamaRainbowMartinConfigPanel";
 import EquityChart from "./EquityChart";
 import { trpc } from "@/lib/trpc";
 import { useLocation } from "wouter";
@@ -815,6 +818,11 @@ export default function BacktestReport({
                     Canonical 驗證失敗；快照儲存、套用與部署均會 fail-closed。
                   </div>
                 )}
+                <KamaRainbowMartinLineSetReceiptPanel
+                  config={kamaRainbowMartinDisplay.config}
+                  receipt={saveSnapshotMutation.data?.lineSetReceipt}
+                  source={saveSnapshotMutation.data?.lineSetReceipt ? "snapshot" : "backtest-result"}
+                />
                 <KamaRainbowMartinConfigPanel
                   value={kamaRainbowMartinDisplay.config}
                   onChange={() => undefined}

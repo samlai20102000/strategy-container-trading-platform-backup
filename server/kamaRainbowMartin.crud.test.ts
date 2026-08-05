@@ -164,6 +164,19 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
     expect(mocks.createStrategy).not.toHaveBeenCalled();
   });
 
+  it("拒絕建立未明確提供 canonical config 的 KRM 策略", async () => {
+    const input = validCreateInput();
+    delete (input as Partial<typeof input>).kamaRainbowMartinConfig;
+
+    await expect(appRouter.createCaller(createContext()).strategies.create(input))
+      .rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: expect.stringContaining("KRM_CONFIG_MISSING"),
+      });
+
+    expect(mocks.createStrategy).not.toHaveBeenCalled();
+  });
+
   it("更新時保留 runtime、覆寫 canonical config 與衍生欄位", async () => {
     mocks.getStrategyById.mockResolvedValue(existingKrmStrategy());
     const nextConfig = {
@@ -200,6 +213,22 @@ describe("Kama 彩虹馬丁策略 CRUD router", () => {
     expect(data.martinState.runtimeMarker).toBe("keep-me");
     expect(data.martinState[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]).toEqual(nextConfig);
     expect(result).toEqual({ success: true });
+  });
+
+  it("拒絕更新缺失 canonical 綁定的既有 KRM 策略", async () => {
+    mocks.getStrategyById.mockResolvedValue(existingKrmStrategy({
+      martinState: { runtimeMarker: "orphaned-runtime" },
+    }));
+
+    await expect(appRouter.createCaller(createContext()).strategies.update({
+      id: 88,
+      name: "不得以兩線預設修復",
+    })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("KRM_CONFIG_MISSING"),
+    });
+
+    expect(mocks.updateStrategy).not.toHaveBeenCalled();
   });
 
   it("以 owner-scoped lookup 阻擋他人策略更新", async () => {

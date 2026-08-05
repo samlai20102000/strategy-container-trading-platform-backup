@@ -45,10 +45,9 @@ import {
 import { evaluateRainbowTrendLadderManagement } from "../strategies/rainbowTrendLadder/management";
 import { fetchRainbowTrendLadderMarketQuote } from "./rainbowTrendLadderMarketQuote";
 import {
-  KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
   getKamaRainbowMartinMinimumHistoryBars,
-  validateKamaRainbowMartinConfig,
+  validateExplicitKamaRainbowMartinConfig,
 } from "../../shared/strategies/kamaRainbowMartin";
 import { evaluateKamaRainbowMartinEntry } from "../strategies/kamaRainbowMartin/core";
 import { evaluateKamaRainbowMartinManagement } from "../strategies/kamaRainbowMartin/management";
@@ -219,13 +218,13 @@ export async function generateTradingSignal(
       const effectiveMartinState = effectiveStrategy.martinState && typeof effectiveStrategy.martinState === "object"
         ? effectiveStrategy.martinState as Record<string, unknown>
         : {};
-      const rawConfig = getBoundStrategyConfig(effectiveMartinState, KAMA_RAINBOW_MARTIN_STRATEGY_KEY)
-        ?? effectiveMartinState[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]
-        ?? initialSnapshotConfig
-        ?? {};
-      const validation = validateKamaRainbowMartinConfig(rawConfig);
+      const rawConfig = getBoundStrategyConfig(
+        effectiveMartinState,
+        KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
+      );
+      const validation = validateExplicitKamaRainbowMartinConfig(rawConfig);
       if (!validation.valid) {
-        const detail = `Kama 彩虹馬丁配置無效：${validation.issues.map(issue => `${issue.path} ${issue.message}`).join("；")}`;
+        const detail = `Kama 彩虹馬丁配置無效：${validation.issues.map(issue => `[${issue.code}] ${issue.path} ${issue.message}`).join("；")}`;
         if (withReason) return { signal: null, holdReason: { type: "validation_failed", detail } };
         return null;
       }

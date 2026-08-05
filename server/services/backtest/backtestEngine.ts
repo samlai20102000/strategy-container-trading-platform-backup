@@ -87,8 +87,9 @@ import { runRainbowTrendLadderBacktest } from "./rainbowTrendLadderBacktest";
 import {
   KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY,
   KAMA_RAINBOW_MARTIN_STRATEGY_KEY,
-  assertValidKamaRainbowMartinConfig,
+  assertExplicitKamaRainbowMartinConfig,
   getKamaRainbowMartinTimeframeMinutes,
+  type KamaRainbowMartinLineSetReceipt,
 } from "../../../shared/strategies/kamaRainbowMartin";
 import { runKamaRainbowMartinBacktest } from "./kamaRainbowMartinBacktest";
 import {
@@ -198,6 +199,10 @@ export interface BacktestResult {
   reentryDiagnostics?: BacktestReentryDiagnostics;
   /** shared runtime 的 canonical 拒單、清算、破產與終點事件帳本。 */
   riskEvents?: BacktestRiskEvent[];
+  /** KRM 實際參與本次運算的動態線集合證據。 */
+  lineSetReceipt?: KamaRainbowMartinLineSetReceipt;
+  /** 舊資料缺少 explicit canonical config 時的唯讀診斷；不可據此重啟交易。 */
+  lineSetReceiptError?: string | null;
 }
 
 interface PositionLayer {
@@ -365,7 +370,7 @@ export class BacktestEngine {
     const rawKamaRainbowMartinConfig = request.config[KAMA_RAINBOW_MARTIN_PRIVATE_CONFIG_KEY]
       ?? request.config;
     const kamaRainbowMartinConfig = isKamaRainbowMartin
-      ? assertValidKamaRainbowMartinConfig(rawKamaRainbowMartinConfig)
+      ? assertExplicitKamaRainbowMartinConfig(rawKamaRainbowMartinConfig)
       : null;
     const effectiveRequest = isRainbowTrendLadder
       ? { ...request, timeframe: "30m" }

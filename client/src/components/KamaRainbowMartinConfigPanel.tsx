@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType, type ReactNode } from "react";
+import React, { useMemo, type ComponentType, type ReactNode } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock3,
   Crosshair,
+  Fingerprint,
   Gauge,
   Layers3,
   Minus,
@@ -28,15 +29,19 @@ import {
   KAMA_RAINBOW_MARTIN_TIMEFRAMES,
   KAMA_RAINBOW_MARTIN_MAX_ADD_LAYERS,
   buildKamaRainbowMartinAddLayerQuantities,
+  createKamaRainbowMartinLineSetReceipt,
   createKamaRainbowMartinDefaultConfig,
   getKamaRainbowMartinCumulativeMultiplier,
   getLayerGapPct,
   getLayerMultiplier,
   normalizeKamaRainbowMartinConfig,
+  validateExplicitKamaRainbowMartinConfig,
   validateKamaRainbowMartinConfig,
   type KamaRainbowMartinConfig,
   type KamaRainbowMartinLayerConfig,
   type KamaRainbowMartinLineConfig,
+  type KamaRainbowMartinLineSetReceipt,
+  type KamaRainbowMartinLineSetSource,
   type KamaRainbowMartinTimeframe,
 } from "@shared/strategies/kamaRainbowMartin";
 
@@ -164,6 +169,106 @@ function formatEstimate(value: number): string {
   if (!Number.isFinite(value)) return "—";
   if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return value.toLocaleString(undefined, { maximumFractionDigits: 8 });
+}
+
+export interface KamaRainbowMartinLineSetReceiptPanelProps {
+  config?: unknown;
+  receipt?: KamaRainbowMartinLineSetReceipt | null;
+  source?: KamaRainbowMartinLineSetSource;
+  className?: string;
+}
+
+const KRM_RECEIPT_SOURCE_LABELS: Record<KamaRainbowMartinLineSetSource, string> = {
+  draft: "未保存草稿",
+  "backtest-input": "回測輸入",
+  "backtest-result": "回測結果",
+  snapshot: "參數快照",
+  "snapshot-apply": "快照套用",
+  "strategy-binding": "策略綁定",
+  "live-binding": "實盤綁定",
+  unknown: "來源未標記",
+};
+
+export function KamaRainbowMartinLineSetReceiptPanel({
+  config,
+  receipt,
+  source = "unknown",
+  className,
+}: KamaRainbowMartinLineSetReceiptPanelProps) {
+  const resolved = useMemo(() => {
+    if (receipt) return { receipt, error: null as string | null };
+    const validation = validateExplicitKamaRainbowMartinConfig(config);
+    if (!validation.valid) {
+      return {
+        receipt: null,
+        error: validation.issues.map(issue => `[${issue.code}] ${issue.message}`).join("；"),
+      };
+    }
+    return {
+      receipt: createKamaRainbowMartinLineSetReceipt(config, source),
+      error: null as string | null,
+    };
+  }, [config, receipt, source]);
+
+  if (!resolved.receipt) {
+    return (
+      <section
+        data-testid="krm-line-set-receipt-invalid"
+        className={cn("rounded-xl border border-rose-400/35 bg-rose-400/[0.07] p-4", className)}
+      >
+        <div className="flex items-start gap-3">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-rose-300" />
+          <div className="min-w-0">
+            <p className="text-sm font-black text-rose-100">KAMA 入市線集合不可執行</p>
+            <p className="mt-1 break-words text-xs leading-5 text-rose-200/75">{resolved.error}</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const current = resolved.receipt;
+  return (
+    <section
+      data-testid="krm-line-set-receipt"
+      className={cn("rounded-xl border border-cyan-400/25 bg-cyan-400/[0.055] p-4", className)}
+    >
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Fingerprint className="h-4 w-4 text-cyan-300" />
+            <p className="text-xs font-black uppercase tracking-[0.15em] text-cyan-100">KAMA 入市線集合憑證</p>
+            <Badge className="border border-emerald-300/30 bg-emerald-300/10 font-mono text-[9px] text-emerald-200 hover:bg-emerald-300/10">
+              {current.enabledLineCount}/{current.totalLineCount} ENABLED
+            </Badge>
+            <Badge className="border border-violet-300/30 bg-violet-300/10 font-mono text-[9px] text-violet-200 hover:bg-violet-300/10">
+              {KRM_RECEIPT_SOURCE_LABELS[current.source]}
+            </Badge>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {current.enabledLineIds.map(lineId => (
+              <span key={lineId} className="rounded border border-slate-600/80 bg-slate-950/75 px-2 py-1 font-mono text-[10px] text-slate-200">
+                {lineId}
+              </span>
+            ))}
+          </div>
+          <p className="mt-3 text-[10px] leading-5 text-slate-400">
+            入市語義：全部啟用線斜率同向；任意線對交叉或接觸即鎖定。停用線不參與判定。
+          </p>
+        </div>
+        <dl className="grid shrink-0 gap-2 text-[10px] sm:grid-cols-2 xl:min-w-[360px]">
+          <div className="rounded-lg border border-slate-700/80 bg-black/25 px-3 py-2">
+            <dt className="uppercase tracking-[0.12em] text-slate-500">Line-set hash</dt>
+            <dd className="mt-1 break-all font-mono font-bold text-cyan-200">{current.lineSetHash}</dd>
+          </div>
+          <div className="rounded-lg border border-slate-700/80 bg-black/25 px-3 py-2">
+            <dt className="uppercase tracking-[0.12em] text-slate-500">Config hash</dt>
+            <dd className="mt-1 break-all font-mono font-bold text-violet-200">{current.configHash}</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+  );
 }
 
 export function KamaRainbowMartinConfigPanel({
@@ -295,6 +400,10 @@ export function KamaRainbowMartinConfigPanel({
         </div>
 
         <div className="min-w-0 max-w-full space-y-4 p-3 sm:p-5">
+          <KamaRainbowMartinLineSetReceiptPanel
+            config={config}
+            source={context === "backtest" ? "backtest-input" : context === "snapshot" ? "snapshot" : "strategy-binding"}
+          />
           <Sector index="01" title="事件時序與倉位來源" subtitle="進場使用指定週期的已收線 K 棒；持倉風控使用 fresh bid／ask。底倉數值只取策略 top-level 倉位設定。" icon={Crosshair}>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <div className="space-y-2">

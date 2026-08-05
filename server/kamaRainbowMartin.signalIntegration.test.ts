@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_KAMA_RAINBOW_MARTIN_CONFIG } from "../shared/strategies/kamaRainbowMartin";
+import { KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG } from "../shared/strategies/kamaRainbowMartin";
 
 const mocks = vi.hoisted(() => ({
   initStrategyStudio: vi.fn(),
@@ -65,17 +65,51 @@ const flatState = {
   kamaRainbowMartinRuntime: {},
 };
 
+function createSixLineConfig() {
+  return {
+    ...KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG,
+    kamaLines: Array.from({ length: 6 }, (_, index) => ({
+      id: `KAMA_${index + 1}`,
+      name: `KAMA ${index + 1}`,
+      enabled: true,
+      erPeriod: 5 + index * 2,
+      fastEma: 2,
+      slowEma: 30 + index,
+      color: `#${(index + 1).toString(16).padStart(6, "0")}`,
+    })),
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getStrategy.mockReturnValue({});
   mocks.createAdapter.mockReturnValue({});
   mocks.getStrategyById.mockResolvedValue(strategy);
   mocks.loadCanonicalRuntimeDeployment.mockResolvedValue({ strategy });
-  mocks.getBoundStrategyConfig.mockReturnValue(DEFAULT_KAMA_RAINBOW_MARTIN_CONFIG);
+  mocks.getBoundStrategyConfig.mockReturnValue(KAMA_RAINBOW_MARTIN_DEFAULT_CONFIG);
   mocks.saveStrategyState.mockResolvedValue(undefined);
 });
 
 describe("Kama 彩虹馬丁 auto signal 分流", () => {
+  it("canonical 配置缺失時 fail-closed，不得以兩線預設掃描或管理曝險", async () => {
+    mocks.loadStrategyState.mockReturnValue(flatState);
+    mocks.getBoundStrategyConfig.mockReturnValue(undefined);
+
+    const result = await generateTradingSignal(strategy, {}, { withReason: true });
+
+    expect(result).toEqual({
+      signal: null,
+      holdReason: {
+        type: "validation_failed",
+        detail: expect.stringContaining("KRM_CONFIG_MISSING"),
+      },
+    });
+    expect(mocks.fetchClosedCandles).not.toHaveBeenCalled();
+    expect(mocks.fetchFreshQuote).not.toHaveBeenCalled();
+    expect(mocks.evaluateEntry).not.toHaveBeenCalled();
+    expect(mocks.evaluateManagement).not.toHaveBeenCalled();
+  });
+
   it("空倉只讀已收盤 K 線並產生密封 entry signal", async () => {
     mocks.loadStrategyState.mockReturnValue(flatState);
     const candles = Array.from({ length: 30 }, (_, index) => ({
@@ -113,6 +147,46 @@ describe("Kama 彩虹馬丁 auto signal 分流", () => {
         kamaRainbowMartinEventKey: "okx:BTC-USDT-SWAP:M30:29",
       }),
     }));
+  });
+
+  it("六線 live-binding 將第 3–6 條原封不動交給共用 entry evaluator", async () => {
+    const sixLineConfig = createSixLineConfig();
+    mocks.loadStrategyState.mockReturnValue(flatState);
+    mocks.getBoundStrategyConfig.mockReturnValue(sixLineConfig);
+    mocks.fetchClosedCandles.mockResolvedValue({
+      candles: Array.from({ length: 40 }, (_, index) => ({
+        openTime: index,
+        closeTime: index + 1,
+        open: 100 + index,
+        high: 101 + index,
+        low: 99 + index,
+        close: 100 + index,
+        volume: 1,
+        closed: true,
+      })),
+      lastClosedBarIdentity: "okx:BTC-USDT-SWAP:M30:39",
+    });
+    mocks.evaluateEntry.mockReturnValue({
+      action: "HOLD",
+      reason: "等待條件",
+      reasonCode: "KRM_MIXED_SLOPE",
+      price: 139,
+      barTimestamp: 39,
+      nextState: flatState,
+    });
+
+    await generateTradingSignal(strategy, {}, { withReason: true });
+
+    expect(mocks.evaluateEntry).toHaveBeenCalledTimes(1);
+    const evaluatorInput = mocks.evaluateEntry.mock.calls[0][0];
+    expect(evaluatorInput.rawConfig.kamaLines.map((item: { id: string }) => item.id)).toEqual([
+      "KAMA_1",
+      "KAMA_2",
+      "KAMA_3",
+      "KAMA_4",
+      "KAMA_5",
+      "KAMA_6",
+    ]);
   });
 
   it("持倉時完全跳過 KAMA，只用 fresh quote 執行風控", async () => {

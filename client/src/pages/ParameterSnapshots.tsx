@@ -39,7 +39,10 @@ import { AlertTriangle, Star, Trash2, Play, Eye, Database, Plus, RefreshCw, GitC
 import { toast } from "sonner";
 import { Rainbow20415ConfigPanel } from "@/components/Rainbow20415ConfigPanel";
 import { RainbowTrendLadderConfigPanel } from "@/components/RainbowTrendLadderConfigPanel";
-import { KamaRainbowMartinConfigPanel } from "@/components/KamaRainbowMartinConfigPanel";
+import {
+  KamaRainbowMartinConfigPanel,
+  KamaRainbowMartinLineSetReceiptPanel,
+} from "@/components/KamaRainbowMartinConfigPanel";
 import { V41EntryConditionsPanel } from "@/components/V41EntryConditionsPanel";
 import {
   RAINBOW_20415_STRATEGY_KEY,
@@ -174,6 +177,12 @@ export default function ParameterSnapshots() {
     () => getKamaRainbowMartinSnapshotDisplay(selectedSnapshot?.strategyKey, selectedSnapshot?.config),
     [selectedSnapshot],
   );
+  const selectedKamaRainbowMartinReceiptReady = selectedSnapshot?.strategyKey !== KAMA_RAINBOW_MARTIN_STRATEGY_KEY
+    || Boolean(
+      selectedSnapshot.lineSetReceipt
+      && !selectedSnapshot.lineSetReceiptError
+      && selectedKamaRainbowMartinDisplay?.validation.valid,
+    );
   const viewV41Display = useMemo(
     () => getV41SnapshotDisplay(viewStrategyKey, viewConfig),
     [viewConfig, viewStrategyKey],
@@ -686,23 +695,32 @@ export default function ParameterSnapshots() {
                             const display = getKamaRainbowMartinSnapshotDisplay(s.strategyKey, s.config);
                             if (!display) return null;
                             return (
-                              <div className="mt-2 flex min-w-56 flex-wrap items-center gap-1.5">
-                                <Badge variant="outline" className="border-cyan-500/40 text-[10px] text-cyan-200">
-                                  {getKamaRainbowMartinTimeframeMinutes(display.config.timeframe)}m
-                                </Badge>
-                                <Badge variant="outline" className="text-[10px]">{display.config.kamaLines.length} KAMA</Badge>
-                                <Badge variant="outline" className="text-[10px]">{display.config.maxLayers} 層</Badge>
-                                <Badge
-                                  variant="outline"
-                                  className={display.config.reentryEnabled
-                                    ? "border-emerald-500/40 text-[10px] text-emerald-300"
-                                    : "border-slate-500/40 text-[10px] text-slate-300"}
-                                >
-                                  自動重入：{display.config.reentryEnabled ? "開啟" : "關閉"}
-                                </Badge>
-                                {!display.validation.valid && (
-                                  <Badge variant="outline" className="border-amber-500/45 text-[10px] text-amber-300">需複核</Badge>
-                                )}
+                              <div className="mt-2 min-w-56 space-y-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Badge variant="outline" className="border-cyan-500/40 text-[10px] text-cyan-200">
+                                    {getKamaRainbowMartinTimeframeMinutes(display.config.timeframe)}m
+                                  </Badge>
+                                  <Badge variant="outline" className="text-[10px]">{display.config.kamaLines.length} KAMA</Badge>
+                                  <Badge variant="outline" className="text-[10px]">{display.config.maxLayers} 層</Badge>
+                                  {s.lineSetReceipt ? (
+                                    <>
+                                      <Badge variant="outline" className="border-emerald-500/40 text-[10px] text-emerald-300">
+                                        入市 {s.lineSetReceipt.enabledLineCount}/{s.lineSetReceipt.totalLineCount}
+                                      </Badge>
+                                      <Badge variant="outline" className="font-mono text-[10px] text-cyan-200">
+                                        {s.lineSetReceipt.lineSetHash}
+                                      </Badge>
+                                    </>
+                                  ) : (
+                                    <Badge variant="outline" className="border-rose-500/45 text-[10px] text-rose-300">憑證缺失</Badge>
+                                  )}
+                                  {!display.validation.valid && (
+                                    <Badge variant="outline" className="border-amber-500/45 text-[10px] text-amber-300">需複核</Badge>
+                                  )}
+                                </div>
+                                <p className="break-words text-[10px] text-muted-foreground">
+                                  啟用 ID：{s.lineSetReceipt?.enabledLineIds.join("、") || "不可驗證"}
+                                </p>
                               </div>
                             );
                           })()}
@@ -885,6 +903,11 @@ export default function ParameterSnapshots() {
                     <span className="break-all sm:col-span-2">Artifact checksum：{viewSnapshot.artifact?.artifactHash ?? viewSnapshot.compatibility.artifactHash ?? "—"}</span>
                   </div>
                 )}
+                <KamaRainbowMartinLineSetReceiptPanel
+                  config={viewConfig}
+                  receipt={viewSnapshot?.lineSetReceipt}
+                  source="snapshot"
+                />
                 <KamaRainbowMartinConfigPanel
                   value={viewKamaRainbowMartinDisplay.canonicalCandidate}
                   onChange={() => undefined}
@@ -985,7 +1008,12 @@ export default function ParameterSnapshots() {
               </div>
             )}
             {selectedKamaRainbowMartinDisplay && (
-              <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-3 text-xs leading-relaxed">
+              <div className="space-y-3 rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-3 text-xs leading-relaxed">
+                <KamaRainbowMartinLineSetReceiptPanel
+                  config={selectedSnapshot?.config}
+                  receipt={selectedSnapshot?.lineSetReceipt}
+                  source="snapshot"
+                />
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{selectedKamaRainbowMartinDisplay.config.version}</Badge>
                   <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.kamaLines.length} KAMA</Badge>
@@ -1026,7 +1054,7 @@ export default function ParameterSnapshots() {
               <Button
                 className="bg-emerald-600 hover:bg-emerald-700"
                 onClick={handleApply}
-                disabled={!targetStrategyId || applyMutation.isPending}
+                disabled={!targetStrategyId || applyMutation.isPending || !selectedKamaRainbowMartinReceiptReady}
               >
                 {applyMutation.isPending ? "套用中..." : "確認套用"}
               </Button>
@@ -1068,7 +1096,12 @@ export default function ParameterSnapshots() {
               </div>
             )}
             {selectedKamaRainbowMartinDisplay && (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed">
+              <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed">
+                <KamaRainbowMartinLineSetReceiptPanel
+                  config={selectedSnapshot?.config}
+                  receipt={selectedSnapshot?.lineSetReceipt}
+                  source="snapshot"
+                />
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="border-cyan-500/40 text-cyan-200">{selectedKamaRainbowMartinDisplay.config.version}</Badge>
                   <Badge variant="outline">{selectedKamaRainbowMartinDisplay.config.kamaLines.length} KAMA</Badge>
@@ -1191,7 +1224,7 @@ export default function ParameterSnapshots() {
               <Button
                 className="bg-blue-600 hover:bg-blue-700"
                 onClick={handleImport}
-                disabled={importMutation.isPending}
+                disabled={importMutation.isPending || !selectedKamaRainbowMartinReceiptReady}
               >
                 {importMutation.isPending ? "導入中..." : "確認導入"}
               </Button>
